@@ -8,6 +8,7 @@ const Exam = require('../models/Exam');
 const ExamSubmission = require('../models/ExamSubmission');
 const TeacherProfile = require('../models/TeacherProfile');
 const AppError = require('../utils/AppError');
+const { isRoleVerified } = require('../utils/roleVerification');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 
@@ -21,6 +22,10 @@ function assertTeacherOwnsCourse(course, userId) {
 
 // POST /api/courses
 const createCourse = asyncHandler(async (req, res) => {
+  if (!(await isRoleVerified(req.user._id, 'teacher'))) {
+    throw new AppError('Your Teacher account is pending Super Admin verification. You can browse the dashboard but cannot create a course until it is approved.', 403);
+  }
+
   const { title, description, institution, classSection, subject, level, language, price, currency, isFree } = req.body;
   if (!title) throw new AppError('Title is required.', 422);
 

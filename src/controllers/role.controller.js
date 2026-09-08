@@ -7,6 +7,11 @@ const { ROLES, APPROVAL_REQUIRED_ROLES } = require('../config/rbac');
 const { emitToUser } = require('../realtime/socket');
 
 // POST /api/roles/request
+// The role (and its dashboard) is granted immediately so the user isn't stuck
+// looking at the Student workspace while waiting on review. For roles that need
+// vetting, an approved RoleRequest is still required before sensitive actions
+// (posting a job/scholarship/listing, publishing a course) are allowed — see
+// utils/roleVerification.js — and a rejection revokes the role again.
 const requestRole = asyncHandler(async (req, res) => {
   const { requestedRole, documents, notes } = req.body;
 
@@ -18,18 +23,20 @@ const requestRole = asyncHandler(async (req, res) => {
     throw new AppError('You already have this role.', 400);
   }
 
+  req.user.roles = Array.from(new Set([...req.user.roles, requestedRole]));
+  await req.user.save();
+
+  if (!APPROVAL_REQUIRED_ROLES.includes(requestedRole)) {
+    return ok(res, { user: req.user.toSafeJSON() }, 'Role granted immediately.');
+  }
+
   const existingPending = await RoleRequest.findOne({
     user: req.user._id,
     requestedRole,
     status: { $in: ['pending', 'under_review'] }
   });
-  if (existingPending) throw new AppError('You already have a pending request for this role.', 409);
-
-  // Roles that do not require approval are granted immediately.
-  if (!APPROVAL_REQUIRED_ROLES.includes(requestedRole)) {
-    req.user.roles = Array.from(new Set([...req.user.roles, requestedRole]));
-    await req.user.save();
-    return ok(res, { user: req.user.toSafeJSON() }, 'Role granted immediately.');
+  if (existingPending) {
+    return ok(res, { user: req.user.toSafeJSON(), request: existingPending }, 'Dashboard unlocked. Verification is already pending.');
   }
 
   const request = await RoleRequest.create({
@@ -41,7 +48,7 @@ const requestRole = asyncHandler(async (req, res) => {
 
   emitToUser(req.user._id, 'dashboard:update', { reason: 'role-request-created' });
 
-  return created(res, request, 'Role request submitted for review.');
+  return created(res, { user: req.user.toSafeJSON(), request }, 'Dashboard unlocked. Verification is pending before you can post.');
 });
 
 // GET /api/roles/my-requests
@@ -77,11 +84,14 @@ const reviewRequest = asyncHandler(async (req, res) => {
   request.reviewedAt = new Date();
   await request.save();
 
+  const user = await User.findById(request.user);
   if (decision === 'approved') {
-    const user = await User.findById(request.user);
     user.roles = Array.from(new Set([...user.roles, request.requestedRole]));
-    await user.save();
+  } else {
+    // Rejection revokes the provisional dashboard access granted at request time.
+    user.roles = user.roles.filter((r) => r !== request.requestedRole);
   }
+  await user.save();
 
   emitToUser(request.user, 'dashboard:update', { reason: 'role-request-reviewed', decision });
 

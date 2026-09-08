@@ -3,6 +3,7 @@ const ScholarshipApplication = require('../models/ScholarshipApplication');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { isRoleVerified } = require('../utils/roleVerification');
 
 function assertOwnsScholarship(scholarship, userId) {
   if (scholarship.donor.toString() !== userId.toString()) {
@@ -12,6 +13,10 @@ function assertOwnsScholarship(scholarship, userId) {
 
 // POST /api/scholarships
 const createScholarship = asyncHandler(async (req, res) => {
+  if (!(await isRoleVerified(req.user._id, 'donor'))) {
+    throw new AppError('Your Donor account is pending Super Admin verification. You can browse the dashboard but cannot post a scholarship until it is approved.', 403);
+  }
+
   const allowed = [
     'title', 'description', 'amount', 'currency', 'eligibilityCriteria',
     'country', 'applicationDeadline', 'seatsAvailable'

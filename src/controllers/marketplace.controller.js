@@ -3,6 +3,7 @@ const Order = require('../models/Order');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { isRoleVerified } = require('../utils/roleVerification');
 
 function assertOwnsProduct(product, userId) {
   if (product.seller.toString() !== userId.toString()) {
@@ -12,6 +13,10 @@ function assertOwnsProduct(product, userId) {
 
 // POST /api/marketplace/products
 const createProduct = asyncHandler(async (req, res) => {
+  if (!(await isRoleVerified(req.user._id, 'marketplace_seller'))) {
+    throw new AppError('Your Seller account is pending Super Admin verification. You can browse the dashboard but cannot list a product until it is approved.', 403);
+  }
+
   const allowed = ['title', 'description', 'category', 'price', 'currency', 'stock', 'images'];
   const body = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) body[f] = req.body[f]; });

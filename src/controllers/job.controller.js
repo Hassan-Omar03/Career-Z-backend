@@ -4,6 +4,7 @@ const Resume = require('../models/Resume');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { isRoleVerified } = require('../utils/roleVerification');
 
 function assertOwnsJob(job, userId) {
   if (job.postedBy.toString() !== userId.toString()) {
@@ -13,6 +14,11 @@ function assertOwnsJob(job, userId) {
 
 // POST /api/jobs
 const createJob = asyncHandler(async (req, res) => {
+  const verified = (await isRoleVerified(req.user._id, 'employer')) || (await isRoleVerified(req.user._id, 'education_agent'));
+  if (!verified) {
+    throw new AppError('Your Employer/Agent account is pending Super Admin verification. You can browse the dashboard but cannot post a job until it is approved.', 403);
+  }
+
   const allowed = [
     'title', 'company', 'type', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
