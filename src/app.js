@@ -6,6 +6,12 @@ const cookieParser = require('cookie-parser');
 const rateLimit = require('express-rate-limit');
 
 const env = require('./config/env');
+const connectDB = require('./config/db');
+const allowedOrigins = new Set([
+  'https://career-z-zeta.vercel.app',
+  ...(env.nodeEnv !== 'production' ? ['http://localhost:5173', 'http://localhost:5500'] : []),
+  ...env.clientUrl.split(',').map(value => value.trim().replace(/\/+$/, '')).filter(Boolean)
+]);
 const routes = require('./routes');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 
@@ -14,7 +20,9 @@ const app = express();
 app.use(helmet());
 app.use(
   cors({
-    origin: env.clientUrl,
+    origin(origin, callback) {
+      callback(null, !origin || allowedOrigins.has(origin));
+    },
     credentials: true
   })
 );
@@ -33,6 +41,15 @@ const authLimiter = rateLimit({
 });
 app.use('/api/auth', authLimiter);
 
+// Vercel imports this app directly, without executing server.js.
+app.use('/api', async (req, res, next) => {
+  try {
+    await connectDB();
+    next();
+  } catch {
+    res.status(503).json({ success: false, message: 'Database connection unavailable. Please try again shortly.', errors: null });
+  }
+});
 app.use('/api', routes);
 
 app.get('/', (req, res) => {
