@@ -35,6 +35,10 @@ app.use('/api/auth', authLimiter);
 
 app.use('/api', routes);
 
+app.get('/', (req, res) => {
+  res.json({ success: true, message: 'CareerZ API is running' });
+});
+
 app.use(notFound);
 app.use(errorHandler);
 
