@@ -1,0 +1,26 @@
+const router = require('express').Router();
+const ctrl = require('../controllers/scholarship.controller');
+const { protect, optionalAuth } = require('../middleware/auth');
+const { requireRole } = require('../middleware/rbac');
+
+// Public browsing — no login required.
+router.get('/', optionalAuth, ctrl.listScholarships);
+router.get('/:id', optionalAuth, ctrl.getScholarship);
+
+router.use(protect);
+
+// Admin — oversight across every donor's scholarships.
+router.get('/admin/all', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.adminListAll);
+
+// Donor — posting and managing scholarships.
+router.post('/', requireRole('donor'), ctrl.createScholarship);
+router.get('/mine/list', requireRole('donor'), ctrl.myScholarships);
+router.patch('/:id', requireRole('donor'), ctrl.updateScholarship);
+router.get('/:id/applicants', requireRole('donor'), ctrl.listApplicants);
+router.patch('/applications/:appId/status', requireRole('donor'), ctrl.updateApplicationStatus);
+
+// Any authenticated user — applying.
+router.post('/:id/apply', ctrl.applyToScholarship);
+router.get('/mine/applications', ctrl.myApplications);
+
+module.exports = router;

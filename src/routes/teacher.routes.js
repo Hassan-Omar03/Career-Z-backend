@@ -10,5 +10,7 @@ router.patch('/me', ctrl.updateMyProfile);
 router.get('/me/classes', ctrl.getMyClasses);
 router.post('/me/attendance', ctrl.markAttendance);
 router.get('/me/attendance', ctrl.listAttendance);
+router.get('/me/timetable', ctrl.getMyTimetable);
+router.get('/me/payslips', ctrl.getMyPayslips);
 
 module.exports = router;

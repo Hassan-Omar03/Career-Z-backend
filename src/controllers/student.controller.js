@@ -3,6 +3,8 @@ const Enrollment = require('../models/Enrollment');
 const Attendance = require('../models/Attendance');
 const Result = require('../models/Result');
 const Submission = require('../models/Submission');
+const Fee = require('../models/Fee');
+const TimetableEntry = require('../models/TimetableEntry');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -82,6 +84,23 @@ const getMySubmissions = asyncHandler(async (req, res) => {
   return ok(res, submissions);
 });
 
+// GET /api/students/me/fees
+const getMyFees = asyncHandler(async (req, res) => {
+  const fees = await Fee.find({ student: req.user._id }).sort({ createdAt: -1 });
+  return ok(res, fees);
+});
+
+// GET /api/students/me/timetable
+const getMyTimetable = asyncHandler(async (req, res) => {
+  const profile = await StudentProfile.findOne({ user: req.user._id });
+  if (!profile || !profile.classSection) return ok(res, []);
+
+  const entries = await TimetableEntry.find({ classSection: profile.classSection })
+    .populate('teacher', 'fullName')
+    .sort({ dayOfWeek: 1, startTime: 1 });
+  return ok(res, entries);
+});
+
 module.exports = {
   getMyProfile,
   updateMyProfile,
@@ -89,5 +108,7 @@ module.exports = {
   getMyAttendance,
   getMyResults,
   getMyEnrollments,
-  getMySubmissions
+  getMySubmissions,
+  getMyFees,
+  getMyTimetable
 };

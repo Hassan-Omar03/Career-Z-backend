@@ -4,6 +4,9 @@ const Enrollment = require('../models/Enrollment');
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const Result = require('../models/Result');
+const Exam = require('../models/Exam');
+const ExamSubmission = require('../models/ExamSubmission');
+const TeacherProfile = require('../models/TeacherProfile');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -34,6 +37,14 @@ const createCourse = asyncHandler(async (req, res) => {
     currency: currency || 'USD',
     isFree: isFree !== undefined ? isFree : true
   });
+
+  if (institution) {
+    await TeacherProfile.findOneAndUpdate(
+      { user: req.user._id },
+      { $addToSet: { institutions: institution } },
+      { upsert: true }
+    );
+  }
 
   return created(res, course);
 });
@@ -264,11 +275,169 @@ const recordResult = asyncHandler(async (req, res) => {
   return created(res, result, 'Result recorded.');
 });
 
+// ---- Exams ----
+
+// POST /api/courses/:id/exams
+const createExam = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+  assertTeacherOwnsCourse(course, req.user._id);
+
+  const { title, type, durationMinutes, scheduledDate, questions } = req.body;
+  if (!title || !Array.isArray(questions) || questions.length === 0) {
+    throw new AppError('title and at least one question are required.', 422);
+  }
+
+  const exam = await Exam.create({
+    course: course._id,
+    teacher: req.user._id,
+    title,
+    type: type || 'quiz',
+    durationMinutes: durationMinutes || 0,
+    scheduledDate: scheduledDate || null,
+    questions
+  });
+  return created(res, exam, 'Exam created (unpublished).');
+});
+
+// GET /api/courses/:id/exams
+const listExams = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+
+  const isOwner = course.teacher.toString() === req.user._id.toString();
+  const filter = { course: course._id };
+  if (!isOwner) filter.published = true;
+
+  const exams = await Exam.find(filter).sort({ createdAt: -1 });
+
+  if (isOwner) return ok(res, exams);
+
+  // Students never see the answer key.
+  const sanitized = exams.map((e) => {
+    const obj = e.toObject();
+    obj.questions = obj.questions.map((q) => ({ text: q.text, type: q.type, options: q.options, marks: q.marks }));
+    return obj;
+  });
+  return ok(res, sanitized);
+});
+
+// PATCH /api/exams/:examId/publish
+const publishExam = asyncHandler(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId);
+  if (!exam) throw new AppError('Exam not found.', 404);
+  if (exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+
+  exam.published = true;
+  await exam.save();
+  return ok(res, exam, 'Exam published.');
+});
+
+// POST /api/exams/:examId/submit
+const submitExam = asyncHandler(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId);
+  if (!exam) throw new AppError('Exam not found.', 404);
+  if (!exam.published) throw new AppError('This exam is not open yet.', 400);
+
+  const enrollment = await Enrollment.findOne({ student: req.user._id, course: exam.course });
+  if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
+
+  const existing = await ExamSubmission.findOne({ exam: exam._id, student: req.user._id });
+  if (existing) throw new AppError('You already submitted this exam.', 409);
+
+  const { answers } = req.body;
+  if (!Array.isArray(answers)) throw new AppError('answers array is required.', 422);
+
+  let hasShortAnswer = false;
+  let score = 0;
+  const gradedAnswers = answers.map((a) => {
+    const question = exam.questions[a.questionIndex];
+    if (!question) return { ...a, marksAwarded: 0 };
+    if (question.type === 'mcq') {
+      const correct = a.selectedOption === question.correctOption;
+      const marksAwarded = correct ? question.marks : 0;
+      score += marksAwarded;
+      return { questionIndex: a.questionIndex, selectedOption: a.selectedOption, textAnswer: '', marksAwarded };
+    }
+    hasShortAnswer = true;
+    return { questionIndex: a.questionIndex, selectedOption: null, textAnswer: a.textAnswer || '', marksAwarded: 0 };
+  });
+
+  const submission = await ExamSubmission.create({
+    exam: exam._id,
+    student: req.user._id,
+    answers: gradedAnswers,
+    score,
+    status: hasShortAnswer ? 'submitted' : 'graded'
+  });
+
+  if (!hasShortAnswer) {
+    await Result.create({
+      student: req.user._id,
+      course: exam.course,
+      institution: (await Course.findById(exam.course)).institution,
+      term: exam.title,
+      subject: '',
+      marksObtained: score,
+      totalMarks: exam.toObject().totalMarks,
+      recordedBy: exam.teacher
+    });
+  }
+
+  return created(res, submission, 'Exam submitted.');
+});
+
+// GET /api/exams/:examId/submissions (teacher)
+const listExamSubmissions = asyncHandler(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId);
+  if (!exam) throw new AppError('Exam not found.', 404);
+  if (exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+
+  const submissions = await ExamSubmission.find({ exam: exam._id }).populate('student', 'fullName email');
+  return ok(res, submissions);
+});
+
+// PATCH /api/exam-submissions/:submissionId/grade (teacher — grades the short-answer questions)
+const gradeExamSubmission = asyncHandler(async (req, res) => {
+  const submission = await ExamSubmission.findById(req.params.submissionId).populate('exam');
+  if (!submission) throw new AppError('Exam submission not found.', 404);
+  if (submission.exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+
+  const { manualMarks } = req.body; // [{ questionIndex, marks }]
+  if (!Array.isArray(manualMarks)) throw new AppError('manualMarks array is required.', 422);
+
+  manualMarks.forEach(({ questionIndex, marks }) => {
+    const answer = submission.answers.find((a) => a.questionIndex === questionIndex);
+    if (answer) answer.marksAwarded = marks;
+  });
+
+  submission.score = submission.answers.reduce((sum, a) => sum + (a.marksAwarded || 0), 0);
+  submission.status = 'graded';
+  submission.gradedBy = req.user._id;
+  submission.gradedAt = new Date();
+  await submission.save();
+
+  const course = await Course.findById(submission.exam.course);
+  await Result.create({
+    student: submission.student,
+    course: course._id,
+    institution: course.institution,
+    term: submission.exam.title,
+    subject: '',
+    marksObtained: submission.score,
+    totalMarks: submission.exam.toObject().totalMarks,
+    recordedBy: req.user._id
+  });
+
+  return ok(res, submission, 'Exam graded.');
+});
+
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
   addLesson, updateLesson,
   enroll, listEnrolledStudents,
   createAssignment, listAssignments,
   submitAssignment, listSubmissions, gradeSubmission,
-  recordResult
+  recordResult,
+  createExam, listExams, publishExam, submitExam, listExamSubmissions, gradeExamSubmission
 };

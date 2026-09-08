@@ -2,6 +2,10 @@ const ParentChildLink = require('../models/ParentChildLink');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
 const Result = require('../models/Result');
+const Fee = require('../models/Fee');
+const StudentProfile = require('../models/StudentProfile');
+const TimetableEntry = require('../models/TimetableEntry');
+const Submission = require('../models/Submission');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -90,6 +94,40 @@ const childResults = asyncHandler(async (req, res) => {
   return ok(res, results);
 });
 
+// GET /api/parents/children/:studentId/fees
+const childFees = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+
+  const fees = await Fee.find({ student: req.params.studentId }).sort({ createdAt: -1 });
+  return ok(res, fees);
+});
+
+// GET /api/parents/children/:studentId/timetable
+const childTimetable = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+
+  const profile = await StudentProfile.findOne({ user: req.params.studentId });
+  if (!profile || !profile.classSection) return ok(res, []);
+
+  const entries = await TimetableEntry.find({ classSection: profile.classSection })
+    .populate('teacher', 'fullName')
+    .sort({ dayOfWeek: 1, startTime: 1 });
+  return ok(res, entries);
+});
+
+// GET /api/parents/children/:studentId/homework
+const childHomework = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+
+  const submissions = await Submission.find({ student: req.params.studentId })
+    .populate('assignment', 'title dueDate maxMarks')
+    .sort({ createdAt: -1 });
+  return ok(res, submissions);
+});
+
 module.exports = {
   requestLink,
   myChildren,
@@ -97,5 +135,8 @@ module.exports = {
   incomingRequests,
   respondToLink,
   childAttendance,
-  childResults
+  childResults,
+  childFees,
+  childTimetable,
+  childHomework
 };

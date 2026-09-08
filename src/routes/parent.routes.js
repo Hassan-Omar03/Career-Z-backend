@@ -12,5 +12,8 @@ router.patch('/link-requests/:id/respond', ctrl.respondToLink);
 router.get('/children', ctrl.myChildren);
 router.get('/children/:studentId/attendance', ctrl.childAttendance);
 router.get('/children/:studentId/results', ctrl.childResults);
+router.get('/children/:studentId/fees', ctrl.childFees);
+router.get('/children/:studentId/timetable', ctrl.childTimetable);
+router.get('/children/:studentId/homework', ctrl.childHomework);
 
 module.exports = router;

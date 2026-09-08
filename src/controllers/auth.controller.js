@@ -4,6 +4,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const tokenService = require('../services/token.service');
 const otpService = require('../services/otp.service');
+const LoginAttempt = require('../models/LoginAttempt');
+const BlockedIp = require('../models/BlockedIp');
 
 // POST /api/auth/register
 const register = asyncHandler(async (req, res) => {
@@ -64,21 +66,48 @@ const resendVerification = asyncHandler(async (req, res) => {
   return ok(res, null, 'Verification code sent.');
 });
 
+async function recordLoginAttempt({ email, ip, userAgent, success, reason }) {
+  try {
+    await LoginAttempt.create({ email: (email || '').toLowerCase(), ip: ip || '', userAgent: userAgent || '', success, reason: reason || '' });
+  } catch {
+    // Never let attempt-logging failures block authentication.
+  }
+}
+
 // POST /api/auth/login
 const login = asyncHandler(async (req, res) => {
   const { email, password } = req.body;
+  const ip = req.ip;
+  const userAgent = req.headers['user-agent'];
+
   if (!email || !password) throw new AppError('Email and password are required.', 422);
 
+  const blocked = await BlockedIp.findOne({ ip });
+  if (blocked) {
+    await recordLoginAttempt({ email, ip, userAgent, success: false, reason: 'blocked_ip' });
+    throw new AppError('This network address has been blocked. Contact support if you believe this is an error.', 403);
+  }
+
   const user = await User.findOne({ email: email.toLowerCase() });
-  if (!user) throw new AppError('Invalid email or password.', 401);
+  if (!user) {
+    await recordLoginAttempt({ email, ip, userAgent, success: false, reason: 'no_such_user' });
+    throw new AppError('Invalid email or password.', 401);
+  }
 
   const match = await user.comparePassword(password);
-  if (!match) throw new AppError('Invalid email or password.', 401);
+  if (!match) {
+    await recordLoginAttempt({ email, ip, userAgent, success: false, reason: 'wrong_password' });
+    throw new AppError('Invalid email or password.', 401);
+  }
 
-  if (user.status !== 'active') throw new AppError('This account is not active.', 403);
+  if (user.status !== 'active') {
+    await recordLoginAttempt({ email, ip, userAgent, success: false, reason: 'account_inactive' });
+    throw new AppError('This account is not active.', 403);
+  }
 
   user.lastLoginAt = new Date();
   await user.save();
+  await recordLoginAttempt({ email, ip, userAgent, success: true });
 
   const tokens = await tokenService.issueTokenPair(user, {
     deviceInfo: req.headers['user-agent'],

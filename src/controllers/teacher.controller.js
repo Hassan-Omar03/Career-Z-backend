@@ -1,6 +1,8 @@
 const TeacherProfile = require('../models/TeacherProfile');
 const Course = require('../models/Course');
 const Attendance = require('../models/Attendance');
+const TimetableEntry = require('../models/TimetableEntry');
+const Payslip = require('../models/Payslip');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
@@ -75,4 +77,20 @@ const listAttendance = asyncHandler(async (req, res) => {
   return ok(res, attendance);
 });
 
-module.exports = { getMyProfile, updateMyProfile, getMyClasses, markAttendance, listAttendance };
+// GET /api/teachers/me/timetable
+const getMyTimetable = asyncHandler(async (req, res) => {
+  const entries = await TimetableEntry.find({ teacher: req.user._id })
+    .populate('classSection', 'name academicYear')
+    .sort({ dayOfWeek: 1, startTime: 1 });
+  return ok(res, entries);
+});
+
+// GET /api/teachers/me/payslips
+const getMyPayslips = asyncHandler(async (req, res) => {
+  const payslips = await Payslip.find({ staff: req.user._id })
+    .populate('institution', 'name')
+    .sort({ year: -1, month: -1 });
+  return ok(res, payslips);
+});
+
+module.exports = { getMyProfile, updateMyProfile, getMyClasses, markAttendance, listAttendance, getMyTimetable, getMyPayslips };
