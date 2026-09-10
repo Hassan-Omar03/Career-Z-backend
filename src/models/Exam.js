@@ -19,6 +19,8 @@ const examSchema = new mongoose.Schema(
     type: { type: String, enum: ['quiz', 'midterm', 'final', 'test'], default: 'quiz' },
     durationMinutes: { type: Number, default: 0 }, // 0 = untimed
     scheduledDate: { type: Date, default: null },
+    venue: { type: String, default: '' }, // physical exam center, or an online link
+    instructions: { type: String, default: '' }, // preparation notes shown to students/parents
     questions: [questionSchema],
     published: { type: Boolean, default: false }
   },

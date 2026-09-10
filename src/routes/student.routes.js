@@ -16,5 +16,6 @@ router.get('/me/submissions', ctrl.getMySubmissions);
 router.get('/me/fees', ctrl.getMyFees);
 router.get('/me/timetable', ctrl.getMyTimetable);
 router.get('/me/certificates', certificateCtrl.getMyCertificates);
+router.get('/me/dashboard', ctrl.getMyDashboard);
 
 module.exports = router;

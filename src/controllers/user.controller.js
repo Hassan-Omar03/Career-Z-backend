@@ -5,7 +5,7 @@ const { ok } = require('../utils/apiResponse');
 
 // PATCH /api/users/me
 const updateMe = asyncHandler(async (req, res) => {
-  const allowed = ['fullName', 'phone', 'country', 'language', 'currency', 'profilePhoto'];
+  const allowed = ['fullName', 'phone', 'country', 'language', 'currency', 'profilePhoto', 'companyName', 'donorType'];
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) req.user[f] = req.body[f];
   });

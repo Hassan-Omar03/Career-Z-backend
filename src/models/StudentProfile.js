@@ -8,6 +8,8 @@ const studentProfileSchema = new mongoose.Schema(
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
     rollNumber: { type: String, default: '' },
     admissionDate: { type: Date, default: null },
+    program: { type: String, default: '' },
+    currentTerm: { type: String, default: '' },
 
     dateOfBirth: { type: Date, default: null },
     guardianContact: { type: String, default: '' },

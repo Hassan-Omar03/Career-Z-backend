@@ -9,9 +9,18 @@ const Attendance = require('../models/Attendance');
 const Payslip = require('../models/Payslip');
 const Course = require('../models/Course');
 const Exam = require('../models/Exam');
+const User = require('../models/User');
+const Inquiry = require('../models/Inquiry');
+const InstitutionApplication = require('../models/InstitutionApplication');
+const Meeting = require('../models/Meeting');
+const Notification = require('../models/Notification');
+const Message = require('../models/Message');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { notify, notifyParentsOfStudent } = require('../services/notification.service');
+
+const DOW_FULL = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
 
 function slugify(name) {
   return name
@@ -99,7 +108,7 @@ const updateInstitution = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const allowed = ['name', 'city', 'address', 'description', 'contactEmail', 'contactPhone', 'website', 'logo', 'coverImage'];
+  const allowed = ['name', 'city', 'address', 'description', 'contactEmail', 'contactPhone', 'website', 'logo', 'coverImage', 'admissionRequirements', 'admissionDeadline'];
   allowed.forEach((field) => {
     if (req.body[field] !== undefined) institution[field] = req.body[field];
   });
@@ -148,13 +157,13 @@ const addStaff = asyncHandler(async (req, res) => {
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff.', 403);
 
-  const { userId, role, permissions } = req.body;
+  const { userId, role, permissions, department, designation } = req.body;
   if (!userId || !role) throw new AppError('userId and role are required.', 422);
 
   const alreadyStaff = institution.staff.some((s) => s.user.toString() === userId);
   if (alreadyStaff) throw new AppError('User is already staff at this institution.', 409);
 
-  institution.staff.push({ user: userId, role, permissions: permissions || [] });
+  institution.staff.push({ user: userId, role, department: department || '', designation: designation || '', permissions: permissions || [] });
   await institution.save();
 
   const User = require('../models/User');
@@ -162,6 +171,16 @@ const addStaff = asyncHandler(async (req, res) => {
   if (staffUser && !staffUser.roles.includes('institution_staff')) {
     staffUser.roles.push('institution_staff');
     await staffUser.save();
+  }
+
+  // Staff added with the "teacher" role must actually show up in Teacher Management /
+  // be assignable as a class's Class Teacher — both read off TeacherProfile.institutions.
+  if (role === 'teacher') {
+    await TeacherProfile.findOneAndUpdate(
+      { user: userId },
+      { $addToSet: { institutions: institution._id } },
+      { upsert: true }
+    );
   }
 
   return ok(res, institution, 'Staff member added.');
@@ -176,6 +195,9 @@ const removeStaff = asyncHandler(async (req, res) => {
 
   institution.staff = institution.staff.filter((s) => s.user.toString() !== req.params.userId);
   await institution.save();
+
+  await TeacherProfile.findOneAndUpdate({ user: req.params.userId }, { $pull: { institutions: institution._id } });
+
   return ok(res, institution, 'Staff member removed.');
 });
 
@@ -205,8 +227,28 @@ const createClassSection = asyncHandler(async (req, res) => {
 });
 
 const listClassSections = asyncHandler(async (req, res) => {
-  const sections = await ClassSection.find({ institution: req.params.id });
+  const sections = await ClassSection.find({ institution: req.params.id }).populate('classTeacher', 'fullName email');
   return ok(res, sections);
+});
+
+// PATCH /api/institutions/:id/class-sections/:sectionId — mainly for assigning/changing the class teacher
+const updateClassSection = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const allowed = ['name', 'academicYear', 'classTeacher'];
+  const update = {};
+  allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f] || null; });
+
+  const section = await ClassSection.findOneAndUpdate(
+    { _id: req.params.sectionId, institution: institution._id },
+    { $set: update },
+    { new: true }
+  ).populate('classTeacher', 'fullName email');
+  if (!section) throw new AppError('Class section not found.', 404);
+
+  return ok(res, section, 'Class section updated.');
 });
 
 // ---- Fees ----
@@ -229,6 +271,13 @@ const createFee = asyncHandler(async (req, res) => {
     dueDate: dueDate || null,
     recordedBy: req.user._id
   });
+
+  const feeStudent = await User.findById(student).select('fullName');
+  await notifyParentsOfStudent(student, {
+    title: `New fee due for ${feeStudent?.fullName || 'your child'}`,
+    body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` — due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
+    sentBy: req.user._id
+  }).catch(() => {});
 
   return created(res, fee, 'Fee recorded.');
 });
@@ -287,6 +336,14 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
     createdBy: req.user._id
   });
 
+  if (entry.teacher) {
+    await notify(entry.teacher, {
+      title: `New class scheduled: ${subject}`,
+      body: `${DOW_FULL[dayOfWeek] || dayOfWeek} ${startTime}–${endTime}${room ? ` · ${room}` : ''}`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
+
   return created(res, entry, 'Timetable entry added.');
 });
 
@@ -297,12 +354,46 @@ const listTimetable = asyncHandler(async (req, res) => {
   return ok(res, entries);
 });
 
+// PATCH /api/institutions/:id/class-sections/:sectionId/timetable/:entryId — the actual
+// "Class change" event (editing an existing scheduled class, not just adding/removing one).
+const updateTimetableEntry = asyncHandler(async (req, res) => {
+  const entry = await TimetableEntry.findById(req.params.entryId);
+  if (!entry) throw new AppError('Timetable entry not found.', 404);
+
+  const institution = await Institution.findById(entry.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const allowed = ['teacher', 'subject', 'dayOfWeek', 'startTime', 'endTime', 'room', 'meetingLink'];
+  const previousTeacher = entry.teacher;
+  allowed.forEach((f) => { if (req.body[f] !== undefined) entry[f] = req.body[f] || (f === 'teacher' ? null : ''); });
+  await entry.save();
+
+  const notifyTeacherId = entry.teacher || previousTeacher;
+  if (notifyTeacherId) {
+    await notify(notifyTeacherId, {
+      title: `Class changed: ${entry.subject}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}${entry.room ? ` · ${entry.room}` : ''}`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
+
+  return ok(res, entry, 'Timetable entry updated.');
+});
+
 const deleteTimetableEntry = asyncHandler(async (req, res) => {
   const entry = await TimetableEntry.findById(req.params.entryId);
   if (!entry) throw new AppError('Timetable entry not found.', 404);
 
   const institution = await Institution.findById(entry.institution);
   assertOwnerOrStaff(institution, req.user._id);
+
+  if (entry.teacher) {
+    await notify(entry.teacher, {
+      title: `Class cancelled: ${entry.subject}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
 
   await entry.deleteOne();
   return ok(res, { deleted: true }, 'Timetable entry removed.');
@@ -340,13 +431,19 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const { status } = req.body;
-  if (!['active', 'suspended', 'graduated', 'transferred'].includes(status)) {
-    throw new AppError('Invalid status.', 422);
+  const { status, classSection, rollNumber } = req.body;
+  if (status !== undefined) {
+    if (!['active', 'suspended', 'graduated', 'transferred'].includes(status)) {
+      throw new AppError('Invalid status.', 422);
+    }
+    profile.status = status;
   }
-  profile.status = status;
+  // Class Section + Roll Number are normally assigned by the institution's office, not the
+  // student — this is the school-admin side of that assignment.
+  if (classSection !== undefined) profile.classSection = classSection || null;
+  if (rollNumber !== undefined) profile.rollNumber = rollNumber;
   await profile.save();
-  return ok(res, profile, 'Student status updated.');
+  return ok(res, profile, 'Student record updated.');
 });
 
 // ---- Attendance Management (institution-wide reporting) ----
@@ -424,6 +521,13 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
   payslip.status = 'paid';
   payslip.paidAt = new Date();
   await payslip.save();
+
+  await notify(payslip.staff, {
+    title: `Salary paid: ${payslip.currency} ${payslip.netAmount}`,
+    body: `${payslip.month}/${payslip.year} — ${institution.name}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
   return ok(res, payslip, 'Payslip marked as paid.');
 });
 
@@ -491,6 +595,111 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
   return ok(res, withCourseTitle);
 });
 
+// GET /api/institutions/mine/staff-roles — every institution the current user is staff at,
+// and their exact staff.role there. The frontend uses this to decide whether to show the
+// full Institution workspace or the scoped-down Representative dashboard.
+const myStaffRoles = asyncHandler(async (req, res) => {
+  const institutions = await Institution.find({ 'staff.user': req.user._id }).select('name logo staff');
+  const roles = institutions.map((inst) => {
+    const entry = inst.staff.find((s) => s.user.toString() === req.user._id.toString());
+    return { institutionId: inst._id, institutionName: inst.name, institutionLogo: inst.logo, role: entry?.role || 'staff', department: entry?.department || '', permissions: entry?.permissions || [] };
+  });
+  return ok(res, roles);
+});
+
+// GET /api/institutions/mine/rep-dashboard — the Institute Representative home page.
+// Scoped to the first institution where this user's staff.role is "representative".
+const getRepDashboard = asyncHandler(async (req, res) => {
+  const institutions = await Institution.find({ 'staff.user': req.user._id });
+  const withRole = institutions.map((inst) => ({ inst, entry: inst.staff.find((s) => s.user.toString() === req.user._id.toString()) }))
+    .find((x) => x.entry?.role === 'representative');
+
+  if (!withRole) throw new AppError('You are not registered as a Representative at any institution.', 403);
+  const { inst, entry } = withRole;
+
+  const [inquiries, applications, meetings, unreadMessages, campuses] = await Promise.all([
+    Inquiry.find({ institution: inst._id }).populate('student', 'fullName').sort({ createdAt: -1 }),
+    InstitutionApplication.find({ institution: inst._id }).populate('applicant', 'fullName').sort({ createdAt: -1 }),
+    Meeting.find({ institution: inst._id, representative: req.user._id }).populate('student', 'fullName').sort({ scheduledDate: 1 }),
+    Message.countDocuments({ to: req.user._id, read: false }),
+    Campus.find({ institution: inst._id })
+  ]);
+
+  const now = new Date();
+  const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
+  const upcomingMeetings = meetings.filter((m) => m.status === 'scheduled' && m.scheduledDate >= now);
+  const meetingReminders = upcomingMeetings.filter((m) => m.scheduledDate <= in48h);
+  const completedConsultations = meetings.filter((m) => m.status === 'completed').length;
+  const pendingStatuses = ['submitted', 'under_review', 'documents_required'];
+
+  // "Meeting reminder" / "Admission deadline" notifications — this codebase has no
+  // cron/scheduler, so both are checked lazily on real dashboard load, same pattern as the
+  // job-seeker's application-deadline reminder. Deduped by title so refreshing doesn't spam.
+  await Promise.all(meetingReminders.map(async (m) => {
+    const title = `Meeting reminder: ${m.student?.fullName || 'a student'} — ${new Date(m.scheduledDate).toLocaleString()}`;
+    const already = await Notification.findOne({ user: req.user._id, title });
+    if (!already) await notify(req.user._id, { title, body: m.program || inst.name, sentBy: null }).catch(() => {});
+  }));
+  if (inst.admissionDeadline) {
+    const deadline = new Date(inst.admissionDeadline);
+    const in7Days = new Date(now.getTime() + 7 * 24 * 60 * 60 * 1000);
+    if (deadline > now && deadline <= in7Days) {
+      const title = `Admission deadline approaching: ${inst.name}`;
+      const already = await Notification.findOne({ user: req.user._id, title });
+      if (!already) await notify(req.user._id, { title, body: `Deadline: ${deadline.toLocaleDateString()}`, sentBy: null }).catch(() => {});
+    }
+  }
+  const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(8);
+
+  // "Admission progress" — a real, computed stage indicator (not a fabricated number),
+  // derived from where the application actually sits in its own status pipeline.
+  const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, accepted: 100, rejected: 100 };
+  const applicationsWithProgress = applications.map((a) => ({ ...a.toObject(), admissionProgress: PROGRESS_BY_STATUS[a.status] ?? 0 }));
+
+  const recentActivity = [
+    ...inquiries.filter((i) => i.responses.length > 0).map((i) => ({ id: `inq-${i._id}`, title: `Responded to ${i.student?.fullName || 'a student'}'s inquiry`, time: i.updatedAt })),
+    ...inquiries.filter((i) => i.status === 'follow_up').map((i) => ({ id: `inqfu-${i._id}`, title: `Flagged ${i.student?.fullName || 'a student'} for follow-up`, time: i.updatedAt })),
+    ...applications.filter((a) => a.reviewedBy).map((a) => ({ id: `app-${a._id}`, title: `Reviewed ${a.applicant?.fullName || 'an applicant'}'s application (${a.status})`, time: a.updatedAt })),
+    ...applications.filter((a) => !a.reviewedBy && ['under_review', 'documents_required'].includes(a.status)).map((a) => ({ id: `appstat-${a._id}`, title: `Updated ${a.applicant?.fullName || 'an applicant'}'s status to ${a.status.replace('_', ' ')}`, time: a.updatedAt })),
+    ...applications.filter((a) => a.documents?.length > 0).flatMap((a) => a.documents.map((d, di) => ({ id: `doc-${a._id}-${di}`, title: `${a.applicant?.fullName || 'An applicant'} shared a document: ${d.name}`, time: a.updatedAt }))),
+    ...meetings.filter((m) => m.status === 'completed').map((m) => ({ id: `meet-${m._id}`, title: `Completed consultation with ${m.student?.fullName || 'a student'}`, time: m.updatedAt }))
+  ].sort((a, b) => new Date(b.time) - new Date(a.time)).slice(0, 10);
+
+  return ok(res, {
+    profile: {
+      institutionId: inst._id, institutionName: inst.name, institutionLogo: inst.logo,
+      designation: entry.designation || entry.role, department: entry.department || '', verificationStatus: inst.verificationStatus,
+      contactEmail: inst.contactEmail, contactPhone: inst.contactPhone
+    },
+    counts: {
+      newInquiries: inquiries.filter((i) => i.status === 'new').length,
+      assignedApplications: applications.filter((a) => a.assignedRepresentative?.toString() === req.user._id.toString()).length,
+      pendingApplications: applications.filter((a) => pendingStatuses.includes(a.status)).length,
+      upcomingMeetings: upcomingMeetings.length,
+      unreadMessages,
+      completedConsultations
+    },
+    inquiries: inquiries.slice(0, 10),
+    applications: applicationsWithProgress.slice(0, 10),
+    upcomingMeetings: upcomingMeetings.slice(0, 5),
+    followUps: {
+      followUpInquiries: inquiries.filter((i) => i.status === 'follow_up'),
+      documentsRequired: applications.filter((a) => a.status === 'documents_required'),
+      unansweredInquiries: inquiries.filter((i) => i.status === 'new' && i.responses.length === 0),
+      pendingApplicationActions: applications.filter((a) => ['submitted', 'under_review'].includes(a.status)),
+      meetingReminders,
+      admissionDeadline: inst.admissionDeadline
+    },
+    institutionInfo: {
+      admissionRequirements: inst.admissionRequirements,
+      admissionDeadline: inst.admissionDeadline,
+      campuses
+    },
+    recentActivity,
+    notifications
+  });
+});
+
 module.exports = {
   registerInstitution,
   listInstitutions,
@@ -506,11 +715,13 @@ module.exports = {
   listCampuses,
   createClassSection,
   listClassSections,
+  updateClassSection,
   createFee,
   listFees,
   markFeePaid,
   createTimetableEntry,
   listTimetable,
+  updateTimetableEntry,
   deleteTimetableEntry,
   listInstitutionTeachers,
   listInstitutionStudents,
@@ -520,5 +731,7 @@ module.exports = {
   listInstitutionPayroll,
   markPayslipPaid,
   getInstitutionReports,
-  listInstitutionExams
+  listInstitutionExams,
+  myStaffRoles,
+  getRepDashboard
 };

@@ -5,6 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { ROLES, APPROVAL_REQUIRED_ROLES } = require('../config/rbac');
 const { emitToUser } = require('../realtime/socket');
+const { notify } = require('../services/notification.service');
 
 // POST /api/roles/request
 // The role (and its dashboard) is granted immediately so the user isn't stuck
@@ -57,6 +58,20 @@ const myRequests = asyncHandler(async (req, res) => {
   return ok(res, requests);
 });
 
+// POST /api/roles/mine/:role/documents — submit/update verification documents on your own
+// request for that role (e.g. the Agent's "Verification/Documents" page).
+const submitMyDocuments = asyncHandler(async (req, res) => {
+  const { documents } = req.body;
+  if (!Array.isArray(documents)) throw new AppError('documents must be an array of URLs.', 422);
+
+  const request = await RoleRequest.findOne({ user: req.user._id, requestedRole: req.params.role }).sort({ createdAt: -1 });
+  if (!request) throw new AppError('No verification request found for this role.', 404);
+
+  request.documents = documents;
+  await request.save();
+  return ok(res, request, 'Documents submitted.');
+});
+
 // GET /api/roles/pending (admin)
 const pendingRequests = asyncHandler(async (req, res) => {
   const requests = await RoleRequest.find({ status: { $in: ['pending', 'under_review'] } })
@@ -95,7 +110,14 @@ const reviewRequest = asyncHandler(async (req, res) => {
 
   emitToUser(request.user, 'dashboard:update', { reason: 'role-request-reviewed', decision });
 
+  const roleLabel = request.requestedRole.replaceAll('_', ' ');
+  await notify(request.user, {
+    title: `Verification update: your ${roleLabel} account was ${decision}`,
+    body: reviewNotes || '',
+    sentBy: req.user._id
+  }).catch(() => {});
+
   return ok(res, request, `Role request ${decision}.`);
 });
 
-module.exports = { requestRole, myRequests, pendingRequests, reviewRequest };
+module.exports = { requestRole, myRequests, submitMyDocuments, pendingRequests, reviewRequest };

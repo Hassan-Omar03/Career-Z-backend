@@ -8,7 +8,7 @@ const jobApplicationSchema = new mongoose.Schema(
     resumeSnapshot: { type: mongoose.Schema.Types.Mixed, default: null }, // copy of the Resume at time of applying
     status: {
       type: String,
-      enum: ['pending', 'shortlisted', 'interview', 'rejected', 'hired'],
+      enum: ['pending', 'viewed', 'shortlisted', 'interview', 'selected', 'rejected', 'hired'],
       default: 'pending'
     }
   },

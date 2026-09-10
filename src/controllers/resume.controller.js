@@ -11,7 +11,7 @@ const getMyResume = asyncHandler(async (req, res) => {
 
 // PATCH /api/resumes/me
 const updateMyResume = asyncHandler(async (req, res) => {
-  const allowed = ['headline', 'summary', 'education', 'experience', 'skills', 'languages', 'certifications'];
+  const allowed = ['headline', 'summary', 'education', 'experience', 'skills', 'languages', 'certifications', 'location', 'experienceLevel', 'linkedinUrl', 'portfolio', 'cvFileUrl'];
   const update = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
 

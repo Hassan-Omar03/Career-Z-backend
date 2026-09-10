@@ -14,6 +14,8 @@ router.use(protect);
 
 router.post('/', ctrl.registerInstitution);
 router.get('/mine/list', ctrl.myInstitutions);
+router.get('/mine/staff-roles', ctrl.myStaffRoles);
+router.get('/mine/rep-dashboard', ctrl.getRepDashboard);
 router.patch('/:id', ctrl.updateInstitution);
 router.post('/:id/verification-documents', ctrl.submitVerificationDocuments);
 router.patch('/:id/verify', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.reviewVerification);
@@ -24,6 +26,7 @@ router.delete('/:id/staff/:userId', ctrl.removeStaff);
 
 router.post('/:id/campuses', ctrl.createCampus);
 router.post('/:id/class-sections', ctrl.createClassSection);
+router.patch('/:id/class-sections/:sectionId', ctrl.updateClassSection);
 
 router.post('/:id/fees', ctrl.createFee);
 router.get('/:id/fees', ctrl.listFees);
@@ -31,6 +34,7 @@ router.patch('/fees/:feeId/pay', ctrl.markFeePaid);
 
 router.post('/:id/class-sections/:sectionId/timetable', ctrl.createTimetableEntry);
 router.get('/:id/class-sections/:sectionId/timetable', ctrl.listTimetable);
+router.patch('/timetable/:entryId', ctrl.updateTimetableEntry);
 router.delete('/timetable/:entryId', ctrl.deleteTimetableEntry);
 
 router.post('/:id/notifications/broadcast', notificationCtrl.broadcast);

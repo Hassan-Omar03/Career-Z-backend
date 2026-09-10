@@ -5,8 +5,21 @@ const mongoose = require('mongoose');
 const resumeSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, unique: true, index: true },
-    headline: { type: String, default: '' },
+    headline: { type: String, default: '' }, // doubles as "Professional title" on the job-seeker dashboard
     summary: { type: String, default: '' },
+    location: { type: String, default: '' },
+    experienceLevel: { type: String, enum: ['entry', 'mid', 'senior', 'lead', ''], default: '' },
+    linkedinUrl: { type: String, default: '' },
+    // No file storage service is wired up — same paste-a-link pattern as User.profilePhoto.
+    cvFileUrl: { type: String, default: '' },
+    portfolio: [
+      {
+        title: String,
+        url: String,
+        description: String
+      }
+    ],
+    viewCount: { type: Number, default: 0 }, // incremented each time an employer opens this candidate's applicant list
     education: [
       {
         institution: String,

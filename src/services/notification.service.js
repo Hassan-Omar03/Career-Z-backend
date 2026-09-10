@@ -1,4 +1,5 @@
 const Notification = require('../models/Notification');
+const ParentChildLink = require('../models/ParentChildLink');
 const { sendEmail } = require('./email.service');
 
 // Creates an in-app notification, and optionally emails it too.
@@ -21,4 +22,12 @@ async function notifyMany(userIds, payload, options) {
   return Promise.all(userIds.map((id) => notify(id, payload, options)));
 }
 
-module.exports = { notify, notifyMany };
+// Fans a notification out to every parent/guardian approved to see this student
+// (child absence, new result, fee due — the parent dashboard's Notifications feed).
+async function notifyParentsOfStudent(studentId, payload, options) {
+  const links = await ParentChildLink.find({ student: studentId, status: 'approved' });
+  if (links.length === 0) return [];
+  return notifyMany(links.map((l) => l.parent), payload, options);
+}
+
+module.exports = { notify, notifyMany, notifyParentsOfStudent };

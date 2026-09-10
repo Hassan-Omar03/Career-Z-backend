@@ -23,8 +23,21 @@ const userSchema = new mongoose.Schema(
     twoFactorEnabled: { type: Boolean, default: false },
 
     profilePhoto: { type: String, default: null },
+    companyName: { type: String, default: '' }, // Employer/Agent's agency name, or Donor's org name
+    donorType: { type: String, enum: ['individual', 'organization', ''], default: '' },
 
-    lastLoginAt: { type: Date, default: null }
+    lastLoginAt: { type: Date, default: null },
+
+    savedJobs: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Job' }],
+    savedFundingRequests: [{ type: mongoose.Schema.Types.ObjectId, ref: 'FundingRequest' }],
+
+    // "Recently viewed jobs" for the job-seeker dashboard — capped, most-recent-first.
+    recentlyViewedJobs: [
+      {
+        job: { type: mongoose.Schema.Types.ObjectId, ref: 'Job' },
+        viewedAt: { type: Date, default: Date.now }
+      }
+    ]
   },
   { timestamps: true }
 );

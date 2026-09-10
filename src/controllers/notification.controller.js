@@ -3,6 +3,7 @@ const Institution = require('../models/Institution');
 const StudentProfile = require('../models/StudentProfile');
 const TeacherProfile = require('../models/TeacherProfile');
 const ParentChildLink = require('../models/ParentChildLink');
+const User = require('../models/User');
 const { notifyMany } = require('../services/notification.service');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -69,4 +70,18 @@ const broadcast = asyncHandler(async (req, res) => {
   return ok(res, { sentTo: uniqueIds.length }, `Notification sent to ${uniqueIds.length} recipient(s).`);
 });
 
-module.exports = { listMine, markRead, markAllRead, broadcast };
+// POST /api/notifications/platform-announcement — super_admin-only, platform-wide. Covers Donor
+// Notifications item "Platform announcement" (and is equally usable for any other role's feed,
+// since it's the same shared Notification model/UI everyone already reads from).
+const platformAnnouncement = asyncHandler(async (req, res) => {
+  const { title, body, roles } = req.body;
+  if (!title) throw new AppError('title is required.', 422);
+
+  const filter = roles && roles.length > 0 ? { roles: { $in: roles } } : {};
+  const users = await User.find(filter).select('_id');
+  await notifyMany(users.map((u) => u._id), { title: `Platform announcement: ${title}`, body: body || '', sentBy: req.user._id });
+
+  return ok(res, { sentTo: users.length }, `Announcement sent to ${users.length} user(s).`);
+});
+
+module.exports = { listMine, markRead, markAllRead, broadcast, platformAnnouncement };

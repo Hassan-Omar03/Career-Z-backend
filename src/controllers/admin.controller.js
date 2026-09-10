@@ -38,7 +38,7 @@ const getPlatformReports = asyncHandler(async (req, res) => {
     Institution.aggregate([{ $group: { _id: '$verificationStatus', count: { $sum: 1 } } }]),
     Course.countDocuments(),
     Job.countDocuments(),
-    Job.countDocuments({ status: 'open' }),
+    Job.countDocuments({ status: 'active' }),
     Scholarship.countDocuments(),
     Scholarship.countDocuments({ status: 'open' })
   ]);

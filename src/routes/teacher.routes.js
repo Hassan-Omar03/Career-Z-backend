@@ -12,5 +12,6 @@ router.post('/me/attendance', ctrl.markAttendance);
 router.get('/me/attendance', ctrl.listAttendance);
 router.get('/me/timetable', ctrl.getMyTimetable);
 router.get('/me/payslips', ctrl.getMyPayslips);
+router.get('/me/dashboard', ctrl.getMyDashboard);
 
 module.exports = router;

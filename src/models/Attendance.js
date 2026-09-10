@@ -10,7 +10,8 @@ const attendanceSchema = new mongoose.Schema(
     records: [
       {
         student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        status: { type: String, enum: ['present', 'absent', 'late', 'excused'], required: true }
+        status: { type: String, enum: ['present', 'absent', 'late', 'excused'], required: true },
+        reason: { type: String, default: '' }
       }
     ]
   },

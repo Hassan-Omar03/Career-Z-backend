@@ -7,10 +7,12 @@ const Result = require('../models/Result');
 const Exam = require('../models/Exam');
 const ExamSubmission = require('../models/ExamSubmission');
 const TeacherProfile = require('../models/TeacherProfile');
+const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { isRoleVerified } = require('../utils/roleVerification');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { notify, notifyParentsOfStudent } = require('../services/notification.service');
 
 function assertTeacherOwnsCourse(course, userId) {
   if (course.teacher.toString() !== userId.toString()) {
@@ -74,9 +76,19 @@ const myCourses = asyncHandler(async (req, res) => {
 
 // GET /api/courses/:id
 const getCourse = asyncHandler(async (req, res) => {
-  const course = await Course.findById(req.params.id).populate('teacher', 'fullName');
+  const course = await Course.findById(req.params.id).populate('teacher', 'fullName').populate('institution', 'name');
   if (!course) throw new AppError('Course not found.', 404);
-  const lessons = await Lesson.find({ course: course._id }).sort({ order: 1 });
+
+  // Lesson content/resources are only for the owning teacher or an enrolled student —
+  // an unpublished (or someone else's) course should not leak its material to a browser.
+  const isOwner = req.user && course.teacher.toString() === req.user._id.toString();
+  let canSeeLessons = isOwner || course.published;
+  if (!canSeeLessons && req.user) {
+    const enrollment = await Enrollment.findOne({ student: req.user._id, course: course._id });
+    canSeeLessons = Boolean(enrollment);
+  }
+
+  const lessons = canSeeLessons ? await Lesson.find({ course: course._id }).sort({ order: 1 }) : [];
   return ok(res, { course, lessons });
 });
 
@@ -123,6 +135,27 @@ const updateLesson = asyncHandler(async (req, res) => {
   });
   await lesson.save();
   return ok(res, lesson);
+});
+
+// PATCH /api/courses/lessons/:lessonId/complete — student marks a lesson watched/done;
+// recalculates the enrollment's progressPercent from real completed-vs-total lesson counts.
+const completeLesson = asyncHandler(async (req, res) => {
+  const lesson = await Lesson.findById(req.params.lessonId);
+  if (!lesson) throw new AppError('Lesson not found.', 404);
+
+  const enrollment = await Enrollment.findOne({ student: req.user._id, course: lesson.course });
+  if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
+
+  enrollment.completedLessons.addToSet(lesson._id);
+  const totalLessons = await Lesson.countDocuments({ course: lesson.course });
+  enrollment.progressPercent = totalLessons > 0 ? Math.round((enrollment.completedLessons.length / totalLessons) * 100) : 0;
+  if (enrollment.progressPercent >= 100 && enrollment.status === 'active') {
+    enrollment.status = 'completed';
+    enrollment.completedAt = new Date();
+  }
+  await enrollment.save();
+
+  return ok(res, enrollment, 'Lesson marked complete.');
 });
 
 // ---- Enrollment ----
@@ -213,6 +246,13 @@ const submitAssignment = asyncHandler(async (req, res) => {
     text,
     attachments: attachments || []
   });
+
+  await notify(assignment.teacher, {
+    title: `${req.user.fullName} submitted "${assignment.title}"`,
+    body: 'A new assignment submission is waiting for you to grade.',
+    sentBy: req.user._id
+  }).catch(() => {});
+
   return created(res, submission, 'Assignment submitted.');
 });
 
@@ -277,6 +317,13 @@ const recordResult = asyncHandler(async (req, res) => {
     recordedBy: req.user._id
   });
 
+  const studentUser = await User.findById(student).select('fullName');
+  await notifyParentsOfStudent(student, {
+    title: `New result posted for ${studentUser?.fullName || 'your child'}`,
+    body: `${result.subject || course.subject}: ${marksObtained}/${totalMarks}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
   return created(res, result, 'Result recorded.');
 });
 
@@ -288,7 +335,7 @@ const createExam = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const { title, type, durationMinutes, scheduledDate, questions } = req.body;
+  const { title, type, durationMinutes, scheduledDate, venue, instructions, questions } = req.body;
   if (!title || !Array.isArray(questions) || questions.length === 0) {
     throw new AppError('title and at least one question are required.', 422);
   }
@@ -300,6 +347,8 @@ const createExam = asyncHandler(async (req, res) => {
     type: type || 'quiz',
     durationMinutes: durationMinutes || 0,
     scheduledDate: scheduledDate || null,
+    venue: venue || '',
+    instructions: instructions || '',
     questions
   });
   return created(res, exam, 'Exam created (unpublished).');
@@ -335,6 +384,17 @@ const publishExam = asyncHandler(async (req, res) => {
 
   exam.published = true;
   await exam.save();
+
+  // "Upcoming examination" notification for parents — only meaningful once a date is set.
+  if (exam.scheduledDate) {
+    const enrolledStudents = await Enrollment.find({ course: exam.course }).select('student');
+    await Promise.all(enrolledStudents.map((e) => notifyParentsOfStudent(e.student, {
+      title: `Upcoming examination: ${exam.title}`,
+      body: new Date(exam.scheduledDate).toLocaleString(),
+      sentBy: req.user._id
+    }).catch(() => {})));
+  }
+
   return ok(res, exam, 'Exam published.');
 });
 
@@ -376,6 +436,12 @@ const submitExam = asyncHandler(async (req, res) => {
     status: hasShortAnswer ? 'submitted' : 'graded'
   });
 
+  await notify(exam.teacher, {
+    title: `${req.user.fullName} submitted "${exam.title}"`,
+    body: hasShortAnswer ? 'Short-answer questions need your grading.' : `Auto-graded: ${score}/${exam.toObject().totalMarks}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
   if (!hasShortAnswer) {
     await Result.create({
       student: req.user._id,
@@ -387,6 +453,11 @@ const submitExam = asyncHandler(async (req, res) => {
       totalMarks: exam.toObject().totalMarks,
       recordedBy: exam.teacher
     });
+    await notifyParentsOfStudent(req.user._id, {
+      title: `New result posted for ${req.user.fullName}`,
+      body: `${exam.title}: ${score}/${exam.toObject().totalMarks}`,
+      sentBy: exam.teacher
+    }).catch(() => {});
   }
 
   return created(res, submission, 'Exam submitted.');
@@ -434,12 +505,19 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
     recordedBy: req.user._id
   });
 
+  const gradedStudent = await User.findById(submission.student).select('fullName');
+  await notifyParentsOfStudent(submission.student, {
+    title: `New result posted for ${gradedStudent?.fullName || 'your child'}`,
+    body: `${submission.exam.title}: ${submission.score}/${submission.exam.toObject().totalMarks}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
   return ok(res, submission, 'Exam graded.');
 });
 
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
-  addLesson, updateLesson,
+  addLesson, updateLesson, completeLesson,
   enroll, listEnrolledStudents,
   createAssignment, listAssignments,
   submitAssignment, listSubmissions, gradeSubmission,

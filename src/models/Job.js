@@ -7,9 +7,12 @@ const jobSchema = new mongoose.Schema(
     company: { type: String, required: true, trim: true },
     type: {
       type: String,
-      enum: ['full_time', 'part_time', 'remote', 'hybrid', 'internship', 'freelance', 'government', 'ngo'],
+      enum: ['full_time', 'part_time', 'internship', 'freelance', 'government', 'ngo'],
       default: 'full_time'
     },
+    // Separate from `type` (employment type) — "Onsite/Remote/Hybrid" is its own field per the
+    // job-seeker dashboard spec, since a job can be e.g. full_time AND remote at once.
+    workMode: { type: String, enum: ['onsite', 'remote', 'hybrid'], default: 'onsite' },
     country: { type: String, required: true },
     city: { type: String, default: '' },
     salaryMin: { type: Number, default: null },
@@ -24,7 +27,7 @@ const jobSchema = new mongoose.Schema(
     companyLogo: { type: String, default: null },
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
-    status: { type: String, enum: ['open', 'closed'], default: 'open' },
+    status: { type: String, enum: ['draft', 'active', 'paused', 'closed', 'filled'], default: 'active' },
     isGovernment: { type: Boolean, default: false }
   },
   { timestamps: true }

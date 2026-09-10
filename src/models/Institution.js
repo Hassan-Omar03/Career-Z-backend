@@ -19,6 +19,8 @@ const institutionSchema = new mongoose.Schema(
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
     website: { type: String, default: '' },
+    admissionRequirements: { type: String, default: '' },
+    admissionDeadline: { type: Date, default: null },
 
     verificationStatus: {
       type: String,
@@ -30,7 +32,9 @@ const institutionSchema = new mongoose.Schema(
     staff: [
       {
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
-        role: { type: String, default: 'staff' }, // e.g. principal, accountant, hr, teacher_coordinator
+        role: { type: String, default: 'staff' }, // routing key — must be an exact value like 'representative'/'teacher' for workspace access
+        designation: { type: String, default: '' }, // free-text job title shown on the dashboard, e.g. "Senior Admissions Officer"
+        department: { type: String, default: '' },
         permissions: [{ type: String }],
         addedAt: { type: Date, default: Date.now }
       }

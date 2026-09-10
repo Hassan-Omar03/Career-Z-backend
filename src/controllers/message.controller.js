@@ -26,8 +26,8 @@ const listConversations = asyncHandler(async (req, res) => {
   const userId = req.user._id;
   const messages = await Message.find({ $or: [{ from: userId }, { to: userId }] })
     .sort({ createdAt: -1 })
-    .populate('from', 'fullName email')
-    .populate('to', 'fullName email');
+    .populate('from', 'fullName email roles')
+    .populate('to', 'fullName email roles');
 
   const seen = new Map();
   for (const m of messages) {

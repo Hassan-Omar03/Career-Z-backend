@@ -3,9 +3,18 @@ const Course = require('../models/Course');
 const Attendance = require('../models/Attendance');
 const TimetableEntry = require('../models/TimetableEntry');
 const Payslip = require('../models/Payslip');
+const User = require('../models/User');
+const Assignment = require('../models/Assignment');
+const Submission = require('../models/Submission');
+const Enrollment = require('../models/Enrollment');
+const Exam = require('../models/Exam');
+const Notification = require('../models/Notification');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
+const { notifyParentsOfStudent } = require('../services/notification.service');
+
+const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
 // GET /api/teachers/me
 const getMyProfile = asyncHandler(async (req, res) => {
@@ -68,6 +77,17 @@ const markAttendance = asyncHandler(async (req, res) => {
     records
   });
 
+  // Parent dashboard's "Child absent" notification — fired the moment attendance goes in.
+  const absentIds = records.filter((r) => r.status === 'absent').map((r) => r.student);
+  if (absentIds.length > 0) {
+    const absentStudents = await User.find({ _id: { $in: absentIds } }).select('fullName');
+    await Promise.all(absentStudents.map((s) => notifyParentsOfStudent(s._id, {
+      title: `${s.fullName} was marked absent today`,
+      body: new Date(date).toLocaleDateString(),
+      sentBy: req.user._id
+    }).catch(() => {})));
+  }
+
   return ok(res, attendance, 'Attendance recorded.');
 });
 
@@ -93,4 +113,78 @@ const getMyPayslips = asyncHandler(async (req, res) => {
   return ok(res, payslips);
 });
 
-module.exports = { getMyProfile, updateMyProfile, getMyClasses, markAttendance, listAttendance, getMyTimetable, getMyPayslips };
+// GET /api/teachers/me/dashboard — the Teacher home page's single aggregation call: today's
+// classes, today's attendance summary, pending-vs-submitted assignments, upcoming exams,
+// salary summary (this teacher's own payslips only) and a recent-notifications preview.
+const getMyDashboard = asyncHandler(async (req, res) => {
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+  const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
+  const today = DOW_BY_JS_DAY[new Date().getDay()];
+
+  const [todayClasses, todayAttendanceSheets, courses, exams, payslips, notifications] = await Promise.all([
+    TimetableEntry.find({ teacher: req.user._id, dayOfWeek: today }).populate('classSection', 'name').sort({ startTime: 1 }),
+    Attendance.find({ markedBy: req.user._id, date: { $gte: startOfDay, $lte: endOfDay } }),
+    Course.find({ teacher: req.user._id }),
+    Exam.find({ teacher: req.user._id, published: true, scheduledDate: { $gte: new Date() } }).populate('course', 'title subject').sort({ scheduledDate: 1 }).limit(5),
+    Payslip.find({ staff: req.user._id }).sort({ year: -1, month: -1 }),
+    Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(8)
+  ]);
+
+  // Today's attendance summary — every student marked across every sheet the teacher took today.
+  let totalMarked = 0, present = 0, absent = 0;
+  todayAttendanceSheets.forEach((sheet) => {
+    sheet.records.forEach((r) => {
+      totalMarked += 1;
+      if (r.status === 'present') present += 1;
+      if (r.status === 'absent') absent += 1;
+    });
+  });
+
+  // Pending vs submitted, across every assignment this teacher has posted.
+  const courseIds = courses.map((c) => c._id);
+  const assignments = await Assignment.find({ course: { $in: courseIds } });
+  const assignmentIds = assignments.map((a) => a._id);
+  const [submissions, enrollmentsByCourse] = await Promise.all([
+    Submission.find({ assignment: { $in: assignmentIds } }),
+    Enrollment.find({ course: { $in: courseIds } })
+  ]);
+  const enrolledCountByCourse = {};
+  enrollmentsByCourse.forEach((e) => {
+    const key = e.course.toString();
+    enrolledCountByCourse[key] = (enrolledCountByCourse[key] || 0) + 1;
+  });
+  const submittedCountByAssignment = {};
+  submissions.forEach((s) => {
+    const key = s.assignment.toString();
+    submittedCountByAssignment[key] = (submittedCountByAssignment[key] || 0) + 1;
+  });
+  let totalSubmitted = 0, totalPending = 0;
+  assignments.forEach((a) => {
+    const enrolled = enrolledCountByCourse[a.course.toString()] || 0;
+    const submitted = submittedCountByAssignment[a._id.toString()] || 0;
+    totalSubmitted += submitted;
+    totalPending += Math.max(enrolled - submitted, 0);
+  });
+
+  // Salary summary — this teacher's own payslips only, never another staff member's.
+  const received = payslips.filter((p) => p.status === 'paid').reduce((sum, p) => sum + p.netAmount, 0);
+  const pending = payslips.filter((p) => p.status === 'pending').reduce((sum, p) => sum + p.netAmount, 0);
+  const latest = payslips[0] || null;
+
+  return ok(res, {
+    todayClasses: todayClasses.map((c) => ({ id: c._id, subject: c.subject, classSection: c.classSection?.name || '', startTime: c.startTime, endTime: c.endTime, meetingLink: c.meetingLink })),
+    todayAttendance: { total: totalMarked, present, absent },
+    assignmentsOverview: { submitted: totalSubmitted, pending: totalPending, totalAssignments: assignments.length },
+    upcomingExams: exams.map((e) => ({ id: e._id, title: e.title, type: e.type, courseTitle: e.course?.title || '', subject: e.course?.subject || '', scheduledDate: e.scheduledDate })),
+    salary: {
+      currency: latest?.currency || 'USD',
+      monthly: latest?.netAmount || 0,
+      total: received + pending,
+      received,
+      pending
+    },
+    notifications
+  });
+});
+
+module.exports = { getMyProfile, updateMyProfile, getMyClasses, markAttendance, listAttendance, getMyTimetable, getMyPayslips, getMyDashboard };
