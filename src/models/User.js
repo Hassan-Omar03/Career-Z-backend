@@ -22,9 +22,10 @@ const userSchema = new mongoose.Schema(
 
     twoFactorEnabled: { type: Boolean, default: false },
 
-    profilePhoto: { type: String, default: null },
-    companyName: { type: String, default: '' }, // Employer/Agent's agency name, or Donor's org name
+    profilePhoto: { type: String, default: null }, // also doubles as a Marketplace Seller's store logo
+    companyName: { type: String, default: '' }, // Employer/Agent's agency name, Donor's org name, or Seller's store name
     donorType: { type: String, enum: ['individual', 'organization', ''], default: '' },
+    storeStatus: { type: String, enum: ['open', 'closed'], default: 'open' }, // Marketplace Seller's own open/closed toggle
 
     lastLoginAt: { type: Date, default: null },
 

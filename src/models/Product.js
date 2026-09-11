@@ -14,7 +14,16 @@ const productSchema = new mongoose.Schema(
     currency: { type: String, default: 'USD' },
     stock: { type: Number, default: 0, min: 0 },
     images: [{ type: String }],
-    status: { type: String, enum: ['active', 'inactive'], default: 'active' }
+    views: { type: Number, default: 0 }, // real page views, incremented on getProduct
+    // draft: seller hasn't submitted it yet -> pending_approval: submitted, awaiting Super Admin
+    // review -> active: approved and live -> rejected: admin declined (see reviewNotes) ->
+    // out_of_stock: system-set automatically when stock hits 0 -> paused: seller took it down themselves.
+    status: {
+      type: String,
+      enum: ['draft', 'pending_approval', 'active', 'rejected', 'out_of_stock', 'paused'],
+      default: 'pending_approval'
+    },
+    reviewNotes: { type: String, default: '' }
   },
   { timestamps: true }
 );
