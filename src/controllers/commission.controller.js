@@ -5,6 +5,8 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
+const { generateTransactionId } = require('../utils/transactionId');
+const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 const COMMISSION_RATE_KEY = 'commission_rate_percent';
 const DEFAULT_COMMISSION_RATE = 10;
@@ -85,8 +87,12 @@ const updateCommissionStatus = asyncHandler(async (req, res) => {
 // currency. Doesn't move real money (no payment processor in this app) — creates a real,
 // trackable request record instead of pretending a payout happened.
 const requestWithdrawal = asyncHandler(async (req, res) => {
-  const { currency } = req.body;
+  const { currency, payoutMethod, payoutDetails } = req.body;
   if (!currency) throw new AppError('currency is required.', 422);
+  if (!payoutMethod || !PAYOUT_METHOD_LABEL[payoutMethod]) {
+    throw new AppError('A valid payoutMethod is required (bank_transfer, mobile_wallet or other).', 422);
+  }
+  if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
 
   const available = await Commission.find({ agent: req.user._id, status: 'available', currency });
   if (available.length === 0) throw new AppError('No available commission balance in that currency.', 422);
@@ -96,7 +102,9 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
     agent: req.user._id,
     amount,
     currency,
-    commissions: available.map((c) => c._id)
+    commissions: available.map((c) => c._id),
+    payoutMethod,
+    payoutDetails: payoutDetails.trim()
   });
 
   return created(res, withdrawal, 'Withdrawal requested.');
@@ -121,6 +129,7 @@ const updateWithdrawalStatus = asyncHandler(async (req, res) => {
   withdrawal.status = status;
   if (status === 'paid') {
     withdrawal.processedAt = new Date();
+    withdrawal.transactionId = generateTransactionId();
     await Commission.updateMany({ _id: { $in: withdrawal.commissions } }, { status: 'paid' });
   }
   await withdrawal.save();
@@ -128,7 +137,7 @@ const updateWithdrawalStatus = asyncHandler(async (req, res) => {
   const WITHDRAWAL_NOTIFY_TITLE = {
     requested: `Withdrawal requested: ${withdrawal.currency} ${withdrawal.amount}`,
     processing: `Withdrawal processing: ${withdrawal.currency} ${withdrawal.amount}`,
-    paid: `Payment received: ${withdrawal.currency} ${withdrawal.amount}`,
+    paid: `Payout sent: ${withdrawal.currency} ${withdrawal.amount} (receipt ${withdrawal.transactionId})`,
     rejected: `Withdrawal rejected: ${withdrawal.currency} ${withdrawal.amount}`
   };
   await notify(withdrawal.agent, {

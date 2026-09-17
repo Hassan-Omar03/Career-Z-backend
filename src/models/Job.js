@@ -28,7 +28,11 @@ const jobSchema = new mongoose.Schema(
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
     status: { type: String, enum: ['draft', 'active', 'paused', 'closed', 'filled'], default: 'active' },
-    isGovernment: { type: Boolean, default: false }
+    isGovernment: { type: Boolean, default: false },
+    // Revenue: Part 4.26 "Featured Jobs" — employer/agent pays to have a listing shown first
+    // with a badge. featuredUntil is cleared (not just left stale) once it lapses, in listJobs.
+    featured: { type: Boolean, default: false },
+    featuredUntil: { type: Date, default: null }
   },
   { timestamps: true }
 );

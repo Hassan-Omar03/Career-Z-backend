@@ -9,6 +9,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { isRoleVerified } = require('../utils/roleVerification');
 const { notify } = require('../services/notification.service');
+const { generateTransactionId } = require('../utils/transactionId');
+const { PAYMENT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 function assertOwnsScholarship(scholarship, userId) {
   if (scholarship.donor.toString() !== userId.toString()) {
@@ -308,10 +310,13 @@ const recordSponsorshipPayment = asyncHandler(async (req, res) => {
 // POST /api/scholarships/donor/deposit — request to fund the wallet. No real payment
 // processor in this app — this creates a real, trackable request, not fake money.
 const requestDeposit = asyncHandler(async (req, res) => {
-  const { amount, currency } = req.body;
+  const { amount, currency, paymentMethod } = req.body;
   if (!amount || amount <= 0) throw new AppError('amount must be a positive number.', 422);
+  if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
+    throw new AppError('A valid paymentMethod is required (bank_transfer, card, mobile_wallet, cash or other).', 422);
+  }
 
-  const deposit = await DonorDeposit.create({ donor: req.user._id, amount, currency: currency || 'USD' });
+  const deposit = await DonorDeposit.create({ donor: req.user._id, amount, currency: currency || 'USD', paymentMethod });
   return created(res, deposit, 'Deposit requested.');
 });
 
@@ -329,10 +334,13 @@ const updateDepositStatus = asyncHandler(async (req, res) => {
   const deposit = await DonorDeposit.findById(req.params.id);
   if (!deposit) throw new AppError('Deposit not found.', 404);
   deposit.status = status;
+  if (status === 'confirmed') deposit.transactionId = generateTransactionId();
   await deposit.save();
 
   await notify(deposit.donor, {
-    title: `Deposit ${status}: ${deposit.currency} ${deposit.amount}`,
+    title: status === 'confirmed'
+      ? `Deposit confirmed: ${deposit.currency} ${deposit.amount} (receipt ${deposit.transactionId})`
+      : `Deposit ${status}: ${deposit.currency} ${deposit.amount}`,
     sentBy: req.user._id
   }).catch(() => {});
 

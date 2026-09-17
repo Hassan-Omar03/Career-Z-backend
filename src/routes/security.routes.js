@@ -1,9 +1,9 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/security.controller');
 const { protect } = require('../middleware/auth');
-const { requireRole } = require('../middleware/rbac');
+const { requireRole, requireDepartment } = require('../middleware/rbac');
 
-router.use(protect, requireRole('admin', 'super_admin', 'platform_staff'));
+router.use(protect, requireRole('admin', 'super_admin', 'platform_staff'), requireDepartment('security'));
 
 router.get('/login-attempts', ctrl.listLoginAttempts);
 router.get('/blocked-ips', ctrl.listBlockedIps);

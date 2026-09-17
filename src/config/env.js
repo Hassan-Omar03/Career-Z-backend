@@ -20,5 +20,38 @@ module.exports = {
     user: process.env.SMTP_USER || '',
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || 'CareerZ <no-reply@careerz.local>'
-  }
+  },
+  // Real Stripe integration (client-provided in production — no keys are baked into this repo).
+  // secretKey empty = Stripe is treated as "not configured" and card-checkout is disabled with a
+  // clear error, rather than silently pretending to work.
+  stripe: {
+    secretKey: process.env.STRIPE_SECRET_KEY || '',
+    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
+    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || ''
+  },
+  // Real Paddle (Billing) integration — CareerZ's primary worldwide card/Apple Pay/Google Pay
+  // gateway (client-provided, platform-wide, same pattern as Stripe above). Paddle is a
+  // Merchant of Record: CareerZ is the single seller Paddle sees, and pays institutions out
+  // separately/internally — Paddle never auto-splits funds to individual institutions.
+  paddle: {
+    apiKey: process.env.PADDLE_API_KEY || '',
+    clientToken: process.env.PADDLE_CLIENT_TOKEN || '',
+    webhookSecret: process.env.PADDLE_WEBHOOK_SECRET || '',
+    environment: process.env.PADDLE_ENVIRONMENT || 'sandbox' // 'sandbox' | 'production'
+  },
+  // Real machine translation (spec Part 16F "Smart Language Engine" — Dynamic Translation).
+  // provider: 'mymemory' (default — free, no key needed, ~5-10k words/day) or 'libretranslate'
+  // (genuinely unlimited and free forever, but only once self-hosted on the client's own VPS —
+  // set LIBRETRANSLATE_URL to switch, e.g. http://localhost:5555 or their server's address).
+  translation: {
+    provider: process.env.TRANSLATION_PROVIDER || 'mymemory',
+    myMemoryEmail: process.env.MYMEMORY_EMAIL || '', // optional — raises the free daily cap
+    libretranslateUrl: process.env.LIBRETRANSLATE_URL || '',
+    libretranslateApiKey: process.env.LIBRETRANSLATE_API_KEY || ''
+  },
+  // Key used to encrypt each user's own BYOK AI API key at rest (spec Part 17E "AI Security" —
+  // "کسی Institution کی API Key ... Encrypt ہو کر محفوظ ہوگی"). Falls back to deriving from the
+  // JWT secret only so dev/test never crashes for lack of a dedicated var — production should
+  // set ENCRYPTION_KEY explicitly and keep it stable (rotating it makes stored keys unreadable).
+  encryptionKey: process.env.ENCRYPTION_KEY || `careerz_dev_derived_${process.env.JWT_ACCESS_SECRET || 'dev_access_secret'}`
 };

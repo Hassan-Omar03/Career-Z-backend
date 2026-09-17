@@ -1,6 +1,7 @@
 const Notification = require('../models/Notification');
 const ParentChildLink = require('../models/ParentChildLink');
-const { sendEmail } = require('./email.service');
+const User = require('../models/User');
+const { sendEmail, noticeEmailTemplate } = require('./email.service');
 
 // Creates an in-app notification, and optionally emails it too.
 // Never throws on email failure — a broken SMTP config must not block the in-app notification.
@@ -9,7 +10,12 @@ async function notify(userId, { title, body = '', sentBy = null }, { email = fal
 
   if (email && toAddress) {
     try {
-      await sendEmail({ to: toAddress, subject: title, text: body, html: `<p>${body}</p>` });
+      await sendEmail({
+        to: toAddress,
+        subject: title,
+        text: body,
+        html: noticeEmailTemplate({ heading: title, body })
+      });
     } catch (err) {
       console.error('[notification.service] Failed to email notification:', err.message);
     }
@@ -30,4 +36,16 @@ async function notifyParentsOfStudent(studentId, payload, options) {
   return notifyMany(links.map((l) => l.parent), payload, options);
 }
 
-module.exports = { notify, notifyMany, notifyParentsOfStudent };
+// Fans a notification (in-app + email) out to every Admin/Super Admin — used whenever a new
+// account/role/institution submits documents that need review, so Super Admin is always
+// connected to every account type's approval pipeline (spec: no account goes live without
+// admin review of its documents).
+async function notifyAdmins(payload) {
+  const admins = await User.find({ roles: { $in: ['admin', 'super_admin'] } }).select('email');
+  if (admins.length === 0) return [];
+  return Promise.all(
+    admins.map((admin) => notify(admin._id, payload, { email: true, toAddress: admin.email }))
+  );
+}
+
+module.exports = { notify, notifyMany, notifyParentsOfStudent, notifyAdmins };

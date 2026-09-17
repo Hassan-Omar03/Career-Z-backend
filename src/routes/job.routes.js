@@ -5,9 +5,14 @@ const { requireRole } = require('../middleware/rbac');
 
 // Public browsing — no login required to search jobs.
 router.get('/', optionalAuth, ctrl.listJobs);
+// Must stay above '/:id' — otherwise "featured-fee" would be captured as an :id value.
+router.get('/featured-fee', optionalAuth, ctrl.getFeaturedFee);
 router.get('/:id', optionalAuth, ctrl.getJob);
 
 router.use(protect);
+
+router.patch('/featured-fee', requireRole('super_admin'), ctrl.setFeaturedFee);
+router.post('/:id/feature', requireRole('employer', 'education_agent'), ctrl.featureJob);
 
 // Employer / agent — posting and managing jobs.
 router.post('/', requireRole('employer', 'education_agent'), ctrl.createJob);

@@ -1,3 +1,4 @@
+const crypto = require('crypto');
 const Institution = require('../models/Institution');
 const Campus = require('../models/Campus');
 const ClassSection = require('../models/ClassSection');
@@ -6,6 +7,8 @@ const TimetableEntry = require('../models/TimetableEntry');
 const TeacherProfile = require('../models/TeacherProfile');
 const StudentProfile = require('../models/StudentProfile');
 const Attendance = require('../models/Attendance');
+const StaffAttendance = require('../models/StaffAttendance');
+const CampusBuilding = require('../models/CampusBuilding');
 const Payslip = require('../models/Payslip');
 const Course = require('../models/Course');
 const Exam = require('../models/Exam');
@@ -15,10 +18,16 @@ const InstitutionApplication = require('../models/InstitutionApplication');
 const Meeting = require('../models/Meeting');
 const Notification = require('../models/Notification');
 const Message = require('../models/Message');
+const ParentChildLink = require('../models/ParentChildLink');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
-const { notify, notifyParentsOfStudent } = require('../services/notification.service');
+const { notify, notifyParentsOfStudent, notifyAdmins } = require('../services/notification.service');
+const { generateTransactionId } = require('../utils/transactionId');
+const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
+const { computeReceiptAmounts } = require('../utils/receiptCalc');
+
+const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
 const DOW_FULL = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
 
@@ -133,6 +142,11 @@ const submitVerificationDocuments = asyncHandler(async (req, res) => {
   institution.verificationStatus = 'under_review';
   await institution.save();
 
+  notifyAdmins({
+    title: `New institution verification request: ${institution.name}`,
+    body: `${req.user.fullName} (${req.user.email}) submitted ${documents.length} document(s) for "${institution.name}". Please review before it can go live.`
+  }).catch(() => {});
+
   return ok(res, institution, 'Documents submitted for review.');
 });
 
@@ -146,6 +160,18 @@ const reviewVerification = asyncHandler(async (req, res) => {
 
   institution.verificationStatus = decision;
   await institution.save();
+
+  const owner = await User.findById(institution.owner).select('fullName email');
+  if (owner) {
+    const body = decision === 'approved'
+      ? `Congratulations! "${institution.name}" has been verified and approved. Your institution is now live and visible to students, parents and teachers on CareerZ.${notes ? `\n\nAdmin notes: ${notes}` : ''}`
+      : `Your institution "${institution.name}" verification was rejected.${notes ? `\n\nReason: ${notes}` : ' Please review your submitted documents and resubmit.'}`;
+    notify(owner._id, {
+      title: `Institution verification ${decision}: ${institution.name}`,
+      body,
+      sentBy: req.user._id
+    }, { email: true, toAddress: owner.email }).catch(() => {});
+  }
 
   return ok(res, institution, `Institution verification ${decision}.`);
 });
@@ -199,6 +225,65 @@ const removeStaff = asyncHandler(async (req, res) => {
   await TeacherProfile.findOneAndUpdate({ user: req.params.userId }, { $pull: { institutions: institution._id } });
 
   return ok(res, institution, 'Staff member removed.');
+});
+
+// GET /api/institutions/:id/staff-attendance — owner/staff view of everyone's real self-check-ins
+// (spec 15D.9). Populated from the same StaffAttendance records teachers create themselves.
+const listStaffAttendance = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const records = await StaffAttendance.find({ institution: institution._id })
+    .populate('staff', 'fullName profilePhoto')
+    .sort({ date: -1 })
+    .limit(200);
+  return ok(res, records);
+});
+
+// ---- Virtual Campus Tour (real 3D map, built from the institution's own building data) ----
+
+// GET /api/institutions/:id/campus-buildings — public: anyone (student, parent, prospective
+// applicant) can view the tour without being staff, same as browsing the institution's profile.
+const listCampusBuildings = asyncHandler(async (req, res) => {
+  const buildings = await CampusBuilding.find({ institution: req.params.id }).sort({ order: 1, createdAt: 1 });
+  return ok(res, buildings);
+});
+
+const createCampusBuilding = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const { name, type, color, positionX, positionZ, width, depth, floors, description, photo } = req.body;
+  if (!name) throw new AppError('Building name is required.', 422);
+
+  const building = await CampusBuilding.create({
+    institution: institution._id, name, type, color, positionX, positionZ, width, depth, floors, description, photo
+  });
+  return created(res, building, 'Building added to the campus tour.');
+});
+
+const updateCampusBuilding = asyncHandler(async (req, res) => {
+  const building = await CampusBuilding.findById(req.params.buildingId);
+  if (!building) throw new AppError('Building not found.', 404);
+  const institution = await Institution.findById(building.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const allowed = ['name', 'type', 'color', 'positionX', 'positionZ', 'width', 'depth', 'floors', 'description', 'photo', 'order'];
+  allowed.forEach((f) => { if (req.body[f] !== undefined) building[f] = req.body[f]; });
+  await building.save();
+  return ok(res, building, 'Building updated.');
+});
+
+const deleteCampusBuilding = asyncHandler(async (req, res) => {
+  const building = await CampusBuilding.findById(req.params.buildingId);
+  if (!building) throw new AppError('Building not found.', 404);
+  const institution = await Institution.findById(building.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  await building.deleteOne();
+  return ok(res, null, 'Building removed.');
 });
 
 // ---- Campuses ----
@@ -257,22 +342,47 @@ const createFee = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const { student, title, amount, currency, dueDate } = req.body;
+  const { student, title, feeType, amount, currency, dueDate, installments } = req.body;
   if (!student || !title || amount === undefined) {
     throw new AppError('student, title and amount are required.', 422);
+  }
+
+  const feeStudent = await User.findById(student).select('fullName');
+
+  // Instalment plan: split `amount` into N equal parts, each its own Fee doc sharing a planId,
+  // so the parent/student sees "Instalment 1 of 3" etc. and can pay them one at a time.
+  const n = Number(installments) || 1;
+  if (n > 1) {
+    const planId = crypto.randomBytes(6).toString('hex');
+    const per = Math.round((amount / n) * 100) / 100;
+    const fees = await Promise.all(Array.from({ length: n }, (_, i) => {
+      const due = dueDate ? new Date(dueDate) : null;
+      if (due) due.setMonth(due.getMonth() + i);
+      return Fee.create({
+        student, institution: institution._id, title: `${title} (Instalment ${i + 1}/${n})`,
+        feeType: feeType || 'other', amount: per, currency: currency || 'USD', dueDate: due,
+        installment: { planId, number: i + 1, totalInstallments: n }, recordedBy: req.user._id
+      });
+    }));
+    await notifyParentsOfStudent(student, {
+      title: `New fee plan for ${feeStudent?.fullName || 'your child'}`,
+      body: `${title}: ${currency || 'USD'} ${amount} in ${n} instalments`,
+      sentBy: req.user._id
+    }).catch(() => {});
+    return created(res, fees, `Fee recorded in ${n} instalments.`);
   }
 
   const fee = await Fee.create({
     student,
     institution: institution._id,
     title,
+    feeType: feeType || 'other',
     amount,
     currency: currency || 'USD',
     dueDate: dueDate || null,
     recordedBy: req.user._id
   });
 
-  const feeStudent = await User.findById(student).select('fullName');
   await notifyParentsOfStudent(student, {
     title: `New fee due for ${feeStudent?.fullName || 'your child'}`,
     body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` — due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
@@ -280,6 +390,85 @@ const createFee = asyncHandler(async (req, res) => {
   }).catch(() => {});
 
   return created(res, fee, 'Fee recorded.');
+});
+
+// POST /api/institutions/fees/:feeId/remind — manual trigger for the "Automatic Reminder"
+// (spec 15D.7). No cron/scheduler exists in this codebase (same honest pattern as meeting
+// reminders elsewhere), so reminders are sent on-demand by the institution, or lazily whenever
+// listFees runs past the due date — see the auto-reminder check below.
+const remindFee = asyncHandler(async (req, res) => {
+  const fee = await Fee.findById(req.params.feeId).populate('student', 'fullName');
+  if (!fee) throw new AppError('Fee record not found.', 404);
+  const institution = await Institution.findById(fee.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+  if (fee.status === 'paid') throw new AppError('This fee is already paid.', 400);
+
+  await notifyParentsOfStudent(fee.student._id, {
+    title: `Fee reminder: ${fee.title}`,
+    body: `${fee.currency} ${fee.amount} due${fee.dueDate ? ` on ${new Date(fee.dueDate).toLocaleDateString()}` : ''}. Please pay soon.`,
+    sentBy: req.user._id
+  }, { email: false }).catch(() => {});
+  fee.reminderSentAt = new Date();
+  await fee.save();
+
+  return ok(res, fee, 'Reminder sent.');
+});
+
+// POST /api/institutions/fees/:feeId/refund/request — student/parent requests a refund.
+const requestFeeRefund = asyncHandler(async (req, res) => {
+  const fee = await Fee.findById(req.params.feeId);
+  if (!fee) throw new AppError('Fee record not found.', 404);
+  if (fee.status !== 'paid') throw new AppError('Only a paid fee can be refunded.', 400);
+
+  const isStudent = fee.student.toString() === req.user._id.toString();
+  if (!isStudent) {
+    const isLinkedParent = await ParentChildLink.exists({ parent: req.user._id, student: fee.student, status: 'approved' });
+    const institution = await Institution.findById(fee.institution);
+    const isStaff = institution && (institution.owner.toString() === req.user._id.toString() || institution.staff.some((s) => s.user.toString() === req.user._id.toString()));
+    if (!isLinkedParent && !isStaff) throw new AppError('You are not authorized to request a refund for this fee.', 403);
+  }
+
+  const { reason } = req.body;
+  fee.refund = { status: 'requested', reason: reason || '', amount: fee.amount, requestedAt: new Date(), processedAt: null, processedBy: null };
+  await fee.save();
+
+  const institution = await Institution.findById(fee.institution);
+  const recipients = [institution.owner, ...institution.staff.map((s) => s.user)];
+  await Promise.all(recipients.map((id) => notify(id, {
+    title: `Refund requested: ${fee.title}`,
+    body: reason || '',
+    sentBy: req.user._id
+  }).catch(() => {})));
+
+  return ok(res, fee, 'Refund requested.');
+});
+
+// PATCH /api/institutions/fees/:feeId/refund/decide — institution approves/rejects/processes a refund.
+const decideFeeRefund = asyncHandler(async (req, res) => {
+  const fee = await Fee.findById(req.params.feeId);
+  if (!fee) throw new AppError('Fee record not found.', 404);
+  const institution = await Institution.findById(fee.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const { decision } = req.body; // 'approved' | 'rejected' | 'refunded'
+  if (!['approved', 'rejected', 'refunded'].includes(decision)) throw new AppError('decision must be approved, rejected or refunded.', 422);
+  if (fee.refund.status !== 'requested' && !(decision === 'refunded' && fee.refund.status === 'approved')) {
+    throw new AppError('This refund is not in a state that allows that decision.', 400);
+  }
+
+  fee.refund.status = decision;
+  fee.refund.processedAt = new Date();
+  fee.refund.processedBy = req.user._id;
+  if (decision === 'refunded') fee.status = 'refunded';
+  await fee.save();
+
+  await notify(fee.student, {
+    title: `Refund ${decision}: ${fee.title}`,
+    body: `${fee.currency} ${fee.refund.amount}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, fee, `Refund ${decision}.`);
 });
 
 const listFees = asyncHandler(async (req, res) => {
@@ -299,12 +488,43 @@ const markFeePaid = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
 
   const { paidVia } = req.body;
+  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
   fee.status = 'paid';
   fee.paidAt = new Date();
   fee.paidVia = paidVia || '';
+  fee.grossAmount = receipt.grossAmount;
+  fee.platformCommission = receipt.platformCommission;
+  fee.gatewayCharges = receipt.gatewayCharges;
+  fee.taxAmount = receipt.taxAmount;
+  fee.netAmount = receipt.netAmount;
+  fee.escrowStatus = 'held';
+  fee.receiptNumber = `RCPT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   await fee.save();
 
   return ok(res, fee, 'Fee marked as paid.');
+});
+
+// PATCH /api/institutions/fees/:feeId/release — escrow release (spec 3A.3): the institution
+// confirms the paid fee and moves it out of "held" into "released" (available to them). No real
+// fund custody happens anywhere in this app (no payment gateway connected) — see Fee.js's
+// escrowStatus comment for what this status machine does and does not represent.
+const releaseFeeEscrow = asyncHandler(async (req, res) => {
+  const fee = await Fee.findById(req.params.feeId);
+  if (!fee) throw new AppError('Fee record not found.', 404);
+
+  const institution = await Institution.findById(fee.institution);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  if (fee.status !== 'paid') throw new AppError('Only a paid fee can be released.', 400);
+  if (fee.escrowStatus === 'released') throw new AppError('This fee has already been released.', 400);
+  if (fee.escrowStatus !== 'held') throw new AppError('This fee has no held funds to release.', 400);
+
+  fee.escrowStatus = 'released';
+  fee.escrowReleasedAt = new Date();
+  fee.escrowReleasedBy = req.user._id;
+  await fee.save();
+
+  return ok(res, fee, 'Escrow released.');
 });
 
 // ---- Timetable ----
@@ -478,12 +698,12 @@ const createPayslip = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const { staff, month, year, basicSalary, bonuses, deductions, currency } = req.body;
+  const { staff, month, year, basicSalary, bonuses, overtimeAmount, allowances, deductions, currency } = req.body;
   if (!staff || !month || !year || basicSalary === undefined) {
     throw new AppError('staff, month, year and basicSalary are required.', 422);
   }
 
-  const netAmount = Number(basicSalary) + Number(bonuses || 0) - Number(deductions || 0);
+  const netAmount = Number(basicSalary) + Number(bonuses || 0) + Number(overtimeAmount || 0) + Number(allowances || 0) - Number(deductions || 0);
   const payslip = await Payslip.create({
     institution: institution._id,
     staff,
@@ -491,6 +711,8 @@ const createPayslip = asyncHandler(async (req, res) => {
     year,
     basicSalary,
     bonuses: bonuses || 0,
+    overtimeAmount: overtimeAmount || 0,
+    allowances: allowances || 0,
     deductions: deductions || 0,
     netAmount,
     currency: currency || 'USD',
@@ -511,7 +733,14 @@ const listInstitutionPayroll = asyncHandler(async (req, res) => {
   return ok(res, payslips);
 });
 
+const PAYSLIP_METHOD_LABEL = { ...PAYOUT_METHOD_LABEL, cash: 'Cash' };
+
 const markPayslipPaid = asyncHandler(async (req, res) => {
+  const { paymentMethod } = req.body;
+  if (!paymentMethod || !PAYSLIP_METHOD_LABEL[paymentMethod]) {
+    throw new AppError('A valid paymentMethod is required (bank_transfer, mobile_wallet, cash or other).', 422);
+  }
+
   const payslip = await Payslip.findById(req.params.payslipId);
   if (!payslip) throw new AppError('Payslip not found.', 404);
 
@@ -520,10 +749,12 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
 
   payslip.status = 'paid';
   payslip.paidAt = new Date();
+  payslip.paymentMethod = paymentMethod;
+  payslip.transactionId = generateTransactionId();
   await payslip.save();
 
   await notify(payslip.staff, {
-    title: `Salary paid: ${payslip.currency} ${payslip.netAmount}`,
+    title: `Salary paid: ${payslip.currency} ${payslip.netAmount} (receipt ${payslip.transactionId})`,
     body: `${payslip.month}/${payslip.year} — ${institution.name}`,
     sentBy: req.user._id
   }).catch(() => {});
@@ -537,7 +768,12 @@ const getInstitutionReports = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const [studentsCount, teachersCount, classSectionsCount, campusesCount, feeAgg, attendanceRecords, pendingPayroll] = await Promise.all([
+  const HelpDeskTicket = require('../models/HelpDeskTicket');
+  const InstitutionEvent = require('../models/InstitutionEvent');
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [studentsCount, teachersCount, classSectionsCount, campusesCount, feeAgg, attendanceRecords, pendingPayroll, todayAttendanceDoc, newAdmissions, openComplaints, upcomingEvents] = await Promise.all([
     StudentProfile.countDocuments({ primaryInstitution: institution._id }),
     TeacherProfile.countDocuments({ institutions: institution._id }),
     ClassSection.countDocuments({ institution: institution._id }),
@@ -547,8 +783,16 @@ const getInstitutionReports = asyncHandler(async (req, res) => {
       { $group: { _id: '$status', total: { $sum: '$amount' }, count: { $sum: 1 } } }
     ]),
     Attendance.find({ institution: institution._id }).sort({ date: -1 }).limit(100),
-    Payslip.countDocuments({ institution: institution._id, status: 'pending' })
+    Payslip.countDocuments({ institution: institution._id, status: 'pending' }),
+    Attendance.find({ institution: institution._id, date: { $gte: startOfDay } }),
+    StudentProfile.countDocuments({ primaryInstitution: institution._id, admissionDate: { $gte: thirtyDaysAgo } }),
+    HelpDeskTicket.countDocuments({ institution: institution._id, status: { $in: ['open', 'in_progress'] } }),
+    InstitutionEvent.countDocuments({ institution: institution._id, status: { $in: ['upcoming', 'ongoing'] } })
   ]);
+
+  let todayPresent = 0, todayTotal = 0;
+  todayAttendanceDoc.forEach((r) => r.records.forEach((entry) => { todayTotal += 1; if (entry.status === 'present') todayPresent += 1; }));
+  const todayAttendanceRate = todayTotal > 0 ? Math.round((todayPresent / todayTotal) * 100) : null;
 
   const fees = { collected: 0, pending: 0, overdue: 0, collectedCount: 0, pendingCount: 0, overdueCount: 0 };
   feeAgg.forEach((row) => {
@@ -573,8 +817,57 @@ const getInstitutionReports = asyncHandler(async (req, res) => {
     campusesCount,
     fees,
     attendanceRate,
-    pendingPayroll
+    todayAttendanceRate,
+    pendingPayroll,
+    newAdmissions,
+    openComplaints,
+    upcomingEvents
   });
+});
+
+// POST /api/institutions/:id/ai-insights — AI Operations Assistant (spec 15D.19). Uses the
+// institution's own BYOK AI text credential (same pattern as the AI Creative Teacher tools) to
+// analyze REAL aggregated institution data — never fabricated numbers, the AI only summarizes
+// what getInstitutionReports already computed. All decisions stay with the institution — this
+// only produces a written summary/alerts, it never changes any data itself.
+const getAiInsights = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const [studentsCount, teachersCount, feeAgg, pendingPayroll, openComplaints] = await Promise.all([
+    StudentProfile.countDocuments({ primaryInstitution: institution._id }),
+    TeacherProfile.countDocuments({ institutions: institution._id }),
+    Fee.aggregate([
+      { $match: { institution: institution._id } },
+      { $group: { _id: '$status', total: { $sum: '$amount' }, count: { $sum: 1 } } }
+    ]),
+    Payslip.countDocuments({ institution: institution._id, status: 'pending' }),
+    require('../models/HelpDeskTicket').countDocuments({ institution: institution._id, status: { $in: ['open', 'in_progress'] } })
+  ]);
+  const fees = { collected: 0, pending: 0, overdue: 0 };
+  feeAgg.forEach((row) => { if (fees[row._id] !== undefined) fees[row._id] = row.total; });
+
+  const dataSummary = `Institution: ${institution.name}
+Students: ${studentsCount}
+Teachers: ${teachersCount}
+Fees collected: ${fees.collected}
+Fees pending: ${fees.pending}
+Fees overdue: ${fees.overdue}
+Pending payroll (unpaid payslips): ${pendingPayroll}
+Open help-desk tickets: ${openComplaints}`;
+
+  const aiService = require('../services/ai.service');
+  try {
+    const result = await aiService.generate(
+      req.user._id,
+      'You are an institution operations assistant for a school/college. Given real, structured operational data, write a short (5-8 bullet points) analysis: highlight fee-collection risk, payroll status, support/complaint load, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the institution\'s own — you are only summarizing, not deciding.',
+      dataSummary
+    );
+    return ok(res, { insights: result, dataSummary });
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
 });
 
 // ---- Examination Management (institution-wide view) ----
@@ -711,6 +1004,11 @@ module.exports = {
   adminListAll,
   addStaff,
   removeStaff,
+  listStaffAttendance,
+  listCampusBuildings,
+  createCampusBuilding,
+  updateCampusBuilding,
+  deleteCampusBuilding,
   createCampus,
   listCampuses,
   createClassSection,
@@ -719,6 +1017,10 @@ module.exports = {
   createFee,
   listFees,
   markFeePaid,
+  releaseFeeEscrow,
+  remindFee,
+  requestFeeRefund,
+  decideFeeRefund,
   createTimetableEntry,
   listTimetable,
   updateTimetableEntry,
@@ -731,6 +1033,7 @@ module.exports = {
   listInstitutionPayroll,
   markPayslipPaid,
   getInstitutionReports,
+  getAiInsights,
   listInstitutionExams,
   myStaffRoles,
   getRepDashboard

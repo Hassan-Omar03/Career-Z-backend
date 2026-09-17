@@ -12,6 +12,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { isRoleVerified } = require('../utils/roleVerification');
 const { notify } = require('../services/notification.service');
+const { generateTransactionId } = require('../utils/transactionId');
+const { PAYMENT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 function assertOwnsJob(job, userId) {
   if (job.postedBy.toString() !== userId.toString()) {
@@ -66,7 +68,10 @@ const listJobs = asyncHandler(async (req, res) => {
   if (minSalary) filter.salaryMin = { $gte: Number(minSalary) };
   if (q) filter.$text = { $search: q };
 
-  const jobs = await Job.find(filter).populate('postedBy', 'fullName email').sort({ createdAt: -1 }).limit(100);
+  // A featured badge that outlived its paid window shouldn't keep jumping the queue.
+  await Job.updateMany({ featured: true, featuredUntil: { $lt: new Date() } }, { featured: false, featuredUntil: null });
+
+  const jobs = await Job.find(filter).populate('postedBy', 'fullName email').sort({ featured: -1, createdAt: -1 }).limit(100);
   return ok(res, jobs);
 });
 
@@ -643,8 +648,64 @@ const listSavedJobs = asyncHandler(async (req, res) => {
   return ok(res, (user.savedJobs || []).filter(Boolean));
 });
 
+const FEATURED_JOB_FEE_KEY = 'featured_job_fee_usd';
+const DEFAULT_FEATURED_JOB_FEE = 20;
+const FEATURED_JOB_DAYS = 30;
+
+// GET /api/jobs/featured-fee — any authenticated user (employer/agent needs to see the price
+// before buying).
+const getFeaturedFee = asyncHandler(async (req, res) => {
+  const setting = await Setting.findOne({ key: FEATURED_JOB_FEE_KEY });
+  return ok(res, { fee: setting ? setting.value : DEFAULT_FEATURED_JOB_FEE, currency: 'USD', days: FEATURED_JOB_DAYS });
+});
+
+// PATCH /api/jobs/featured-fee — Super Admin only.
+const setFeaturedFee = asyncHandler(async (req, res) => {
+  const { fee } = req.body;
+  if (typeof fee !== 'number' || fee < 0) throw new AppError('fee must be a non-negative number.', 422);
+  const setting = await Setting.findOneAndUpdate({ key: FEATURED_JOB_FEE_KEY }, { key: FEATURED_JOB_FEE_KEY, value: fee }, { new: true, upsert: true });
+  return ok(res, { fee: setting.value }, 'Featured job fee updated.');
+});
+
+// POST /api/jobs/:id/feature — the job's own poster (employer/agent) buys 30 days of featured
+// placement. Records a real FeaturedListing ledger entry — see that model's comment for why this
+// isn't a claim of an actual card charge (no payment gateway is integrated anywhere in this app yet).
+const featureJob = asyncHandler(async (req, res) => {
+  const { paymentMethod } = req.body;
+  if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
+    throw new AppError('A valid paymentMethod is required (bank_transfer, card, mobile_wallet, cash or other).', 422);
+  }
+
+  const job = await Job.findById(req.params.id);
+  if (!job) throw new AppError('Job not found.', 404);
+  assertOwnsJob(job, req.user._id);
+  if (job.featured && job.featuredUntil > new Date()) {
+    throw new AppError('This job is already featured.', 400);
+  }
+
+  const setting = await Setting.findOne({ key: FEATURED_JOB_FEE_KEY });
+  const fee = setting ? setting.value : DEFAULT_FEATURED_JOB_FEE;
+  const expiresAt = new Date(Date.now() + FEATURED_JOB_DAYS * 24 * 60 * 60 * 1000);
+  const transactionId = generateTransactionId();
+
+  const FeaturedListing = require('../models/FeaturedListing');
+  await FeaturedListing.create({
+    listingType: 'job', job: job._id, purchasedBy: req.user._id, amount: fee, currency: 'USD',
+    paymentMethod, transactionId, expiresAt
+  });
+
+  job.featured = true;
+  job.featuredUntil = expiresAt;
+  await job.save();
+
+  return ok(res, job, `Job featured for ${FEATURED_JOB_DAYS} days (${fee} USD). Receipt ${transactionId}`);
+});
+
 module.exports = {
   createJob,
+  getFeaturedFee,
+  setFeaturedFee,
+  featureJob,
   listJobs,
   getJob,
   myJobs,

@@ -44,6 +44,10 @@ async function revokeRefreshToken(token) {
   await RefreshToken.updateOne({ tokenHash: hashToken(token) }, { revoked: true });
 }
 
+async function revokeAllForUser(userId) {
+  await RefreshToken.updateMany({ user: userId, revoked: false }, { revoked: true });
+}
+
 function verifyRefreshToken(token) {
   return jwt.verify(token, env.jwt.refreshSecret);
 }
@@ -54,6 +58,7 @@ module.exports = {
   issueTokenPair,
   rotateRefreshToken,
   revokeRefreshToken,
+  revokeAllForUser,
   verifyRefreshToken,
   hashToken
 };

@@ -17,6 +17,8 @@ router.patch('/settings/donations-enabled', requireRole('super_admin'), ctrl.set
 // Student / institution owner — submitting funding requests.
 router.post('/', requireRole('student', 'institution_owner', 'academy_owner'), ctrl.createFundingRequest);
 router.get('/mine/list', ctrl.myFundingRequests);
+router.get('/mine/received-donations', ctrl.myReceivedDonations);
+router.patch('/donations/:id/release', ctrl.releaseDonationEscrow);
 
 // Donor — donating, saving.
 router.post('/:id/donate', requireRole('donor'), ctrl.donate);

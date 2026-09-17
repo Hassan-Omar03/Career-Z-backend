@@ -11,6 +11,8 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { isRoleVerified } = require('../utils/roleVerification');
 const { notify } = require('../services/notification.service');
+const { generateTransactionId } = require('../utils/transactionId');
+const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 const LOW_STOCK_THRESHOLD = 5;
 // "courses" and "services" are digital — stock tracking doesn't apply to them (item 8: "Digital
@@ -417,14 +419,20 @@ const myWallet = asyncHandler(async (req, res) => {
 // currency, same "no real payment processor" honesty as the Agent's withdrawal flow: this creates
 // a real, trackable request, not a fake instant payout.
 const requestSellerWithdrawal = asyncHandler(async (req, res) => {
-  const { currency } = req.body;
+  const { currency, payoutMethod, payoutDetails } = req.body;
   if (!currency) throw new AppError('currency is required.', 422);
+  if (!payoutMethod || !PAYOUT_METHOD_LABEL[payoutMethod]) {
+    throw new AppError('A valid payoutMethod is required (bank_transfer, mobile_wallet or other).', 422);
+  }
+  if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
 
   const { totalsByCurrency } = await computeEarnings(req.user._id);
   const available = totalsByCurrency[currency]?.availableEarnings || 0;
   if (available <= 0) throw new AppError('No available balance in that currency.', 422);
 
-  const withdrawal = await SellerWithdrawal.create({ seller: req.user._id, amount: available, currency });
+  const withdrawal = await SellerWithdrawal.create({
+    seller: req.user._id, amount: available, currency, payoutMethod, payoutDetails: payoutDetails.trim()
+  });
   return created(res, withdrawal, 'Withdrawal requested.');
 });
 
@@ -444,13 +452,16 @@ const updateSellerWithdrawalStatus = asyncHandler(async (req, res) => {
   if (!withdrawal) throw new AppError('Withdrawal not found.', 404);
 
   withdrawal.status = status;
-  if (status === 'paid') withdrawal.processedAt = new Date();
+  if (status === 'paid') {
+    withdrawal.processedAt = new Date();
+    withdrawal.transactionId = generateTransactionId();
+  }
   await withdrawal.save();
 
   const TITLE = {
     requested: `Withdrawal requested: ${withdrawal.currency} ${withdrawal.amount}`,
     processing: `Withdrawal processing: ${withdrawal.currency} ${withdrawal.amount}`,
-    paid: `Payment received: ${withdrawal.currency} ${withdrawal.amount}`,
+    paid: `Payout sent: ${withdrawal.currency} ${withdrawal.amount} (receipt ${withdrawal.transactionId})`,
     rejected: `Withdrawal rejected: ${withdrawal.currency} ${withdrawal.amount}`
   };
   await notify(withdrawal.seller, { title: TITLE[status], sentBy: req.user._id }).catch(() => {});

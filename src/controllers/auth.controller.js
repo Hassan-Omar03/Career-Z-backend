@@ -105,6 +105,14 @@ const login = asyncHandler(async (req, res) => {
     throw new AppError('This account is not active.', 403);
   }
 
+  // Real 2FA enforcement — if the user turned this on in Settings, password alone is not
+  // enough: an OTP is emailed and login only completes via POST /auth/login/verify-2fa.
+  if (user.twoFactorEnabled) {
+    await otpService.issueOtp(user, 'login_2fa');
+    await recordLoginAttempt({ email, ip, userAgent, success: true, reason: '2fa_challenge_sent' });
+    return ok(res, { twoFactorRequired: true, email: user.email }, 'Enter the login code sent to your email.');
+  }
+
   user.lastLoginAt = new Date();
   await user.save();
   await recordLoginAttempt({ email, ip, userAgent, success: true });
@@ -113,6 +121,35 @@ const login = asyncHandler(async (req, res) => {
     deviceInfo: req.headers['user-agent'],
     ip: req.ip
   });
+
+  return ok(res, {
+    user: user.toSafeJSON(),
+    permissions: user.permissions(),
+    ...tokens
+  }, 'Login successful.');
+});
+
+// POST /api/auth/login/verify-2fa — completes login for accounts with 2FA enabled.
+const verifyLogin2FA = asyncHandler(async (req, res) => {
+  const { email, code } = req.body;
+  const ip = req.ip;
+  const userAgent = req.headers['user-agent'];
+  if (!email || !code) throw new AppError('Email and code are required.', 422);
+
+  const user = await User.findOne({ email: email.toLowerCase() });
+  if (!user) throw new AppError('Invalid request.', 400);
+
+  const valid = await otpService.verifyOtp(user, 'login_2fa', code);
+  if (!valid) {
+    await recordLoginAttempt({ email, ip, userAgent, success: false, reason: '2fa_invalid_code' });
+    throw new AppError('Invalid or expired login code.', 400);
+  }
+
+  user.lastLoginAt = new Date();
+  await user.save();
+  await recordLoginAttempt({ email, ip, userAgent, success: true, reason: '2fa_verified' });
+
+  const tokens = await tokenService.issueTokenPair(user, { deviceInfo: userAgent, ip });
 
   return ok(res, {
     user: user.toSafeJSON(),
@@ -201,6 +238,7 @@ module.exports = {
   verifyEmail,
   resendVerification,
   login,
+  verifyLogin2FA,
   refresh,
   logout,
   forgotPassword,

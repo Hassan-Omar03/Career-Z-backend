@@ -7,7 +7,9 @@ const donorDepositSchema = new mongoose.Schema(
     donor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     amount: { type: Number, required: true },
     currency: { type: String, default: 'USD' },
-    status: { type: String, enum: ['requested', 'confirmed', 'rejected'], default: 'requested' }
+    paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'mobile_wallet', 'cash', 'other'], required: true },
+    status: { type: String, enum: ['requested', 'confirmed', 'rejected'], default: 'requested' },
+    transactionId: { type: String, default: null }
   },
   { timestamps: true }
 );

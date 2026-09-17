@@ -19,11 +19,12 @@ async function issueOtp(user, purpose) {
 
   await VerificationCode.create({ user: user._id, purpose, codeHash, expiresAt });
 
-  const subject = purpose === 'email_verify' ? 'Verify your CareerZ.pk email' : 'Your CareerZ.pk password reset code';
-  const heading = purpose === 'email_verify' ? 'Verify your email address' : 'Reset your password';
-  const intro = purpose === 'email_verify'
-    ? `Hi ${user.fullName || 'there'}, use the code below to verify your CareerZ.pk account.`
-    : `Hi ${user.fullName || 'there'}, use the code below to reset your CareerZ.pk password.`;
+  const COPY = {
+    email_verify: { subject: 'Verify your CareerZ.pk email', heading: 'Verify your email address', intro: `Hi ${user.fullName || 'there'}, use the code below to verify your CareerZ.pk account.` },
+    password_reset: { subject: 'Your CareerZ.pk password reset code', heading: 'Reset your password', intro: `Hi ${user.fullName || 'there'}, use the code below to reset your CareerZ.pk password.` },
+    login_2fa: { subject: 'Your CareerZ.pk login code', heading: 'Confirm it\'s you', intro: `Hi ${user.fullName || 'there'}, someone is signing in to your CareerZ.pk account. Use the code below to complete login.` }
+  };
+  const { subject, heading, intro } = COPY[purpose] || COPY.password_reset;
 
   await sendEmail({
     to: user.email,

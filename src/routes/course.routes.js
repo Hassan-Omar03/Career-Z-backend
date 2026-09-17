@@ -17,6 +17,7 @@ router.post('/:id/lessons', requirePermission('lesson:create:own'), ctrl.addLess
 router.patch('/lessons/:lessonId', requirePermission('lesson:update:own'), ctrl.updateLesson);
 router.patch('/lessons/:lessonId/complete', requirePermission('course:enroll:own'), ctrl.completeLesson);
 router.get('/:id/students', requirePermission('course:update:own'), ctrl.listEnrolledStudents);
+router.get('/:id/face-descriptors', requirePermission('course:update:own'), ctrl.listFaceDescriptors);
 router.post('/:id/assignments', requirePermission('assignment:create:own'), ctrl.createAssignment);
 router.get('/:id/assignments', ctrl.listAssignments);
 router.get('/assignments/:assignmentId/submissions', requirePermission('assignment:grade:own'), ctrl.listSubmissions);

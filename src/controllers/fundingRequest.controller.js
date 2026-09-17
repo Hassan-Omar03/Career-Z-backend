@@ -6,8 +6,10 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify, notifyMany } = require('../services/notification.service');
+const { computeReceiptAmounts } = require('../utils/receiptCalc');
 
 const DONATIONS_ENABLED_KEY = 'donations_enabled';
+const DONATION_COMMISSION_KEY = 'donation_commission_percent';
 
 // GET /api/funding-requests/settings/donations-enabled — any authenticated user can read it
 // (the donor UI needs to know whether to show "Donate Now" at all).
@@ -143,14 +145,23 @@ const donate = asyncHandler(async (req, res) => {
     throw new AppError('Invalid paymentMethod.', 422);
   }
 
+  const receipt = await computeReceiptAmounts(amount, DONATION_COMMISSION_KEY);
+
   const donation = await Donation.create({
     donor: req.user._id,
+    receiver: request.requestedBy._id,
     fundingRequest: request._id,
     amount,
     currency: request.currency,
     type: type || 'donation',
     paymentMethod: paymentMethod || 'other',
-    transactionId: `TXN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`
+    transactionId: `TXN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
+    grossAmount: receipt.grossAmount,
+    platformCommission: receipt.platformCommission,
+    gatewayCharges: receipt.gatewayCharges,
+    taxAmount: receipt.taxAmount,
+    netAmount: receipt.netAmount,
+    escrowStatus: 'held'
   });
 
   request.collectedAmount += amount;
@@ -252,6 +263,43 @@ const updateDonationStatus = asyncHandler(async (req, res) => {
   return ok(res, donation, 'Donation status updated.');
 });
 
+// GET /api/funding-requests/mine/received-donations — the requester's (student/institution)
+// view of donations made against their own funding requests, so they can see and release escrow.
+const myReceivedDonations = asyncHandler(async (req, res) => {
+  const donations = await Donation.find({ receiver: req.user._id })
+    .populate('donor', 'fullName')
+    .populate('fundingRequest', 'title')
+    .sort({ createdAt: -1 });
+  return ok(res, donations);
+});
+
+// PATCH /api/funding-requests/donations/:id/release — escrow release (spec 3A.3): the receiver
+// (the student/institution the funding request was for) confirms and moves the donation out of
+// "held" into "released". Same honesty note as Fee.js's escrowStatus — no real fund custody
+// happens anywhere in this app.
+const releaseDonationEscrow = asyncHandler(async (req, res) => {
+  const donation = await Donation.findById(req.params.id);
+  if (!donation) throw new AppError('Donation not found.', 404);
+  if (!donation.receiver || donation.receiver.toString() !== req.user._id.toString()) {
+    throw new AppError('You are not the receiver of this donation.', 403);
+  }
+  if (donation.status !== 'successful') throw new AppError('Only a successful donation can be released.', 400);
+  if (donation.escrowStatus === 'released') throw new AppError('This donation has already been released.', 400);
+  if (donation.escrowStatus !== 'held') throw new AppError('This donation has no held funds to release.', 400);
+
+  donation.escrowStatus = 'released';
+  donation.escrowReleasedAt = new Date();
+  donation.escrowReleasedBy = req.user._id;
+  await donation.save();
+
+  await notify(donation.donor, {
+    title: `Your donation was released to the recipient: ${donation.currency} ${donation.amount}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, donation, 'Escrow released.');
+});
+
 // PATCH /api/funding-requests/:id/application-status — a donor reviewing the request moves it
 // through New -> Under Review -> Approved/Rejected. Partially Funded/Funded are normally set
 // automatically by donate(), but a donor can still correct them by hand if needed.
@@ -297,6 +345,6 @@ const verifyRequest = asyncHandler(async (req, res) => {
 
 module.exports = {
   createFundingRequest, listFundingRequests, listApplications, listRecommended, getFundingRequest, myFundingRequests,
-  donate, saveRequest, unsaveRequest, listSaved, myDonations, updateDonationStatus, updateApplicationStatus, verifyRequest,
-  getDonationsEnabled, setDonationsEnabled
+  donate, saveRequest, unsaveRequest, listSaved, myDonations, myReceivedDonations, updateDonationStatus, releaseDonationEscrow,
+  updateApplicationStatus, verifyRequest, getDonationsEnabled, setDonationsEnabled
 };

@@ -17,16 +17,27 @@ router.use('/job-alerts', require('./jobAlert.routes'));
 router.use('/commissions', require('./commission.routes'));
 router.use('/inquiries', require('./inquiry.routes'));
 router.use('/institution-applications', require('./institutionApplication.routes'));
+router.use('/institution-ops', require('./institutionOps.routes'));
 router.use('/meetings', require('./meeting.routes'));
+router.use('/ptm', require('./ptm.routes'));
+router.use('/anonymous-questions', require('./anonymousQuestion.routes'));
+router.use('/polls', require('./poll.routes'));
+router.use('/newsletters', require('./newsletter.routes'));
+router.use('/magazine', require('./magazine.routes'));
 router.use('/virtual-fairs', require('./virtualFair.routes'));
 router.use('/resumes', require('./resume.routes'));
 router.use('/certificates', require('./certificate.routes'));
 router.use('/marketplace', require('./marketplace.routes'));
 router.use('/scholarships', require('./scholarship.routes'));
+router.use('/study-groups', require('./studyGroup.routes'));
 router.use('/funding-requests', require('./fundingRequest.routes'));
 router.use('/complaints', require('./complaint.routes'));
+router.use('/payments', require('./payment.routes'));
+router.use('/translate', require('./translate.routes'));
+router.use('/ai', require('./ai.routes'));
 router.use('/security', require('./security.routes'));
 router.use('/admin', require('./admin.routes'));
+router.use('/', require('./cms.routes'));
 
 router.get('/health', (req, res) => res.json({ success: true, message: 'CareerZ API is running.' }));
 

@@ -1,12 +1,14 @@
 const TeacherProfile = require('../models/TeacherProfile');
 const Course = require('../models/Course');
 const Attendance = require('../models/Attendance');
+const StaffAttendance = require('../models/StaffAttendance');
 const TimetableEntry = require('../models/TimetableEntry');
 const Payslip = require('../models/Payslip');
 const User = require('../models/User');
 const Assignment = require('../models/Assignment');
 const Submission = require('../models/Submission');
 const Enrollment = require('../models/Enrollment');
+const StudentProfile = require('../models/StudentProfile');
 const Exam = require('../models/Exam');
 const Notification = require('../models/Notification');
 const AppError = require('../utils/AppError');
@@ -91,6 +93,80 @@ const markAttendance = asyncHandler(async (req, res) => {
   return ok(res, attendance, 'Attendance recorded.');
 });
 
+// POST /api/teachers/me/attendance/qr-scan — real QR-based attendance (spec 15B.9/9.9 "QR
+// Code" method). Reuses the same idCardCode already generated for each student's Digital
+// Student ID (student.controller.js) — no separate QR system, no hardware needed beyond the
+// camera already in any phone/laptop; the frontend decodes the QR locally and sends just the
+// code. Builds up one shared attendance sheet per course+day as students are scanned in.
+const markAttendanceByQr = asyncHandler(async (req, res) => {
+  const { code, course, date } = req.body;
+  if (!code || !course || !date) throw new AppError('code, course and date are required.', 422);
+
+  const courseDoc = await Course.findById(course);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  if (courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
+
+  const profile = await StudentProfile.findOne({ idCardCode: code }).populate('user', 'fullName');
+  if (!profile) throw new AppError('That QR code does not match any student ID.', 404);
+
+  const enrolled = await Enrollment.findOne({ course, student: profile.user._id });
+  if (!enrolled) throw new AppError(`${profile.user.fullName} is not enrolled in this course.`, 400);
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+
+  let sheet = await Attendance.findOne({ course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
+  if (!sheet) {
+    sheet = await Attendance.create({ course, classSection: courseDoc.classSection, date, markedBy: req.user._id, records: [] });
+  }
+
+  const already = sheet.records.find((r) => r.student.toString() === profile.user._id.toString());
+  if (already) {
+    return ok(res, { studentName: profile.user.fullName, alreadyMarked: true }, `${profile.user.fullName} was already marked present today.`);
+  }
+
+  sheet.records.push({ student: profile.user._id, status: 'present' });
+  await sheet.save();
+  return ok(res, { studentName: profile.user.fullName, alreadyMarked: false }, `${profile.user.fullName} marked present.`);
+});
+
+// POST /api/teachers/me/attendance/face-scan — the teacher's browser already ran face
+// matching locally (face-api.js against enrolled descriptors from
+// GET /courses/:id/face-descriptors) and identified a real enrolled studentId; this just
+// records the result the same way markAttendanceByQr does. This server never performs face
+// recognition itself.
+const markAttendanceByFace = asyncHandler(async (req, res) => {
+  const { studentId, course, date } = req.body;
+  if (!studentId || !course || !date) throw new AppError('studentId, course and date are required.', 422);
+
+  const courseDoc = await Course.findById(course);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  if (courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
+
+  const enrolled = await Enrollment.findOne({ course, student: studentId });
+  if (!enrolled) throw new AppError('That student is not enrolled in this course.', 400);
+
+  const student = await User.findById(studentId).select('fullName');
+  if (!student) throw new AppError('Student not found.', 404);
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+
+  let sheet = await Attendance.findOne({ course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
+  if (!sheet) {
+    sheet = await Attendance.create({ course, classSection: courseDoc.classSection, date, markedBy: req.user._id, records: [] });
+  }
+
+  const already = sheet.records.find((r) => r.student.toString() === studentId);
+  if (already) {
+    return ok(res, { studentName: student.fullName, alreadyMarked: true }, `${student.fullName} was already marked present today.`);
+  }
+
+  sheet.records.push({ student: studentId, status: 'present' });
+  await sheet.save();
+  return ok(res, { studentName: student.fullName, alreadyMarked: false }, `${student.fullName} marked present.`);
+});
+
 // GET /api/teachers/me/attendance
 const listAttendance = asyncHandler(async (req, res) => {
   const attendance = await Attendance.find({ markedBy: req.user._id }).sort({ date: -1 });
@@ -103,6 +179,43 @@ const getMyTimetable = asyncHandler(async (req, res) => {
     .populate('classSection', 'name academicYear')
     .sort({ dayOfWeek: 1, startTime: 1 });
   return ok(res, entries);
+});
+
+// POST /api/teachers/me/self-attendance/check-in — the teacher's own real, timestamped
+// check-in (spec 9.9/15D.9). One per calendar day (unique index on staff+date). "Late" is
+// computed against this teacher's own first scheduled class today (TimetableEntry), not a
+// fabricated rule — if there's no class today, it's always "present".
+const checkInMyAttendance = asyncHandler(async (req, res) => {
+  const today = new Date(); today.setHours(0, 0, 0, 0);
+  const existing = await StaffAttendance.findOne({ staff: req.user._id, date: today });
+  if (existing) throw new AppError('You have already checked in today.', 400);
+
+  const dow = DOW_BY_JS_DAY[new Date().getDay()];
+  const firstClass = await TimetableEntry.findOne({ teacher: req.user._id, dayOfWeek: dow }).sort({ startTime: 1 });
+
+  const now = new Date();
+  let status = 'present';
+  if (firstClass?.startTime) {
+    const [h, m] = firstClass.startTime.split(':').map(Number);
+    const classStart = new Date(); classStart.setHours(h, m, 0, 0);
+    if (now > classStart) status = 'late';
+  }
+
+  const profile = await TeacherProfile.findOne({ user: req.user._id });
+  const record = await StaffAttendance.create({
+    staff: req.user._id,
+    institution: profile?.institutions?.[0] || null,
+    date: today,
+    checkInAt: now,
+    status
+  });
+  return ok(res, record, status === 'late' ? 'Checked in (marked late).' : 'Checked in.');
+});
+
+// GET /api/teachers/me/self-attendance
+const getMySelfAttendance = asyncHandler(async (req, res) => {
+  const records = await StaffAttendance.find({ staff: req.user._id }).sort({ date: -1 }).limit(90);
+  return ok(res, records);
 });
 
 // GET /api/teachers/me/payslips
@@ -187,4 +300,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { getMyProfile, updateMyProfile, getMyClasses, markAttendance, listAttendance, getMyTimetable, getMyPayslips, getMyDashboard };
+module.exports = {
+  getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByQr, markAttendanceByFace, listAttendance, getMyTimetable,
+  checkInMyAttendance, getMySelfAttendance, getMyPayslips, getMyDashboard
+};

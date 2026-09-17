@@ -7,6 +7,7 @@ const Result = require('../models/Result');
 const Exam = require('../models/Exam');
 const ExamSubmission = require('../models/ExamSubmission');
 const TeacherProfile = require('../models/TeacherProfile');
+const StudentProfile = require('../models/StudentProfile');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { isRoleVerified } = require('../utils/roleVerification');
@@ -186,6 +187,29 @@ const listEnrolledStudents = asyncHandler(async (req, res) => {
 
   const enrollments = await Enrollment.find({ course: course._id }).populate('student', 'fullName email');
   return ok(res, enrollments);
+});
+
+// GET /api/courses/:id/face-descriptors (teacher view) — spec 15B.9 "Face Recognition"
+// attendance. Returns each enrolled student's pre-computed 128-number face descriptor (from
+// student.controller.js's saveMyFaceDescriptor) so the teacher's own browser can run live
+// matching against the classroom camera — no face computation ever happens on this server.
+const listFaceDescriptors = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+  assertTeacherOwnsCourse(course, req.user._id);
+
+  const enrollments = await Enrollment.find({ course: course._id }).populate('student', 'fullName');
+  const studentIds = enrollments.map((e) => e.student._id);
+  const profiles = await StudentProfile.find({ user: { $in: studentIds }, faceDescriptor: { $ne: null } }).select('user faceDescriptor');
+
+  const byUser = {};
+  profiles.forEach((p) => { byUser[p.user.toString()] = p.faceDescriptor; });
+
+  const enrolled = enrollments
+    .filter((e) => byUser[e.student._id.toString()])
+    .map((e) => ({ studentId: e.student._id, fullName: e.student.fullName, descriptor: byUser[e.student._id.toString()] }));
+
+  return ok(res, enrolled);
 });
 
 // ---- Assignments ----
@@ -518,7 +542,7 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
   addLesson, updateLesson, completeLesson,
-  enroll, listEnrolledStudents,
+  enroll, listEnrolledStudents, listFaceDescriptors,
   createAssignment, listAssignments,
   submitAssignment, listSubmissions, gradeSubmission,
   recordResult,

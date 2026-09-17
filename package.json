@@ -23,6 +23,7 @@
     "nodemailer": "^6.9.13",
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
+    "stripe": "^22.6.2",
     "uuid": "^9.0.1"
   },
   "devDependencies": {

@@ -18,11 +18,13 @@ const userSchema = new mongoose.Schema(
     emailVerified: { type: Boolean, default: false },
     phoneVerified: { type: Boolean, default: false },
 
-    status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' },
+    status: { type: String, enum: ['active', 'suspended', 'disabled', 'deleted'], default: 'active' },
+    deletedAt: { type: Date, default: null },
 
     twoFactorEnabled: { type: Boolean, default: false },
 
     profilePhoto: { type: String, default: null }, // also doubles as a Marketplace Seller's store logo
+    coverImage: { type: String, default: null }, // profile cover banner (spec Part 10.3)
     companyName: { type: String, default: '' }, // Employer/Agent's agency name, Donor's org name, or Seller's store name
     donorType: { type: String, enum: ['individual', 'organization', ''], default: '' },
     storeStatus: { type: String, enum: ['open', 'closed'], default: 'open' }, // Marketplace Seller's own open/closed toggle

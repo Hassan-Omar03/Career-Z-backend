@@ -2,10 +2,11 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
+const tokenService = require('../services/token.service');
 
 // PATCH /api/users/me
 const updateMe = asyncHandler(async (req, res) => {
-  const allowed = ['fullName', 'phone', 'country', 'language', 'currency', 'profilePhoto', 'companyName', 'donorType', 'storeStatus'];
+  const allowed = ['fullName', 'phone', 'country', 'language', 'currency', 'profilePhoto', 'coverImage', 'companyName', 'donorType', 'storeStatus', 'twoFactorEnabled'];
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) req.user[f] = req.body[f];
   });
@@ -25,6 +26,48 @@ const changePassword = asyncHandler(async (req, res) => {
   req.user.passwordHash = await User.hashPassword(newPassword);
   await req.user.save();
   return ok(res, null, 'Password updated.');
+});
+
+// DELETE /api/users/me — self-service account deletion. Requires the current password as
+// confirmation (same bar as changing it) so a hijacked/left-open session can't delete an
+// account outright. Soft-deletes: status flips to 'deleted' (protect() already rejects any
+// non-'active' user on the next request) and the email is freed so the person can re-register
+// later if they choose, rather than being permanently locked out of their own address.
+const deleteMe = asyncHandler(async (req, res) => {
+  const { currentPassword } = req.body;
+  if (!currentPassword) throw new AppError('currentPassword is required to delete your account.', 422);
+
+  const match = await req.user.comparePassword(currentPassword);
+  if (!match) throw new AppError('Current password is incorrect.', 401);
+
+  if (req.user.roles.includes('super_admin')) {
+    throw new AppError('A Super Admin account cannot self-delete. Ask another Super Admin to transfer this role first.', 403);
+  }
+
+  req.user.status = 'deleted';
+  req.user.deletedAt = new Date();
+  req.user.email = `deleted_${req.user._id}_${req.user.email}`;
+  await req.user.save();
+  await tokenService.revokeAllForUser(req.user._id);
+
+  return ok(res, null, 'Your account has been deleted.');
+});
+
+// GET /api/users/search?q= — any signed-in user, used to pick a complaint target
+// ("who is this against?"). Deliberately not admin-only, but returns only a few
+// safe fields (no status/verification/passwordHash) and a small capped result set.
+const searchUsers = asyncHandler(async (req, res) => {
+  const q = (req.query.q || '').trim();
+  if (q.length < 2) return ok(res, []);
+
+  const users = await User.find({
+    _id: { $ne: req.user._id },
+    $or: [{ fullName: { $regex: q, $options: 'i' } }, { email: { $regex: q, $options: 'i' } }]
+  })
+    .select('fullName email phone roles')
+    .limit(8);
+
+  return ok(res, users);
 });
 
 // ---- Admin ----
@@ -69,4 +112,4 @@ const setUserStatus = asyncHandler(async (req, res) => {
   return ok(res, { user: user.toSafeJSON() }, `User ${status}.`);
 });
 
-module.exports = { updateMe, changePassword, listUsers, getUser, setUserStatus };
+module.exports = { updateMe, changePassword, deleteMe, searchUsers, listUsers, getUser, setUserStatus };

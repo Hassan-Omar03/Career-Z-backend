@@ -5,6 +5,7 @@ const TeacherProfile = require('../models/TeacherProfile');
 const ParentChildLink = require('../models/ParentChildLink');
 const User = require('../models/User');
 const { notifyMany } = require('../services/notification.service');
+const smsService = require('../services/sms.service');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
@@ -37,14 +38,15 @@ function assertOwnerOrStaff(institution, userId) {
 }
 
 // POST /api/institutions/:id/notifications/broadcast
-// Covers "Communication Center" / "Emergency Notification" from the spec — in-app + email,
-// scoped to the institution's own students/teachers/parents/staff (no SMS/push — those need a paid provider).
+// Covers "Communication Center" / "Emergency Notification" from the spec — in-app + email always;
+// SMS/WhatsApp additionally sent (real Twilio, BYOK) when `channels` includes them and the
+// institution has connected its own Twilio account via comms-credential.
 const broadcast = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const { audience, title, body } = req.body;
+  const { audience, title, body, channels } = req.body;
   if (!title || !audience) throw new AppError('audience and title are required.', 422);
 
   const studentProfiles = await StudentProfile.find({ primaryInstitution: institution._id }).select('user');
@@ -67,7 +69,50 @@ const broadcast = asyncHandler(async (req, res) => {
   const uniqueIds = Array.from(new Set(recipientIds.map((id) => id.toString())));
   await notifyMany(uniqueIds, { title, body: body || '', sentBy: req.user._id });
 
-  return ok(res, { sentTo: uniqueIds.length }, `Notification sent to ${uniqueIds.length} recipient(s).`);
+  let smsResult = null;
+  let whatsappResult = null;
+  const wantsSms = Array.isArray(channels) && channels.includes('sms');
+  const wantsWhatsapp = Array.isArray(channels) && channels.includes('whatsapp');
+  if (wantsSms || wantsWhatsapp) {
+    const recipients = await User.find({ _id: { $in: uniqueIds }, phone: { $exists: true, $ne: '' } }).select('phone');
+    const phones = recipients.map((u) => u.phone);
+    const text = body ? `${title}\n${body}` : title;
+    if (wantsSms && phones.length) smsResult = await smsService.sendBulk(institution._id, 'sms', phones, text).catch((e) => ({ sent: 0, failed: phones.length, error: e.message }));
+    if (wantsWhatsapp && phones.length) whatsappResult = await smsService.sendBulk(institution._id, 'whatsapp', phones, text).catch((e) => ({ sent: 0, failed: phones.length, error: e.message }));
+  }
+
+  return ok(res, { sentTo: uniqueIds.length, smsResult, whatsappResult }, `Notification sent to ${uniqueIds.length} recipient(s).`);
+});
+
+// ---- SMS/WhatsApp provider (Twilio, BYOK) ----
+
+const getCommsStatus = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const status = await require('../services/sms.service').getStatus(institution._id);
+  return ok(res, status);
+});
+
+const saveCommsCredential = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const { accountSid, authToken, smsFromNumber, whatsappFromNumber } = req.body;
+  if (!accountSid || !authToken) throw new AppError('accountSid and authToken are required.', 422);
+  if (!smsFromNumber && !whatsappFromNumber) throw new AppError('At least one of smsFromNumber or whatsappFromNumber is required.', 422);
+
+  await require('../services/sms.service').saveCredential(institution._id, req.user._id, { accountSid, authToken, smsFromNumber, whatsappFromNumber });
+  return ok(res, { configured: true }, 'Twilio connected.');
+});
+
+const removeCommsCredential = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  await require('../services/sms.service').removeCredential(institution._id);
+  return ok(res, null, 'Twilio disconnected.');
 });
 
 // POST /api/notifications/platform-announcement — super_admin-only, platform-wide. Covers Donor
@@ -84,4 +129,4 @@ const platformAnnouncement = asyncHandler(async (req, res) => {
   return ok(res, { sentTo: users.length }, `Announcement sent to ${users.length} user(s).`);
 });
 
-module.exports = { listMine, markRead, markAllRead, broadcast, platformAnnouncement };
+module.exports = { listMine, markRead, markAllRead, broadcast, platformAnnouncement, getCommsStatus, saveCommsCredential, removeCommsCredential };

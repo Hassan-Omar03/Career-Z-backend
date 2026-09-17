@@ -11,9 +11,19 @@ const Exam = require('../models/Exam');
 const Message = require('../models/Message');
 const Notification = require('../models/Notification');
 const Certificate = require('../models/Certificate');
+const Institution = require('../models/Institution');
+const ParentPermission = require('../models/ParentPermission');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
+const { generateTransactionId } = require('../utils/transactionId');
+const { computeReceiptAmounts } = require('../utils/receiptCalc');
+const { notify } = require('../services/notification.service');
+
+const PAYMENT_METHOD_LABEL = {
+  bank_transfer: 'Bank Transfer', card: 'Card', mobile_wallet: 'Mobile Wallet', cash: 'Cash', other: 'Other'
+};
+const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
 function ageFromDob(dob) {
   if (!dob) return null;
@@ -85,6 +95,21 @@ const respondToLink = asyncHandler(async (req, res) => {
 function assertApprovedLink(links, studentId) {
   const found = links.find((l) => l.student.toString() === studentId);
   if (!found) throw new AppError('You are not linked to this student.', 403);
+  return found;
+}
+
+// A 'sponsor' link (spec Part 11 — a financial supporter, not a legal guardian) is deliberately
+// weaker than father/mother/guardian: they can monitor academics and pay fees (that's the point
+// of sponsoring), but they are not the legally responsible parent, so they cannot edit medical
+// records or sign consent for trips/events/medical treatment on the child's behalf.
+const GUARDIAN_RELATIONSHIPS = ['father', 'mother', 'guardian'];
+
+function assertGuardianLink(links, studentId) {
+  const found = assertApprovedLink(links, studentId);
+  if (!GUARDIAN_RELATIONSHIPS.includes(found.relationship)) {
+    throw new AppError('Only a father, mother or guardian link can do this — a sponsor link is view/pay-only.', 403);
+  }
+  return found;
 }
 
 // GET /api/parents/children/:studentId/attendance
@@ -150,6 +175,120 @@ const childExams = asyncHandler(async (req, res) => {
     .populate('course', 'title subject')
     .sort({ scheduledDate: 1 });
   return ok(res, exams);
+});
+
+// PATCH /api/parents/children/:studentId/fees/:feeId/pay — the parent self-confirms payment of
+// their child's fee, same honesty pattern as FundingRequest.donate: no real payment gateway
+// exists yet, so the payer picks a method and gets a real, unique, server-generated receipt
+// reference. Previously only institution staff could mark a fee paid — this closes that gap so
+// the person actually paying can do it themselves, like Donation already allows for donors.
+const payChildFee = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+
+  const { paymentMethod } = req.body;
+  if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
+    throw new AppError('A valid paymentMethod is required (bank_transfer, card, mobile_wallet, cash or other).', 422);
+  }
+
+  const fee = await Fee.findById(req.params.feeId);
+  if (!fee) throw new AppError('Fee record not found.', 404);
+  if (fee.student.toString() !== req.params.studentId) throw new AppError('This fee does not belong to that child.', 400);
+  if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
+
+  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
+
+  fee.status = 'paid';
+  fee.paidAt = new Date();
+  fee.paymentMethod = paymentMethod;
+  fee.paidVia = PAYMENT_METHOD_LABEL[paymentMethod];
+  fee.transactionId = generateTransactionId();
+  fee.paidBy = req.user._id;
+  fee.grossAmount = receipt.grossAmount;
+  fee.platformCommission = receipt.platformCommission;
+  fee.gatewayCharges = receipt.gatewayCharges;
+  fee.taxAmount = receipt.taxAmount;
+  fee.netAmount = receipt.netAmount;
+  fee.escrowStatus = 'held';
+  await fee.save();
+
+  const institution = await Institution.findById(fee.institution);
+  if (institution) {
+    await notify(institution.owner, {
+      title: `Fee paid: ${fee.currency} ${fee.amount} — ${fee.title} (receipt ${fee.transactionId})`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
+
+  return ok(res, fee, `Payment confirmed. Receipt ${fee.transactionId}`);
+});
+
+// GET /api/parents/children/:studentId/health — Health Record (spec Part 11.13). Only the
+// linked parent and authorized institution staff can see this; it never appears anywhere public.
+// Guardian-only (father/mother/guardian) — a sponsor link cannot view medical information.
+const getChildHealth = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertGuardianLink(links, req.params.studentId);
+
+  const profile = await StudentProfile.findOne({ user: req.params.studentId });
+  return ok(res, {
+    bloodGroup: profile?.bloodGroup || '',
+    allergies: profile?.allergies || [],
+    medicalNotes: profile?.medicalNotes || '',
+    emergencyContact: profile?.emergencyContact || { name: '', phone: '', relation: '' }
+  });
+});
+
+// PATCH /api/parents/children/:studentId/health — guardian-only.
+const updateChildHealth = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertGuardianLink(links, req.params.studentId);
+
+  const allowed = ['bloodGroup', 'allergies', 'medicalNotes', 'emergencyContact'];
+  const update = {};
+  allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
+
+  const profile = await StudentProfile.findOneAndUpdate(
+    { user: req.params.studentId },
+    { $set: update },
+    { new: true, upsert: true, runValidators: true }
+  );
+  return ok(res, profile, 'Health record updated.');
+});
+
+// GET /api/parents/children/:studentId/permissions — digital permission slips (spec 11.14).
+// Listing is fine for a sponsor to see what's on file, but only a guardian can create one.
+const listChildPermissions = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+
+  const permissions = await ParentPermission.find({ student: req.params.studentId, parent: req.user._id }).sort({ createdAt: -1 });
+  return ok(res, permissions);
+});
+
+// POST /api/parents/children/:studentId/permissions — grant or deny consent, with a typed
+// e-signature (full name), for a specific activity (trip, event, photo use, medical, etc.).
+// Guardian-only — legal consent cannot be signed by a sponsor link.
+const grantChildPermission = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertGuardianLink(links, req.params.studentId);
+
+  const { type, title, details, decision, signedName } = req.body;
+  const validTypes = ['trip', 'event', 'competition', 'photo', 'medical', 'other'];
+  if (!type || !validTypes.includes(type)) throw new AppError('A valid type is required.', 422);
+  if (!title) throw new AppError('title is required.', 422);
+  if (!['granted', 'denied'].includes(decision)) throw new AppError('decision must be granted or denied.', 422);
+  if (!signedName || !signedName.trim()) throw new AppError('Your typed signature (full name) is required.', 422);
+
+  const permission = await ParentPermission.create({
+    student: req.params.studentId,
+    parent: req.user._id,
+    type, title, details: details || '', decision,
+    signedName: signedName.trim(),
+    signedAt: new Date()
+  });
+
+  return created(res, permission, `Permission ${decision}.`);
 });
 
 // GET /api/parents/children/:studentId/certificates — Digital Portfolio page.
@@ -264,9 +403,14 @@ module.exports = {
   childAttendance,
   childResults,
   childFees,
+  payChildFee,
   childTimetable,
   childHomework,
   childExams,
   childCertificates,
+  getChildHealth,
+  updateChildHealth,
+  listChildPermissions,
+  grantChildPermission,
   getMyDashboard
 };

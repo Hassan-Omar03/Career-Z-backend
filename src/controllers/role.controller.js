@@ -5,7 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { ROLES, APPROVAL_REQUIRED_ROLES } = require('../config/rbac');
 const { emitToUser } = require('../realtime/socket');
-const { notify } = require('../services/notification.service');
+const { notify, notifyAdmins } = require('../services/notification.service');
 
 // POST /api/roles/request
 // The role (and its dashboard) is granted immediately so the user isn't stuck
@@ -49,6 +49,12 @@ const requestRole = asyncHandler(async (req, res) => {
 
   emitToUser(req.user._id, 'dashboard:update', { reason: 'role-request-created' });
 
+  const roleLabel = requestedRole.replaceAll('_', ' ');
+  notifyAdmins({
+    title: `New verification request: ${roleLabel}`,
+    body: `${req.user.fullName} (${req.user.email}) requested the "${roleLabel}" role and submitted ${(documents || []).length} document(s) for review.`
+  }).catch(() => {});
+
   return created(res, { user: req.user.toSafeJSON(), request }, 'Dashboard unlocked. Verification is pending before you can post.');
 });
 
@@ -68,7 +74,15 @@ const submitMyDocuments = asyncHandler(async (req, res) => {
   if (!request) throw new AppError('No verification request found for this role.', 404);
 
   request.documents = documents;
+  request.status = 'pending';
   await request.save();
+
+  const roleLabel = request.requestedRole.replaceAll('_', ' ');
+  notifyAdmins({
+    title: `Verification documents updated: ${roleLabel}`,
+    body: `${req.user.fullName} (${req.user.email}) updated their documents for the "${roleLabel}" role. Please review.`
+  }).catch(() => {});
+
   return ok(res, request, 'Documents submitted.');
 });
 
@@ -111,11 +125,14 @@ const reviewRequest = asyncHandler(async (req, res) => {
   emitToUser(request.user, 'dashboard:update', { reason: 'role-request-reviewed', decision });
 
   const roleLabel = request.requestedRole.replaceAll('_', ' ');
+  const decisionBody = decision === 'approved'
+    ? `Congratulations! Your "${roleLabel}" account has been approved and is now active. You can access all ${roleLabel} features right away.${reviewNotes ? `\n\nAdmin notes: ${reviewNotes}` : ''}`
+    : `Your "${roleLabel}" verification request was rejected.${reviewNotes ? `\n\nReason: ${reviewNotes}` : ' Please review your documents and submit again.'}`;
   await notify(request.user, {
     title: `Verification update: your ${roleLabel} account was ${decision}`,
-    body: reviewNotes || '',
+    body: decisionBody,
     sentBy: req.user._id
-  }).catch(() => {});
+  }, { email: true, toAddress: user.email }).catch(() => {});
 
   return ok(res, request, `Role request ${decision}.`);
 });

@@ -4,6 +4,7 @@ const { protect } = require('../middleware/auth');
 
 router.post('/register', ctrl.register);
 router.post('/login', ctrl.login);
+router.post('/login/verify-2fa', ctrl.verifyLogin2FA);
 router.post('/refresh', ctrl.refresh);
 router.post('/logout', ctrl.logout);
 router.post('/forgot-password', ctrl.forgotPassword);
