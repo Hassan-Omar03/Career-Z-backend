@@ -6,6 +6,7 @@ const StudentDocument = require('../models/StudentDocument');
 const StudentGoal = require('../models/StudentGoal');
 const Enrollment = require('../models/Enrollment');
 const Attendance = require('../models/Attendance');
+const AttendanceSession = require('../models/AttendanceSession');
 const Result = require('../models/Result');
 const Submission = require('../models/Submission');
 const Assignment = require('../models/Assignment');
@@ -93,6 +94,90 @@ const connectToInstitution = asyncHandler(async (req, res) => {
 
   await notifySponsorsOfProgress(req.user._id, req.user.fullName);
   return ok(res, profile, 'Connected to institution.');
+});
+
+// POST /api/students/me/attendance/qr-checkin — student scans the teacher's session QR (decoded
+// locally by the browser) and self-checks-in. The token is single-session and time-limited, so
+// an old/screenshotted QR stops working once the session's `expiresAt` passes.
+const qrCheckIn = asyncHandler(async (req, res) => {
+  const { token, date } = req.body;
+  if (!token || !date) throw new AppError('token and date are required.', 422);
+
+  const session = await AttendanceSession.findOne({ token });
+  if (!session) throw new AppError('This QR code is invalid.', 404);
+  if (session.expiresAt < new Date()) throw new AppError('This QR code has expired — ask your teacher for a new one.', 410);
+
+  const courseDoc = await Course.findById(session.course);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  const enrolled = await Enrollment.findOne({ course: session.course, student: req.user._id });
+  if (!enrolled) throw new AppError('You are not enrolled in this course.', 400);
+
+  if (session.checkedIn.some((id) => id.toString() === req.user._id.toString())) {
+    return ok(res, { alreadyMarked: true }, 'You already checked in for this session.');
+  }
+  session.checkedIn.push(req.user._id);
+  await session.save();
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  let sheet = await Attendance.findOne({ course: session.course, date: { $gte: dayStart, $lte: dayEnd } });
+  if (!sheet) {
+    sheet = await Attendance.create({ course: session.course, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
+  }
+  const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
+  if (!already) {
+    sheet.records.push({ student: req.user._id, status: 'present', method: 'qr' });
+    await sheet.save();
+  }
+
+  return ok(res, { alreadyMarked: false }, 'Attendance marked via QR check-in.');
+});
+
+// Haversine formula — great-circle distance between two lat/lng points, in meters.
+function distanceMeters(lat1, lng1, lat2, lng2) {
+  const R = 6371000;
+  const toRad = (d) => (d * Math.PI) / 180;
+  const dLat = toRad(lat2 - lat1);
+  const dLng = toRad(lng2 - lng1);
+  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
+}
+
+// POST /api/students/me/attendance/gps-checkin — optional GPS attendance (spec: optional, since
+// it needs browser/device location permission). Only accepted if the course has GPS attendance
+// enabled and the student's submitted coordinates fall inside its configured radius.
+const gpsCheckIn = asyncHandler(async (req, res) => {
+  const { course: courseId, date, lat, lng } = req.body;
+  if (!courseId || !date || lat === undefined || lng === undefined) {
+    throw new AppError('course, date, lat and lng are required.', 422);
+  }
+
+  const courseDoc = await Course.findById(courseId);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  if (!courseDoc.attendanceLocation?.enabled) throw new AppError('GPS attendance is not enabled for this course.', 400);
+
+  const enrolled = await Enrollment.findOne({ course: courseId, student: req.user._id });
+  if (!enrolled) throw new AppError('You are not enrolled in this course.', 400);
+
+  const { lat: allowedLat, lng: allowedLng, radiusMeters } = courseDoc.attendanceLocation;
+  const distance = distanceMeters(Number(lat), Number(lng), allowedLat, allowedLng);
+  if (distance > radiusMeters) {
+    throw new AppError(`You're too far from the class location (${Math.round(distance)}m away, ${radiusMeters}m allowed).`, 422);
+  }
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  let sheet = await Attendance.findOne({ course: courseId, date: { $gte: dayStart, $lte: dayEnd } });
+  if (!sheet) {
+    sheet = await Attendance.create({ course: courseId, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
+  }
+  const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
+  if (already) return ok(res, { alreadyMarked: true, distanceMeters: Math.round(distance) }, 'You were already marked present today.');
+
+  sheet.records.push({ student: req.user._id, status: 'present', method: 'gps', location: { lat, lng, distanceMeters: Math.round(distance) } });
+  await sheet.save();
+
+  return ok(res, { alreadyMarked: false, distanceMeters: Math.round(distance) }, 'Attendance marked via GPS check-in.');
 });
 
 // GET /api/students/me/attendance
@@ -629,6 +714,8 @@ module.exports = {
   getMyProfile,
   updateMyProfile,
   connectToInstitution,
+  qrCheckIn,
+  gpsCheckIn,
   getMyAttendance,
   getMyResults,
   getMyEnrollments,

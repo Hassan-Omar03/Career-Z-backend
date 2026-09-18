@@ -8,7 +8,7 @@ const PROVIDERS_BY_PURPOSE = {
   text: ['openai', 'claude', 'gemini', 'deepseek'],
   image: ['openai', 'stability'],
   threed: ['meshy'],
-  voice: ['elevenlabs'],
+  voice: ['elevenlabs', 'google'],
   avatar: ['heygen'],
   animation: ['runway']
 };
@@ -25,7 +25,8 @@ const FEATURE_PROMPTS = {
   cover_letter: 'You are a cover letter writer. Given the job details and the applicant\'s background, write a professional, specific cover letter (not generic filler) in 3-4 short paragraphs.',
   linkedin_optimize: 'You are a LinkedIn profile optimizer. Given the person\'s current headline/summary/experience text, rewrite it to be more compelling and keyword-relevant, and list 3-5 specific improvement suggestions.',
   interview_coach: 'You are an interview coach. Given the job role and the candidate\'s background, generate 5 likely interview questions for that role, and for each one give a short tip on how to answer it well.',
-  teacher_slides: 'You are a presentation slide generator for teachers. Given a topic (and grade level if mentioned), generate 6 to 10 presentation slides. Output ONLY in this exact format, nothing else — no intro, no explanation:\n---SLIDE---\nTITLE: <slide title>\n- <bullet point>\n- <bullet point>\n- <bullet point>\n(repeat ---SLIDE--- for each slide, 3-5 short bullets per slide, no sub-bullets, no markdown formatting inside bullets)'
+  teacher_slides: 'You are a presentation slide generator for teachers. Given a topic (and grade level if mentioned), generate 6 to 10 presentation slides. Output ONLY in this exact format, nothing else — no intro, no explanation:\n---SLIDE---\nTITLE: <slide title>\n- <bullet point>\n- <bullet point>\n- <bullet point>\n(repeat ---SLIDE--- for each slide, 3-5 short bullets per slide, no sub-bullets, no markdown formatting inside bullets)',
+  video_lesson_script: 'You are a scriptwriter for short educational videos. Given lesson content/a topic, break it into 4 to 8 scenes that together teach the material. Output ONLY in this exact format, nothing else — no intro, no explanation:\n---SCENE---\nTITLE: <short on-screen title, under 8 words>\nNARRATION: <2-4 natural spoken sentences a narrator would read aloud for this scene — no bullet points, write it as continuous speech>\n- <on-screen bullet point>\n- <on-screen bullet point>\n(repeat ---SCENE--- for each scene, 2-4 short on-screen bullets per scene, narration should sound natural when read aloud, not like a list)'
 };
 
 // GET /api/ai/config — all 5 purposes' connection status at once (text/image/threed/voice/avatar).

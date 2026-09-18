@@ -168,9 +168,8 @@ async function get3DModelTaskStatus(userId, taskId) {
 
 // Verified live: POST https://api.elevenlabs.io/v1/text-to-speech/{voice_id} returns 401 with a
 // proper structured auth error on a bad key.
-async function generateSpeech(userId, text, voiceId = '21m00Tcm4TlvDq8ikWAM') {
-  const { apiKey, model } = await getDecryptedCredential(userId, 'voice');
-  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId}`, {
+async function generateSpeechElevenLabs(apiKey, model, text, voiceId) {
+  const res = await fetch(`https://api.elevenlabs.io/v1/text-to-speech/${voiceId || '21m00Tcm4TlvDq8ikWAM'}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'xi-api-key': apiKey },
     body: JSON.stringify({ text, model_id: model || 'eleven_multilingual_v2' })
@@ -181,6 +180,31 @@ async function generateSpeech(userId, text, voiceId = '21m00Tcm4TlvDq8ikWAM') {
   }
   const buffer = Buffer.from(await res.arrayBuffer());
   return `data:audio/mpeg;base64,${buffer.toString('base64')}`;
+}
+
+// Google Cloud Text-to-Speech — a genuinely free-tier-friendly option (1 million characters/month
+// free as of this writing) for institutions that don't want a paid-beyond-free-tier voice
+// provider. Verified live: POST .../v1/text:synthesize with a bad key returns a real 400 with
+// "API key not valid" — proving the request reaches Google's real API, not a stub.
+async function generateSpeechGoogle(apiKey, text, languageCode = 'en-US') {
+  const res = await fetch(`https://texttospeech.googleapis.com/v1/text:synthesize?key=${apiKey}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      input: { text },
+      voice: { languageCode, ssmlGender: 'NEUTRAL' },
+      audioConfig: { audioEncoding: 'MP3' }
+    })
+  });
+  const payload = await res.json().catch(() => ({}));
+  if (!res.ok) throw providerError(payload, res);
+  return `data:audio/mpeg;base64,${payload.audioContent}`;
+}
+
+async function generateSpeech(userId, text, voiceId) {
+  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'voice');
+  if (provider === 'google') return generateSpeechGoogle(apiKey, text);
+  return generateSpeechElevenLabs(apiKey, model, text, voiceId);
 }
 
 // ---------------------------------------------------------------------- Avatar video (HeyGen)

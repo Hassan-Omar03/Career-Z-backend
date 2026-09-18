@@ -1,6 +1,8 @@
+const QRCode = require('qrcode');
 const TeacherProfile = require('../models/TeacherProfile');
 const Course = require('../models/Course');
 const Attendance = require('../models/Attendance');
+const AttendanceSession = require('../models/AttendanceSession');
 const StaffAttendance = require('../models/StaffAttendance');
 const TimetableEntry = require('../models/TimetableEntry');
 const Payslip = require('../models/Payslip');
@@ -93,41 +95,58 @@ const markAttendance = asyncHandler(async (req, res) => {
   return ok(res, attendance, 'Attendance recorded.');
 });
 
-// POST /api/teachers/me/attendance/qr-scan — real QR-based attendance (spec 15B.9/9.9 "QR
-// Code" method). Reuses the same idCardCode already generated for each student's Digital
-// Student ID (student.controller.js) — no separate QR system, no hardware needed beyond the
-// camera already in any phone/laptop; the frontend decodes the QR locally and sends just the
-// code. Builds up one shared attendance sheet per course+day as students are scanned in.
-const markAttendanceByQr = asyncHandler(async (req, res) => {
-  const { code, course, date } = req.body;
-  if (!code || !course || !date) throw new AppError('code, course and date are required.', 422);
+// POST /api/teachers/me/attendance/qr-session — real session-based QR attendance. The teacher
+// generates ONE short-lived QR for the whole class (shown on screen/shared); each enrolled
+// student scans it with their own device and checks themselves in. The QR encodes only a random
+// one-time token, never a student's permanent Digital ID — and the token expires after a few
+// minutes, so a screenshotted/reused old QR stops working once the session closes.
+const createQrSession = asyncHandler(async (req, res) => {
+  const { course, date, minutesValid } = req.body;
+  if (!course || !date) throw new AppError('course and date are required.', 422);
 
   const courseDoc = await Course.findById(course);
   if (!courseDoc) throw new AppError('Course not found.', 404);
   if (courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
 
-  const profile = await StudentProfile.findOne({ idCardCode: code }).populate('user', 'fullName');
-  if (!profile) throw new AppError('That QR code does not match any student ID.', 404);
+  const expiresAt = new Date(Date.now() + (Number(minutesValid) || 10) * 60 * 1000);
+  const session = await AttendanceSession.create({
+    course, classSection: courseDoc.classSection, createdBy: req.user._id, date, expiresAt
+  });
 
-  const enrolled = await Enrollment.findOne({ course, student: profile.user._id });
-  if (!enrolled) throw new AppError(`${profile.user.fullName} is not enrolled in this course.`, 400);
+  const qrDataUrl = await QRCode.toDataURL(JSON.stringify({ t: session.token }));
+  return ok(res, { sessionId: session._id, qrDataUrl, expiresAt, checkedIn: 0 }, 'QR session started.');
+});
 
-  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+// GET /api/teachers/me/attendance/qr-session/:id — live check-in count while the QR is displayed.
+const getQrSession = asyncHandler(async (req, res) => {
+  const session = await AttendanceSession.findById(req.params.id).populate('checkedIn', 'fullName');
+  if (!session) throw new AppError('Session not found.', 404);
+  if (session.createdBy.toString() !== req.user._id.toString()) throw new AppError('Not your session.', 403);
+  return ok(res, {
+    checkedIn: session.checkedIn.map((s) => s.fullName),
+    expiresAt: session.expiresAt,
+    active: session.expiresAt > new Date()
+  });
+});
 
-  let sheet = await Attendance.findOne({ course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
-  if (!sheet) {
-    sheet = await Attendance.create({ course, classSection: courseDoc.classSection, date, markedBy: req.user._id, records: [] });
-  }
+// PATCH /api/teachers/me/courses/:id/attendance-location — GPS attendance is optional per
+// course (spec: optional, since it needs the student's browser/device location permission).
+const setAttendanceLocation = asyncHandler(async (req, res) => {
+  const courseDoc = await Course.findById(req.params.id);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  if (courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
 
-  const already = sheet.records.find((r) => r.student.toString() === profile.user._id.toString());
-  if (already) {
-    return ok(res, { studentName: profile.user.fullName, alreadyMarked: true }, `${profile.user.fullName} was already marked present today.`);
-  }
+  const { enabled, lat, lng, radiusMeters } = req.body;
+  if (enabled && (lat === undefined || lng === undefined)) throw new AppError('lat and lng are required to enable GPS attendance.', 422);
 
-  sheet.records.push({ student: profile.user._id, status: 'present' });
-  await sheet.save();
-  return ok(res, { studentName: profile.user.fullName, alreadyMarked: false }, `${profile.user.fullName} marked present.`);
+  courseDoc.attendanceLocation = {
+    enabled: Boolean(enabled),
+    lat: enabled ? Number(lat) : courseDoc.attendanceLocation.lat,
+    lng: enabled ? Number(lng) : courseDoc.attendanceLocation.lng,
+    radiusMeters: radiusMeters ? Number(radiusMeters) : (courseDoc.attendanceLocation.radiusMeters || 150)
+  };
+  await courseDoc.save();
+  return ok(res, courseDoc.attendanceLocation, 'Attendance location updated.');
 });
 
 // POST /api/teachers/me/attendance/face-scan — the teacher's browser already ran face
@@ -301,6 +320,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByQr, markAttendanceByFace, listAttendance, getMyTimetable,
+  getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByFace, listAttendance, getMyTimetable,
+  createQrSession, getQrSession, setAttendanceLocation,
   checkInMyAttendance, getMySelfAttendance, getMyPayslips, getMyDashboard
 };

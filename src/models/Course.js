@@ -19,7 +19,16 @@ const courseSchema = new mongoose.Schema(
     thumbnail: { type: String, default: null },
     published: { type: Boolean, default: false },
 
-    certificateEnabled: { type: Boolean, default: false }
+    certificateEnabled: { type: Boolean, default: false },
+
+    // GPS/location attendance (spec: optional — browser/device location permission required).
+    // When set, a student's GPS attendance check-in is only accepted inside this radius.
+    attendanceLocation: {
+      enabled: { type: Boolean, default: false },
+      lat: { type: Number, default: null },
+      lng: { type: Number, default: null },
+      radiusMeters: { type: Number, default: 150 }
+    }
   },
   { timestamps: true }
 );
