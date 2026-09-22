@@ -92,6 +92,20 @@ const respondToLink = asyncHandler(async (req, res) => {
   return ok(res, link, `Link request ${decision}.`);
 });
 
+// DELETE /api/parents/link-requests/:id — either party in the link (the parent, or the student)
+// can revoke it at any time (spec: Student<->Parent "unlink/revoke flow", "custody controls").
+const unlinkChild = asyncHandler(async (req, res) => {
+  const link = await ParentChildLink.findById(req.params.id);
+  if (!link) throw new AppError('Link not found.', 404);
+  const isParty = link.parent.toString() === req.user._id.toString() || link.student.toString() === req.user._id.toString();
+  if (!isParty) throw new AppError('You are not part of this connection.', 403);
+
+  await ParentChildLink.deleteOne({ _id: link._id });
+  const other = link.parent.toString() === req.user._id.toString() ? link.student : link.parent;
+  await notify(other, { title: 'A parent-child connection was removed', sentBy: req.user._id }).catch(() => {});
+  return ok(res, null, 'Connection removed.');
+});
+
 function assertApprovedLink(links, studentId) {
   const found = links.find((l) => l.student.toString() === studentId);
   if (!found) throw new AppError('You are not linked to this student.', 403);
@@ -478,5 +492,6 @@ module.exports = {
   grantChildPermission,
   getMyDashboard,
   getAiAssistantInsights,
-  submitInstitutionFeedback
+  submitInstitutionFeedback,
+  unlinkChild
 };
