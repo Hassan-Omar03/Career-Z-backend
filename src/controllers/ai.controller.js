@@ -76,8 +76,12 @@ const removeConfig = asyncHandler(async (req, res) => {
 // enforced inside ai.service.js, not re-checked here, so there's one source of truth for it.
 
 const getInstitutionConfig = asyncHandler(async (req, res) => {
-  const statuses = await aiService.getAllInstitutionCredentialStatuses(req.params.id);
-  return ok(res, statuses);
+  try {
+    const statuses = await aiService.getAllInstitutionCredentialStatuses(req.params.id, req.user._id);
+    return ok(res, statuses);
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
 });
 
 const saveInstitutionConfig = asyncHandler(async (req, res) => {

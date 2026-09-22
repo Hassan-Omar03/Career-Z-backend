@@ -1,6 +1,17 @@
 const AiCredential = require('../models/AiCredential');
 const Institution = require('../models/Institution');
+const Setting = require('../models/Setting');
 const { encrypt, decrypt } = require('../utils/encryption');
+
+const AI_MODEL_CONFIG_KEY = 'ai_provider_models';
+
+// Super Admin's platform-wide default model per purpose+provider (spec: "provider/model
+// management") — used only when the connection itself didn't request a specific model, so it
+// never overrides a caller's explicit choice, just the fallback.
+async function getAdminDefaultModel(purpose, provider) {
+  const setting = await Setting.findOne({ key: AI_MODEL_CONFIG_KEY });
+  return setting?.value?.[purpose]?.[provider] || null;
+}
 
 // Real BYOK AI integration hub (spec Part 14/17E, and "AI Creative Teacher" Part 15B.6-15B.7).
 // CareerZ never supplies or pays for AI itself — every call here uses either the calling user's
@@ -66,9 +77,16 @@ async function saveInstitutionCredential(institutionId, userId, purpose, provide
   );
 }
 
-function statusShape(cred, purpose) {
+async function resolveModel(purpose, provider, explicitModel) {
+  if (explicitModel) return explicitModel;
+  if (!provider) return null;
+  const adminDefault = await getAdminDefaultModel(purpose, provider);
+  return adminDefault || DEFAULT_MODEL[purpose]?.[provider] || null;
+}
+
+async function statusShape(cred, purpose) {
   if (!cred) return { configured: false, provider: null, keyPreview: null, model: null };
-  return { configured: true, provider: cred.provider, keyPreview: cred.keyPreview || null, model: cred.model || DEFAULT_MODEL[purpose]?.[cred.provider] };
+  return { configured: true, provider: cred.provider, keyPreview: cred.keyPreview || null, model: await resolveModel(purpose, cred.provider, cred.model) };
 }
 
 async function getCredentialStatus(userId, purpose) {
@@ -79,16 +97,17 @@ async function getCredentialStatus(userId, purpose) {
 async function getAllCredentialStatuses(userId) {
   const creds = await AiCredential.find({ user: userId, scope: 'user' });
   const byPurpose = {};
-  ['text', 'image', 'threed', 'voice', 'avatar', 'animation'].forEach((p) => { byPurpose[p] = statusShape(null, p); });
-  creds.forEach((c) => { byPurpose[c.purpose] = statusShape(c, c.purpose); });
+  for (const p of ['text', 'image', 'threed', 'voice', 'avatar', 'animation']) byPurpose[p] = await statusShape(null, p);
+  for (const c of creds) byPurpose[c.purpose] = await statusShape(c, c.purpose);
   return byPurpose;
 }
 
-async function getAllInstitutionCredentialStatuses(institutionId) {
+async function getAllInstitutionCredentialStatuses(institutionId, userId) {
+  await assertInstitutionAiAccess(institutionId, userId);
   const creds = await AiCredential.find({ institution: institutionId, scope: 'institution' });
   const byPurpose = {};
-  ['text', 'image', 'threed', 'voice', 'avatar', 'animation'].forEach((p) => { byPurpose[p] = statusShape(null, p); });
-  creds.forEach((c) => { byPurpose[c.purpose] = statusShape(c, c.purpose); });
+  for (const p of ['text', 'image', 'threed', 'voice', 'avatar', 'animation']) byPurpose[p] = await statusShape(null, p);
+  for (const c of creds) byPurpose[c.purpose] = await statusShape(c, c.purpose);
   return byPurpose;
 }
 
@@ -109,7 +128,7 @@ async function getDecryptedCredential(userId, purpose, institutionId) {
   if (institutionId) {
     await assertInstitutionAiAccess(institutionId, userId);
     const instCred = await AiCredential.findOne({ institution: institutionId, purpose, scope: 'institution' });
-    if (instCred) return { provider: instCred.provider, apiKey: decrypt(instCred.apiKeyEncrypted), model: instCred.model || DEFAULT_MODEL[purpose]?.[instCred.provider] };
+    if (instCred) return { provider: instCred.provider, apiKey: decrypt(instCred.apiKeyEncrypted), model: await resolveModel(purpose, instCred.provider, instCred.model) };
   }
 
   const cred = await AiCredential.findOne({ user: userId, purpose, scope: 'user' });
@@ -118,7 +137,7 @@ async function getDecryptedCredential(userId, purpose, institutionId) {
     err.statusCode = 503;
     throw err;
   }
-  return { provider: cred.provider, apiKey: decrypt(cred.apiKeyEncrypted), model: cred.model || DEFAULT_MODEL[purpose]?.[cred.provider] };
+  return { provider: cred.provider, apiKey: decrypt(cred.apiKeyEncrypted), model: await resolveModel(purpose, cred.provider, cred.model) };
 }
 
 function providerError(payload, res) {

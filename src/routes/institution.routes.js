@@ -24,6 +24,7 @@ router.get('/admin/all', requireRole('admin', 'super_admin', 'platform_staff'), 
 
 router.post('/:id/staff', ctrl.addStaff);
 router.delete('/:id/staff/:userId', ctrl.removeStaff);
+router.patch('/:id/staff/:userId/ai-permissions', ctrl.updateStaffAiPermissions);
 router.get('/:id/staff-attendance', ctrl.listStaffAttendance);
 
 router.post('/:id/campus-buildings', ctrl.createCampusBuilding);

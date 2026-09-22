@@ -7,7 +7,6 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
-const { assertStudentCapAllows } = require('../utils/subscriptionGate');
 
 const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, waitlisted: 70, accepted: 100, rejected: 100 };
 function withProgress(app) {
@@ -260,11 +259,6 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   }
 
   const existingProfile = await StudentProfile.findOne({ user: application.applicant });
-  const alreadyAtThisInstitution = existingProfile?.primaryInstitution?.toString() === application.institution._id.toString();
-  if (!alreadyAtThisInstitution) {
-    const currentStudentCount = await StudentProfile.countDocuments({ primaryInstitution: application.institution._id });
-    await assertStudentCapAllows(application.institution, currentStudentCount);
-  }
 
   application.status = 'accepted';
   application.reviewedBy = req.user._id;

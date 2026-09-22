@@ -34,11 +34,11 @@ async function getEffectivePlanFor(institution) {
   return plans[effectivePlanKey(institution)];
 }
 
-async function assertStudentCapAllows(institution, currentCount) {
+async function assertStaffCapAllows(institution, currentCount) {
   const plan = await getEffectivePlanFor(institution);
-  if (plan.maxStudents != null && currentCount >= plan.maxStudents) {
+  if (plan.maxStaff != null && currentCount >= plan.maxStaff) {
     throw new AppError(
-      `Student limit reached for the ${plan.label} plan (${plan.maxStudents} students). Upgrade the institution's subscription to admit more students.`,
+      `Staff seat limit reached for the ${plan.label} plan (${plan.maxStaff} staff). Upgrade the institution's subscription to add more staff.`,
       403
     );
   }
@@ -53,5 +53,5 @@ async function assertAiInstitutionKeyAllowed(institution) {
 
 module.exports = {
   PLAN_CONFIG_KEY, getEffectivePlans, getEffectivePlanFor, isPlanActive, effectivePlanKey,
-  assertStudentCapAllows, assertAiInstitutionKeyAllowed
+  assertStaffCapAllows, assertAiInstitutionKeyAllowed
 };

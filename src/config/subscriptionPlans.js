@@ -2,26 +2,31 @@
 // Pricing/limits below are sensible defaults, not final business numbers — Super Admin can
 // override any of them at runtime via PATCH /api/admin/subscription-plans (Setting-backed,
 // same pattern as ai_enabled_providers). null = unlimited.
+//
+// Student count is deliberately NOT limited by any plan — enrolling real students is the
+// platform's core educational function and must never be blocked by an unpaid tier. Paid plans
+// only gate staff seats (a standard SaaS seat limit) and institution-owned AI keys (a genuinely
+// optional add-on — personal BYOK AI keys still work on every plan, paid or not).
 const DEFAULT_PLANS = {
   free: {
     label: 'Free', monthlyPriceUSD: 0,
-    maxStudents: 50, maxStaff: 3,
-    aiInstitutionKey: false, opsModules: false
+    maxStaff: 3,
+    aiInstitutionKey: false
   },
   basic: {
     label: 'Basic', monthlyPriceUSD: 29,
-    maxStudents: 300, maxStaff: 15,
-    aiInstitutionKey: true, opsModules: true
+    maxStaff: 15,
+    aiInstitutionKey: true
   },
   professional: {
     label: 'Professional', monthlyPriceUSD: 79,
-    maxStudents: 1500, maxStaff: 75,
-    aiInstitutionKey: true, opsModules: true
+    maxStaff: 75,
+    aiInstitutionKey: true
   },
   enterprise: {
     label: 'Enterprise', monthlyPriceUSD: 199,
-    maxStudents: null, maxStaff: null,
-    aiInstitutionKey: true, opsModules: true
+    maxStaff: null,
+    aiInstitutionKey: true
   }
 };
 

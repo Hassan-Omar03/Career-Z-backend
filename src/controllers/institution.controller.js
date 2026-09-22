@@ -26,6 +26,7 @@ const { notify, notifyParentsOfStudent, notifyAdmins } = require('../services/no
 const { generateTransactionId } = require('../utils/transactionId');
 const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
+const { assertStaffCapAllows } = require('../utils/subscriptionGate');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
@@ -188,6 +189,7 @@ const addStaff = asyncHandler(async (req, res) => {
 
   const alreadyStaff = institution.staff.some((s) => s.user.toString() === userId);
   if (alreadyStaff) throw new AppError('User is already staff at this institution.', 409);
+  await assertStaffCapAllows(institution, institution.staff.length);
 
   institution.staff.push({ user: userId, role, department: department || '', designation: designation || '', permissions: permissions || [] });
   await institution.save();
@@ -225,6 +227,31 @@ const removeStaff = asyncHandler(async (req, res) => {
   await TeacherProfile.findOneAndUpdate({ user: req.params.userId }, { $pull: { institutions: institution._id } });
 
   return ok(res, institution, 'Staff member removed.');
+});
+
+// PATCH /api/institutions/:id/staff/:userId/ai-permissions — owner-only toggle for whether a
+// staff member may use ('ai:use') and/or connect/manage ('ai:manage') the institution's own
+// AI keys. Matches the frontend's Staff Management panel, which already calls this endpoint.
+const updateStaffAiPermissions = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  const isOwner = assertOwnerOrStaff(institution, req.user._id);
+  if (!isOwner) throw new AppError('Only the owner can manage staff AI permissions.', 403);
+
+  const staffEntry = institution.staff.find((s) => s.user.toString() === req.params.userId);
+  if (!staffEntry) throw new AppError('Staff member not found.', 404);
+
+  const { canUseAi, canManageAi } = req.body;
+  const permissions = new Set(staffEntry.permissions || []);
+  permissions.delete('ai:use');
+  permissions.delete('ai:manage');
+  // Managing keys implies being able to use them.
+  if (canUseAi || canManageAi) permissions.add('ai:use');
+  if (canManageAi) permissions.add('ai:manage');
+  staffEntry.permissions = Array.from(permissions);
+  await institution.save();
+
+  return ok(res, institution, 'Staff AI permissions updated.');
 });
 
 // GET /api/institutions/:id/staff-attendance — owner/staff view of everyone's real self-check-ins
@@ -1012,6 +1039,7 @@ module.exports = {
   adminListAll,
   addStaff,
   removeStaff,
+  updateStaffAiPermissions,
   listStaffAttendance,
   listCampusBuildings,
   createCampusBuilding,

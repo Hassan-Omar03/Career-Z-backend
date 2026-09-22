@@ -25,6 +25,7 @@ const DEFAULT_INSTITUTION_FEE_COMMISSION = 5;
 const MARKETPLACE_COMMISSION_KEY = 'marketplace_commission_percent';
 const DEFAULT_MARKETPLACE_COMMISSION = 10;
 const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
+const AI_MODEL_CONFIG_KEY = 'ai_provider_models';
 const ALL_AI_PROVIDERS = {
   text: ['openai', 'claude', 'gemini', 'deepseek'],
   image: ['openai', 'stability'],
@@ -35,28 +36,61 @@ const ALL_AI_PROVIDERS = {
 };
 
 // GET /api/admin/ai-providers — Super Admin's control over which BYOK providers users/
-// institutions are even allowed to connect per AI purpose (spec: "provider/model management").
+// institutions are even allowed to connect per AI purpose, and which model each provider
+// defaults to when a caller doesn't request a specific one (spec: "provider/model management").
 const getAiProviderConfig = asyncHandler(async (req, res) => {
-  const setting = await Setting.findOne({ key: AI_PROVIDER_CONFIG_KEY });
-  return ok(res, { all: ALL_AI_PROVIDERS, enabled: setting ? setting.value : ALL_AI_PROVIDERS });
+  const [enabledSetting, modelSetting] = await Promise.all([
+    Setting.findOne({ key: AI_PROVIDER_CONFIG_KEY }),
+    Setting.findOne({ key: AI_MODEL_CONFIG_KEY })
+  ]);
+  return ok(res, {
+    all: ALL_AI_PROVIDERS,
+    enabled: enabledSetting ? enabledSetting.value : ALL_AI_PROVIDERS,
+    models: modelSetting ? modelSetting.value : {}
+  });
 });
 
-// PATCH /api/admin/ai-providers (super_admin only, enforced at route level)
+// PATCH /api/admin/ai-providers (super_admin only, enforced at route level) — `enabled` and/or
+// `models` may be sent together or separately.
 const setAiProviderConfig = asyncHandler(async (req, res) => {
-  const { enabled } = req.body;
-  if (!enabled || typeof enabled !== 'object') throw new AppError('enabled must be an object of purpose -> provider[].', 422);
-  for (const purpose of Object.keys(enabled)) {
-    if (!ALL_AI_PROVIDERS[purpose]) throw new AppError(`Unknown AI purpose: ${purpose}.`, 422);
-    if (!Array.isArray(enabled[purpose]) || enabled[purpose].some((p) => !ALL_AI_PROVIDERS[purpose].includes(p))) {
-      throw new AppError(`enabled.${purpose} must be a subset of ${ALL_AI_PROVIDERS[purpose].join(', ')}.`, 422);
+  const { enabled, models } = req.body;
+  let enabledValue;
+  if (enabled !== undefined) {
+    if (!enabled || typeof enabled !== 'object') throw new AppError('enabled must be an object of purpose -> provider[].', 422);
+    for (const purpose of Object.keys(enabled)) {
+      if (!ALL_AI_PROVIDERS[purpose]) throw new AppError(`Unknown AI purpose: ${purpose}.`, 422);
+      if (!Array.isArray(enabled[purpose]) || enabled[purpose].some((p) => !ALL_AI_PROVIDERS[purpose].includes(p))) {
+        throw new AppError(`enabled.${purpose} must be a subset of ${ALL_AI_PROVIDERS[purpose].join(', ')}.`, 422);
+      }
     }
+    const setting = await Setting.findOneAndUpdate(
+      { key: AI_PROVIDER_CONFIG_KEY }, { key: AI_PROVIDER_CONFIG_KEY, value: enabled }, { new: true, upsert: true }
+    );
+    enabledValue = setting.value;
   }
-  const setting = await Setting.findOneAndUpdate(
-    { key: AI_PROVIDER_CONFIG_KEY },
-    { key: AI_PROVIDER_CONFIG_KEY, value: enabled },
-    { new: true, upsert: true }
-  );
-  return ok(res, setting.value, 'AI provider availability updated.');
+
+  let modelsValue;
+  if (models !== undefined) {
+    if (!models || typeof models !== 'object') throw new AppError('models must be an object of purpose -> { provider: modelName }.', 422);
+    const cleaned = {};
+    for (const purpose of Object.keys(models)) {
+      if (!ALL_AI_PROVIDERS[purpose]) throw new AppError(`Unknown AI purpose: ${purpose}.`, 422);
+      const providerModels = models[purpose];
+      if (!providerModels || typeof providerModels !== 'object') throw new AppError(`models.${purpose} must be an object of provider -> modelName.`, 422);
+      cleaned[purpose] = {};
+      for (const provider of Object.keys(providerModels)) {
+        if (!ALL_AI_PROVIDERS[purpose].includes(provider)) throw new AppError(`Unknown provider "${provider}" for ${purpose}.`, 422);
+        const modelName = String(providerModels[provider] || '').trim();
+        if (modelName) cleaned[purpose][provider] = modelName;
+      }
+    }
+    const setting = await Setting.findOneAndUpdate(
+      { key: AI_MODEL_CONFIG_KEY }, { key: AI_MODEL_CONFIG_KEY, value: cleaned }, { new: true, upsert: true }
+    );
+    modelsValue = setting.value;
+  }
+
+  return ok(res, { enabled: enabledValue, models: modelsValue }, 'AI provider configuration updated.');
 });
 
 // GET /api/admin/subscription-plans — Super Admin's control over subscription plan pricing and
