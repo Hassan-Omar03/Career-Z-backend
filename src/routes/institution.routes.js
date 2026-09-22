@@ -2,6 +2,7 @@ const router = require('express').Router();
 const ctrl = require('../controllers/institution.controller');
 const notificationCtrl = require('../controllers/notification.controller');
 const certificateCtrl = require('../controllers/certificate.controller');
+const employmentCtrl = require('../controllers/teacherEmployment.controller');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { requireRole, requireDepartment } = require('../middleware/rbac');
 
@@ -26,6 +27,9 @@ router.post('/:id/staff', ctrl.addStaff);
 router.delete('/:id/staff/:userId', ctrl.removeStaff);
 router.patch('/:id/staff/:userId/ai-permissions', ctrl.updateStaffAiPermissions);
 router.get('/:id/staff-attendance', ctrl.listStaffAttendance);
+
+router.post('/:id/teacher-offers', employmentCtrl.createOffer);
+router.get('/:id/teacher-employments', employmentCtrl.listInstitutionEmployments);
 
 router.post('/:id/campus-buildings', ctrl.createCampusBuilding);
 router.patch('/:id/campus-buildings/:buildingId', ctrl.updateCampusBuilding);

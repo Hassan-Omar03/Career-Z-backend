@@ -29,6 +29,7 @@ const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { assertStaffCapAllows } = require('../utils/subscriptionGate');
 const { recordLeave } = require('../utils/institutionMembership');
+const { onboardStaff, offboardStaff } = require('../utils/staffOnboarding');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
@@ -193,26 +194,7 @@ const addStaff = asyncHandler(async (req, res) => {
   if (alreadyStaff) throw new AppError('User is already staff at this institution.', 409);
   await assertStaffCapAllows(institution, institution.staff.length);
 
-  institution.staff.push({ user: userId, role, department: department || '', designation: designation || '', permissions: permissions || [] });
-  await institution.save();
-
-  const User = require('../models/User');
-  const staffUser = await User.findById(userId);
-  if (staffUser && !staffUser.roles.includes('institution_staff')) {
-    staffUser.roles.push('institution_staff');
-    await staffUser.save();
-  }
-
-  // Staff added with the "teacher" role must actually show up in Teacher Management /
-  // be assignable as a class's Class Teacher — both read off TeacherProfile.institutions.
-  if (role === 'teacher') {
-    await TeacherProfile.findOneAndUpdate(
-      { user: userId },
-      { $addToSet: { institutions: institution._id } },
-      { upsert: true }
-    );
-  }
-
+  await onboardStaff(institution, userId, { role, department, designation, permissions });
   return ok(res, institution, 'Staff member added.');
 });
 
@@ -223,11 +205,7 @@ const removeStaff = asyncHandler(async (req, res) => {
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff.', 403);
 
-  institution.staff = institution.staff.filter((s) => s.user.toString() !== req.params.userId);
-  await institution.save();
-
-  await TeacherProfile.findOneAndUpdate({ user: req.params.userId }, { $pull: { institutions: institution._id } });
-
+  await offboardStaff(institution, req.params.userId);
   return ok(res, institution, 'Staff member removed.');
 });
 
