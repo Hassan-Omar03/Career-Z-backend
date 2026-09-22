@@ -433,6 +433,28 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
     }
   }
 
+  // A real employment record on top of the "hired" label — a formal offer the candidate must
+  // actually accept, not just a status change (spec: "offer acceptance/rejection, employment
+  // contract, employee onboarding, salary/employment record"). Additive — never changes the
+  // existing "hired" behavior above (job filled, commission), just adds real tracking after it.
+  if (status === 'hired') {
+    const Employment = require('../models/Employment');
+    const existingEmployment = await Employment.findOne({ application: application._id });
+    if (!existingEmployment) {
+      await Employment.create({
+        application: application._id, job: application.job._id,
+        employer: application.job.postedBy, employee: application.applicant,
+        salary: application.job.salaryMin || application.job.salaryMax || null,
+        currency: application.job.currency || 'USD', status: 'offered'
+      });
+      await notify(application.applicant, {
+        title: `Employment offer: ${application.job.title}`,
+        body: 'Review and respond to the formal offer from My Applications.',
+        sentBy: req.user._id
+      }).catch(() => {});
+    }
+  }
+
   return ok(res, application, `Application ${status}.`);
 });
 

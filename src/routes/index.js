@@ -42,6 +42,7 @@ router.use('/wallet', require('./wallet.routes'));
 router.use('/subscriptions', require('./subscription.routes'));
 router.use('/teacher-feedback', require('./teacherFeedback.routes'));
 router.use('/teacher-employments', require('./teacherEmployment.routes'));
+router.use('/employment', require('./employment.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/', require('./cms.routes'));
 
