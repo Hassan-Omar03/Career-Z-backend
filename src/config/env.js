@@ -49,6 +49,17 @@ module.exports = {
     libretranslateUrl: process.env.LIBRETRANSLATE_URL || '',
     libretranslateApiKey: process.env.LIBRETRANSLATE_API_KEY || ''
   },
+  // Platform-wide media storage (client-provided, free-tier Cloudinary account works) — separate
+  // from the per-user BYOK MediaCredential (used only for the teacher's own AI-video pipeline).
+  // This is for universal, unavoidable uploads (profile photo, campus photos, locker documents)
+  // that can't reasonably require every single user to connect their own storage account.
+  // cloudName empty = "not configured", and every upload flow below keeps working as before
+  // (small resized base64) rather than breaking — this only upgrades storage once it's set.
+  cloudinary: {
+    cloudName: process.env.CLOUDINARY_CLOUD_NAME || '',
+    apiKey: process.env.CLOUDINARY_API_KEY || '',
+    apiSecret: process.env.CLOUDINARY_API_SECRET || ''
+  },
   // Key used to encrypt each user's own BYOK AI API key at rest (spec Part 17E "AI Security" —
   // "کسی Institution کی API Key ... Encrypt ہو کر محفوظ ہوگی"). Falls back to deriving from the
   // JWT secret only so dev/test never crashes for lack of a dedicated var — production should

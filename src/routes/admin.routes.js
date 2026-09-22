@@ -24,6 +24,7 @@ router.patch('/subscription-plans', requireRole('super_admin'), ctrl.setSubscrip
 router.get('/reports', ctrl.getPlatformReports);
 router.get('/dashboard', ctrl.getDashboard);
 router.get('/world-map', ctrl.getWorldMap);
+router.post('/ai-insights', ctrl.getAiInsights);
 
 // Staff team management — Super Admin only.
 router.get('/staff', requireRole('super_admin'), staffCtrl.listStaff);

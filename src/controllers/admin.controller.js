@@ -268,6 +268,58 @@ const getDashboard = asyncHandler(async (req, res) => {
   });
 });
 
+// POST /api/admin/ai-insights — real BYOK AI predictions/analysis over real platform-wide
+// aggregates (spec: "AI Insights & Predictions"). CareerZ never pays for or supplies the AI — the
+// Super Admin connects their own key (Profile -> AI Settings) exactly like every other AI
+// assistant in the platform, and the model only ever sees real computed numbers, never invents any.
+const getAiInsights = asyncHandler(async (req, res) => {
+  const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
+  const thirtyDaysAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+
+  const [
+    totalUsers, newUsersToday, newUsersLast30,
+    totalInstitutions, pendingInstitutions,
+    pendingRoleRequests, openComplaints, blockedIpCount,
+    feePaidAgg, feePendingAgg, feeOverdueAgg,
+    activeJobs, openScholarships
+  ] = await Promise.all([
+    User.countDocuments(),
+    User.countDocuments({ createdAt: { $gte: startOfDay } }),
+    User.countDocuments({ createdAt: { $gte: thirtyDaysAgo } }),
+    Institution.countDocuments(),
+    Institution.countDocuments({ verificationStatus: 'pending' }),
+    RoleRequest.countDocuments({ status: 'pending' }),
+    Complaint.countDocuments({ status: { $in: ['open', 'in_review'] } }),
+    BlockedIp.countDocuments(),
+    Fee.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    Fee.aggregate([{ $match: { status: 'pending' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    Fee.aggregate([{ $match: { status: 'overdue' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
+    Job.countDocuments({ status: 'active' }),
+    Scholarship.countDocuments({ status: 'open' })
+  ]);
+
+  const dataSummary = `Total users: ${totalUsers} (${newUsersToday} today, ${newUsersLast30} in last 30 days)
+Institutions: ${totalInstitutions} total, ${pendingInstitutions} pending verification
+Pending role requests: ${pendingRoleRequests}
+Open complaints: ${openComplaints}
+Blocked IPs: ${blockedIpCount}
+Fees — paid: ${feePaidAgg[0]?.total || 0}, pending: ${feePendingAgg[0]?.total || 0}, overdue: ${feeOverdueAgg[0]?.total || 0}
+Active job postings: ${activeJobs}
+Open scholarships: ${openScholarships}`;
+
+  const aiService = require('../services/ai.service');
+  try {
+    const result = await aiService.generate(
+      req.user._id,
+      'You are a platform operations analyst for an education/careers platform (CareerZ). Given real, structured platform-wide metrics, write a short (5-8 bullet points) analysis: growth trend, verification/support backlog risk, fee-collection health, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the Super Admin\'s own — you are only summarizing/predicting trends, not deciding.',
+      dataSummary
+    );
+    return ok(res, { insights: result, dataSummary });
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
+});
+
 // GET /api/admin/world-map — real per-country user + institution counts (spec Part 16A.3
 // "Interactive World Map"). Positions are approximate geographic centroids (see
 // utils/countryCentroids.js), not traced borders — but every count is a real DB aggregate.
@@ -301,7 +353,7 @@ const getWorldMap = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  getFinanceSummary, getPlatformReports, getDashboard, getWorldMap,
+  getFinanceSummary, getPlatformReports, getDashboard, getWorldMap, getAiInsights,
   getInstitutionFeeCommissionRate, setInstitutionFeeCommissionRate,
   getAiProviderConfig, setAiProviderConfig,
   getSubscriptionPlanConfig, setSubscriptionPlanConfig

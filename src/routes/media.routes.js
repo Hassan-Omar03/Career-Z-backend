@@ -9,4 +9,7 @@ router.put('/cloudinary/config', ctrl.saveConfig);
 router.delete('/cloudinary/config', ctrl.removeConfig);
 router.post('/cloudinary/signature', ctrl.getUploadSignature);
 
+router.get('/platform/config', ctrl.getPlatformConfig);
+router.post('/platform/signature', ctrl.getPlatformUploadSignature);
+
 module.exports = router;

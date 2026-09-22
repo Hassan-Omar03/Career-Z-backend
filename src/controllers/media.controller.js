@@ -4,6 +4,7 @@ const { encrypt, decrypt } = require('../utils/encryption');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
+const env = require('../config/env');
 
 // GET /api/media/cloudinary/config
 const getConfig = asyncHandler(async (req, res) => {
@@ -49,4 +50,24 @@ const getUploadSignature = asyncHandler(async (req, res) => {
   return ok(res, { signature, timestamp, folder, apiKey: cred.apiKey, cloudName: cred.cloudName });
 });
 
-module.exports = { getConfig, saveConfig, removeConfig, getUploadSignature };
+// GET /api/media/platform/config — lets the frontend know whether platform-wide storage is
+// available before it tries the real-upload path (falls back to base64 if not).
+const getPlatformConfig = asyncHandler(async (req, res) => {
+  return ok(res, { configured: Boolean(env.cloudinary.cloudName) });
+});
+
+// POST /api/media/platform/signature — signed upload against CareerZ's own platform-wide
+// Cloudinary account (not per-user BYOK) — for universal uploads every account needs regardless
+// of AI/video features: profile photo, institution campus photos, Digital Locker documents.
+const getPlatformUploadSignature = asyncHandler(async (req, res) => {
+  if (!env.cloudinary.cloudName) throw new AppError('Platform media storage is not configured yet.', 503);
+
+  const timestamp = Math.round(Date.now() / 1000);
+  const folder = req.query.folder && /^[a-z0-9-]+$/i.test(req.query.folder) ? `careerz-${req.query.folder}` : 'careerz-uploads';
+  const paramsToSign = `folder=${folder}&timestamp=${timestamp}${env.cloudinary.apiSecret}`;
+  const signature = crypto.createHash('sha1').update(paramsToSign).digest('hex');
+
+  return ok(res, { signature, timestamp, folder, apiKey: env.cloudinary.apiKey, cloudName: env.cloudinary.cloudName });
+});
+
+module.exports = { getConfig, saveConfig, removeConfig, getUploadSignature, getPlatformConfig, getPlatformUploadSignature };
