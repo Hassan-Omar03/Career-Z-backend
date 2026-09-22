@@ -30,6 +30,7 @@ const { ok, created } = require('../utils/apiResponse');
 const { notify, notifyMany } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
+const { recordJoin } = require('../utils/institutionMembership');
 
 const PAYMENT_METHOD_LABEL = {
   bank_transfer: 'Bank Transfer', card: 'Card', mobile_wallet: 'Mobile Wallet', cash: 'Cash', other: 'Other'
@@ -74,26 +75,36 @@ const updateMyProfile = asyncHandler(async (req, res) => {
   return ok(res, profile);
 });
 
-// POST /api/students/me/connect-institution
+// POST /api/students/me/connect-institution — self-service join; a student can now be a real
+// member of more than one institution at once (spec: "multiple simultaneous institutions").
 const connectToInstitution = asyncHandler(async (req, res) => {
   const { institutionId, classSectionId, rollNumber } = req.body;
   if (!institutionId) throw new AppError('institutionId is required.', 422);
 
-  const profile = await StudentProfile.findOneAndUpdate(
-    { user: req.user._id },
-    {
-      $set: {
-        primaryInstitution: institutionId,
-        classSection: classSectionId || null,
-        rollNumber: rollNumber || '',
-        admissionDate: new Date()
-      }
-    },
-    { new: true, upsert: true, runValidators: true }
-  );
+  let profile = await StudentProfile.findOne({ user: req.user._id });
+  if (!profile) profile = await StudentProfile.create({ user: req.user._id, admissionDate: new Date() });
+
+  const membership = await recordJoin(req.user._id, institutionId);
+  if (membership.isPrimary) {
+    profile.classSection = classSectionId || null;
+    profile.rollNumber = rollNumber || '';
+    profile.admissionDate = profile.admissionDate || new Date();
+    await profile.save();
+  }
 
   await notifySponsorsOfProgress(req.user._id, req.user.fullName);
-  return ok(res, profile, 'Connected to institution.');
+  const refreshed = await StudentProfile.findOne({ user: req.user._id }).populate('primaryInstitution', 'name type country');
+  return ok(res, refreshed, 'Connected to institution.');
+});
+
+// GET /api/students/me/institutions — every institution this student has ever joined, current
+// and past (spec: "multiple simultaneous institutions", "transfer/history", "alumni transition").
+const myInstitutionMemberships = asyncHandler(async (req, res) => {
+  const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
+  const memberships = await StudentInstitutionMembership.find({ student: req.user._id })
+    .populate('institution', 'name type country logo')
+    .sort({ isPrimary: -1, joinedAt: -1 });
+  return ok(res, memberships);
 });
 
 // POST /api/students/me/attendance/qr-checkin — student scans the teacher's session QR (decoded
@@ -706,6 +717,7 @@ module.exports = {
   getMyProfile,
   updateMyProfile,
   connectToInstitution,
+  myInstitutionMemberships,
   qrCheckIn,
   gpsCheckIn,
   getMyAttendance,

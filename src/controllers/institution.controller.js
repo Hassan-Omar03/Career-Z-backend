@@ -28,6 +28,7 @@ const { generateTransactionId } = require('../utils/transactionId');
 const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { assertStaffCapAllows } = require('../utils/subscriptionGate');
+const { recordLeave } = require('../utils/institutionMembership');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
@@ -773,19 +774,25 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const { status, classSection, rollNumber } = req.body;
+  const { status, classSection, rollNumber, reason } = req.body;
   if (status !== undefined) {
     if (!['active', 'suspended', 'graduated', 'transferred'].includes(status)) {
       throw new AppError('Invalid status.', 422);
     }
     profile.status = status;
+    // A real transfer/history record (spec: "transfer/withdrawal/alumni lifecycle") — not just
+    // an overwritten status flag. 'suspended'/'active' aren't a departure, so only these two are.
+    if (['transferred', 'graduated'].includes(status)) {
+      await recordLeave(profile.user, institution._id, status, reason);
+    }
   }
   // Class Section + Roll Number are normally assigned by the institution's office, not the
   // student — this is the school-admin side of that assignment.
   if (classSection !== undefined) profile.classSection = classSection || null;
   if (rollNumber !== undefined) profile.rollNumber = rollNumber;
   await profile.save();
-  return ok(res, profile, 'Student record updated.');
+  const refreshed = await StudentProfile.findById(profile._id).populate('primaryInstitution', 'name');
+  return ok(res, refreshed, 'Student record updated.');
 });
 
 // ---- Attendance Management (institution-wide reporting) ----

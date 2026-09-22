@@ -7,6 +7,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
+const { recordJoin } = require('../utils/institutionMembership');
 
 const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, waitlisted: 70, accepted: 100, rejected: 100 };
 function withProgress(app) {
@@ -258,22 +259,19 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
     throw new AppError('Only the institution owner or a staff member with final-approval permission can accept.', 403);
   }
 
-  const existingProfile = await StudentProfile.findOne({ user: application.applicant });
+  let profile = await StudentProfile.findOne({ user: application.applicant });
 
   application.status = 'accepted';
   application.reviewedBy = req.user._id;
   application.admissionLetter = { verifyCode: crypto.randomBytes(8).toString('hex'), issuedAt: new Date() };
 
-  let profile = existingProfile;
   if (!profile) {
-    profile = await StudentProfile.create({
-      user: application.applicant,
-      primaryInstitution: application.institution._id,
-      program: application.program,
-      admissionDate: new Date()
-    });
-  } else {
-    profile.primaryInstitution = application.institution._id;
+    profile = await StudentProfile.create({ user: application.applicant, admissionDate: new Date() });
+  }
+  // A student can be a real member of more than one institution at once — this records the
+  // membership and only touches primaryInstitution if this is their first (or a re-join).
+  const membership = await recordJoin(application.applicant, application.institution._id, application.program);
+  if (membership.isPrimary) {
     profile.program = application.program;
     profile.admissionDate = profile.admissionDate || new Date();
     await profile.save();

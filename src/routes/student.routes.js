@@ -12,6 +12,7 @@ router.use(protect, requirePermission('student:profile:read:own'));
 router.get('/me', ctrl.getMyProfile);
 router.patch('/me', ctrl.updateMyProfile);
 router.post('/me/connect-institution', ctrl.connectToInstitution);
+router.get('/me/institutions', ctrl.myInstitutionMemberships);
 router.post('/me/attendance/qr-checkin', ctrl.qrCheckIn);
 router.post('/me/attendance/gps-checkin', ctrl.gpsCheckIn);
 router.get('/me/attendance', ctrl.getMyAttendance);
