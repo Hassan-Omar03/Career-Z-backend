@@ -20,4 +20,10 @@ const walletTransactionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+// Null values on transfers/withdrawals are excluded; a gateway transaction can credit once.
+walletTransactionSchema.index({ paddleTransactionId: 1 }, {
+  unique: true,
+  partialFilterExpression: { paddleTransactionId: { $type: 'string' } }
+});
+
 module.exports = mongoose.model('WalletTransaction', walletTransactionSchema);

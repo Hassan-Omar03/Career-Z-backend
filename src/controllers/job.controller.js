@@ -194,6 +194,9 @@ const applyToJob = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
   if (job.status !== 'active') throw new AppError('This job is no longer accepting applications.', 400);
+  if (job.applicationDeadline && new Date(job.applicationDeadline) < new Date()) {
+    throw new AppError('The application deadline has passed.', 400);
+  }
 
   const existing = await JobApplication.findOne({ job: job._id, applicant: req.user._id });
   if (existing) throw new AppError('You already applied to this job.', 409);
@@ -667,42 +670,51 @@ const setFeaturedFee = asyncHandler(async (req, res) => {
   return ok(res, { fee: setting.value }, 'Featured job fee updated.');
 });
 
-// POST /api/jobs/:id/feature — the job's own poster (employer/agent) buys 30 days of featured
-// placement. Records a real FeaturedListing ledger entry — see that model's comment for why this
-// isn't a claim of an actual card charge (no payment gateway is integrated anywhere in this app yet).
+// Shared validation for both the real Paddle checkout (payment.controller.js) and the
+// Admin-recorded manual entry below — the poster must own the job, and it can't already be
+// under an active featured window.
+async function loadFeaturableJob(jobId, userId) {
+  const job = await Job.findById(jobId);
+  if (!job) throw new AppError('Job not found.', 404);
+  assertOwnsJob(job, userId);
+  if (job.featured && job.featuredUntil > new Date()) throw new AppError('This job is already featured.', 400);
+  const setting = await Setting.findOne({ key: FEATURED_JOB_FEE_KEY });
+  const fee = setting ? setting.value : DEFAULT_FEATURED_JOB_FEE;
+  return { job, fee, days: FEATURED_JOB_DAYS };
+}
+
+// POST /api/jobs/:id/feature — Admin-only: records a Featured purchase the poster paid for
+// off-platform (bank transfer/cash), same self-report pattern as institution fees. Regular
+// employers/agents must use the real Paddle checkout (payment.controller.js
+// createFeaturedJobCheckout) — a self-service "trust me I paid" button was exactly the gap that
+// let anyone activate a paid placement without a verified charge.
 const featureJob = asyncHandler(async (req, res) => {
   const { paymentMethod } = req.body;
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
-    throw new AppError('A valid paymentMethod is required (bank_transfer, card, mobile_wallet, cash or other).', 422);
+    throw new AppError('A valid paymentMethod is required (bank_transfer, mobile_wallet, cash or other).', 422);
   }
+  if (paymentMethod === 'paddle') throw new AppError('Use the Paddle checkout endpoint for card payments.', 422);
 
-  const job = await Job.findById(req.params.id);
-  if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, req.user._id);
-  if (job.featured && job.featuredUntil > new Date()) {
-    throw new AppError('This job is already featured.', 400);
-  }
-
-  const setting = await Setting.findOne({ key: FEATURED_JOB_FEE_KEY });
-  const fee = setting ? setting.value : DEFAULT_FEATURED_JOB_FEE;
-  const expiresAt = new Date(Date.now() + FEATURED_JOB_DAYS * 24 * 60 * 60 * 1000);
+  const { job, fee, days } = await loadFeaturableJob(req.params.id, req.user._id);
+  const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   const transactionId = generateTransactionId();
 
   const FeaturedListing = require('../models/FeaturedListing');
   await FeaturedListing.create({
-    listingType: 'job', job: job._id, purchasedBy: req.user._id, amount: fee, currency: 'USD',
-    paymentMethod, transactionId, expiresAt
+    listingType: 'job', job: job._id, purchasedBy: job.postedBy, amount: fee, currency: 'USD',
+    paymentMethod, transactionId, status: 'paid', expiresAt
   });
 
   job.featured = true;
   job.featuredUntil = expiresAt;
   await job.save();
 
-  return ok(res, job, `Job featured for ${FEATURED_JOB_DAYS} days (${fee} USD). Receipt ${transactionId}`);
+  return ok(res, job, `Job featured for ${days} days (${fee} USD). Receipt ${transactionId}`);
 });
 
 module.exports = {
   createJob,
+  loadFeaturableJob,
   getFeaturedFee,
   setFeaturedFee,
   featureJob,

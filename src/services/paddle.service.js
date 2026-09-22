@@ -78,7 +78,7 @@ function verifyWebhookSignature(rawBody, signatureHeader) {
   // Reject stale signatures (replay protection) — 5 minute tolerance, generous enough to absorb
   // normal network/processing delay without weakening real replay protection.
   const ageSeconds = Math.abs(Date.now() / 1000 - Number(ts));
-  if (ageSeconds > 300) return false;
+  if (!Number.isFinite(ageSeconds) || ageSeconds > 300) return false;
 
   const signedPayload = `${ts}:${rawBody}`;
   const computed = crypto.createHmac('sha256', env.paddle.webhookSecret).update(signedPayload).digest('hex');

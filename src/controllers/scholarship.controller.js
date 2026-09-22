@@ -1,4 +1,5 @@
 const Scholarship = require('../models/Scholarship');
+const mongoose = require('mongoose');
 const ScholarshipApplication = require('../models/ScholarshipApplication');
 const Sponsorship = require('../models/Sponsorship');
 const DonorDeposit = require('../models/DonorDeposit');
@@ -120,42 +121,46 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
     throw new AppError('Invalid status.', 422);
   }
 
-  const application = await ScholarshipApplication.findById(req.params.appId).populate('scholarship');
-  if (!application) throw new AppError('Application not found.', 404);
-  assertOwnsScholarship(application.scholarship, req.user._id);
+  let application;
+  await mongoose.connection.transaction(async (session) => {
+    application = await ScholarshipApplication.findById(req.params.appId).session(session);
+    if (!application) throw new AppError('Application not found.', 404);
+    const scholarship = await Scholarship.findById(application.scholarship).session(session);
+    if (!scholarship) throw new AppError('Scholarship not found.', 404);
+    assertOwnsScholarship(scholarship, req.user._id);
 
-  application.status = status;
-  application.reviewedAt = new Date();
-  await application.save();
+    // Every approval writes the scholarship document. Concurrent approvals therefore
+    // conflict and retry against an up-to-date count instead of occupying one seat twice.
+    await Scholarship.updateOne({ _id: scholarship._id }, { $inc: { seatRevision: 1 } }, { session });
+    const existing = await Sponsorship.findOne({ application: application._id }).session(session);
+    if (status === 'approved' && application.status !== 'approved') {
+      const approved = await ScholarshipApplication.countDocuments({ scholarship: scholarship._id, status: 'approved' }).session(session);
+      if (approved >= scholarship.seatsAvailable) throw new AppError('No scholarship seats remain.', 409);
+      if (existing?.status === 'cancelled') {
+        existing.status = 'active';
+        await existing.save({ session });
+      } else if (!existing) {
+        await Sponsorship.create([{
+          donor: req.user._id, scholarship: scholarship._id, application: application._id,
+          student: application.applicant, amount: Math.round(scholarship.amount / scholarship.seatsAvailable),
+          currency: scholarship.currency || 'USD'
+        }], { session });
+      }
+    } else if (status !== 'approved' && existing && !['completed', 'cancelled'].includes(existing.status)) {
+      existing.status = 'cancelled';
+      await existing.save({ session });
+    }
+    application.status = status;
+    application.reviewedAt = new Date();
+    await application.save({ session });
+    application.scholarship = scholarship;
+  });
 
   const STATUS_LABEL = { pending: 'Under review', approved: 'Approved', rejected: 'Not selected' };
   await notify(application.applicant, {
     title: `${application.scholarship.title}: ${STATUS_LABEL[status]}`,
     sentBy: req.user._id
   }).catch(() => {});
-
-  // A real, individual funding commitment — the scholarship's pool split across its seats.
-  if (status === 'approved') {
-    const existing = await Sponsorship.findOne({ application: application._id });
-    if (!existing) {
-      const seats = application.scholarship.seatsAvailable || 1;
-      const amount = Math.round(application.scholarship.amount / seats);
-      await Sponsorship.create({
-        donor: req.user._id,
-        scholarship: application.scholarship._id,
-        application: application._id,
-        student: application.applicant,
-        amount,
-        currency: application.scholarship.currency || 'USD'
-      });
-    }
-  } else {
-    // The commitment fell through — cancel the sponsorship it would have created.
-    await Sponsorship.updateOne(
-      { application: application._id, status: { $nin: ['completed', 'cancelled'] } },
-      { status: 'cancelled' }
-    );
-  }
 
   return ok(res, application, `Application ${status}.`);
 });

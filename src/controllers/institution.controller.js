@@ -480,14 +480,22 @@ const listFees = asyncHandler(async (req, res) => {
   return ok(res, fees);
 });
 
-const markFeePaid = asyncHandler(async (req, res) => {
+  const markFeePaid = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
 
   const institution = await Institution.findById(fee.institution);
-  assertOwnerOrStaff(institution, req.user._id);
+    const isOwner = assertOwnerOrStaff(institution, req.user._id);
+    if (!isOwner && !institution.staff.some((staff) => staff.user.toString() === req.user._id.toString()
+      && staff.permissions.includes('fee:manage'))) {
+      throw new AppError('Fee management permission is required.', 403);
+    }
+    if (fee.status === 'paid') throw new AppError('Fee is already paid.', 409);
 
-  const { paidVia } = req.body;
+    const { paidVia } = req.body;
+    if (!paidVia || /card|stripe|paddle/i.test(paidVia)) {
+      throw new AppError('Specify a verified manual payment method; online payments require gateway confirmation.', 422);
+    }
   const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
   fee.status = 'paid';
   fee.paidAt = new Date();

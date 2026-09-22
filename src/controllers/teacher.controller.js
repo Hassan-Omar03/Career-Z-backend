@@ -59,8 +59,8 @@ const getMyClasses = asyncHandler(async (req, res) => {
 // POST /api/teachers/me/attendance
 const markAttendance = asyncHandler(async (req, res) => {
   const { institution, course, classSection, date, records } = req.body;
-  if (!date || !Array.isArray(records) || records.length === 0) {
-    throw new AppError('date and a non-empty records array are required.', 422);
+  if (!course || !date || !Array.isArray(records) || records.length === 0) {
+    throw new AppError('course, date and a non-empty records array are required.', 422);
   }
 
   // If tied to a course, verify ownership.
@@ -70,6 +70,18 @@ const markAttendance = asyncHandler(async (req, res) => {
     if (courseDoc.teacher.toString() !== req.user._id.toString()) {
       throw new AppError('You do not teach this course.', 403);
     }
+    if (institution && courseDoc.institution && courseDoc.institution.toString() !== institution.toString()) {
+      throw new AppError('Course does not belong to this institution.', 422);
+    }
+    if (classSection && courseDoc.classSection && courseDoc.classSection.toString() !== classSection.toString()) {
+      throw new AppError('Course does not belong to this class section.', 422);
+    }
+    const studentIds = records.map((record) => record.student?.toString());
+    if (studentIds.some((id) => !id) || new Set(studentIds).size !== studentIds.length) {
+      throw new AppError('Each attendance record needs a distinct student.', 422);
+    }
+    const enrolled = await Enrollment.find({ course, student: { $in: studentIds } }).distinct('student');
+    if (enrolled.length !== studentIds.length) throw new AppError('Attendance can only include enrolled students.', 403);
   }
 
   const attendance = await Attendance.create({

@@ -82,8 +82,8 @@ const getCourse = asyncHandler(async (req, res) => {
 
   // Lesson content/resources are only for the owning teacher or an enrolled student —
   // an unpublished (or someone else's) course should not leak its material to a browser.
-  const isOwner = req.user && course.teacher.toString() === req.user._id.toString();
-  let canSeeLessons = isOwner || course.published;
+  const isOwner = req.user && course.teacher._id.toString() === req.user._id.toString();
+  let canSeeLessons = Boolean(isOwner);
   if (!canSeeLessons && req.user) {
     const enrollment = await Enrollment.findOne({ student: req.user._id, course: course._id });
     canSeeLessons = Boolean(enrollment);
@@ -237,6 +237,12 @@ const createAssignment = asyncHandler(async (req, res) => {
 
 // GET /api/courses/:id/assignments
 const listAssignments = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+  const isOwner = course.teacher.toString() === req.user._id.toString();
+  if (!isOwner && !await Enrollment.exists({ student: req.user._id, course: course._id })) {
+    throw new AppError('You are not enrolled in this course.', 403);
+  }
   const assignments = await Assignment.find({ course: req.params.id }).sort({ dueDate: 1 });
   return ok(res, assignments);
 });
@@ -436,6 +442,11 @@ const submitExam = asyncHandler(async (req, res) => {
 
   const { answers } = req.body;
   if (!Array.isArray(answers)) throw new AppError('answers array is required.', 422);
+  const indexes = answers.map((answer) => answer?.questionIndex);
+  if (indexes.some((index) => !Number.isInteger(index) || index < 0 || index >= exam.questions.length)
+      || new Set(indexes).size !== indexes.length) {
+    throw new AppError('Each answer must refer to a distinct valid question.', 422);
+  }
 
   let hasShortAnswer = false;
   let score = 0;

@@ -212,9 +212,8 @@ const getMyFees = asyncHandler(async (req, res) => {
   return ok(res, fees);
 });
 
-// PATCH /api/students/me/fees/:feeId/pay — self-confirmed payment, same honesty pattern as
-// FundingRequest.donate and the parent-side payChildFee: no real payment gateway exists yet, so
-// the student picks a method and gets a real, unique, server-generated receipt reference.
+// PATCH /api/students/me/fees/:feeId/pay — report a manual payment for institution verification.
+// Card payments must use the gateway checkout; this endpoint never issues a receipt.
 const payMyFee = asyncHandler(async (req, res) => {
   const { paymentMethod } = req.body;
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
@@ -226,31 +225,24 @@ const payMyFee = asyncHandler(async (req, res) => {
   if (fee.student.toString() !== req.user._id.toString()) throw new AppError('This is not your fee.', 403);
   if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
 
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
+  if (paymentMethod === 'card') throw new AppError('Use the secure payment checkout for card payments.', 422);
+  if (fee.status === 'processing') throw new AppError('Payment is already awaiting institution confirmation.', 409);
 
-  fee.status = 'paid';
-  fee.paidAt = new Date();
+  fee.status = 'processing';
   fee.paymentMethod = paymentMethod;
   fee.paidVia = PAYMENT_METHOD_LABEL[paymentMethod];
-  fee.transactionId = generateTransactionId();
   fee.paidBy = req.user._id;
-  fee.grossAmount = receipt.grossAmount;
-  fee.platformCommission = receipt.platformCommission;
-  fee.gatewayCharges = receipt.gatewayCharges;
-  fee.taxAmount = receipt.taxAmount;
-  fee.netAmount = receipt.netAmount;
-  fee.escrowStatus = 'held';
   await fee.save();
 
   const institution = await Institution.findById(fee.institution);
   if (institution) {
     await notify(institution.owner, {
-      title: `Fee paid: ${fee.currency} ${fee.amount} — ${fee.title} (receipt ${fee.transactionId})`,
+      title: `Fee payment awaiting verification: ${fee.currency} ${fee.amount} — ${fee.title}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
 
-  return ok(res, fee, `Payment confirmed. Receipt ${fee.transactionId}`);
+  return ok(res, fee, 'Payment reported. Awaiting institution confirmation.');
 });
 
 // GET /api/students/me/timetable

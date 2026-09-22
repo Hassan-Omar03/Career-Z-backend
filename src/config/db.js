@@ -23,8 +23,9 @@ async function connectDB() {
     }
     if (env.useMemoryDb) {
       if (env.nodeEnv === 'production') throw new Error('USE_MEMORY_DB must be false in production.');
-      const { MongoMemoryServer } = require('mongodb-memory-server');
-      if (!memoryServer) memoryServer = await MongoMemoryServer.create();
+      const { MongoMemoryReplSet } = require('mongodb-memory-server');
+      // Financial transactions require a replica set, including in development.
+      if (!memoryServer) memoryServer = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
       uri = memoryServer.getUri();
     }
     await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });

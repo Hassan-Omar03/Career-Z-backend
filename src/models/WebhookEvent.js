@@ -1,9 +1,7 @@
 const mongoose = require('mongoose');
 
-// Idempotency ledger for inbound payment-gateway webhooks (spec 3A.3 "idempotency"). A gateway
-// (Stripe, etc.) can and will retry a webhook delivery — the unique (provider, eventId) index is
-// the actual idempotency guarantee: a duplicate insert throws E11000, which the webhook handler
-// catches and treats as "already processed, skip" instead of double-crediting a payment.
+// A receipt is committed in the same transaction as its financial effects.
+// Failed processing leaves no receipt, so the provider can safely retry.
 const webhookEventSchema = new mongoose.Schema(
   {
     provider: { type: String, required: true }, // 'stripe'

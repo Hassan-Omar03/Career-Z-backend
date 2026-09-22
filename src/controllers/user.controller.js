@@ -25,6 +25,7 @@ const changePassword = asyncHandler(async (req, res) => {
 
   req.user.passwordHash = await User.hashPassword(newPassword);
   await req.user.save();
+  await require('../services/token.service').revokeAllForUser(req.user._id);
   return ok(res, null, 'Password updated.');
 });
 
@@ -109,6 +110,7 @@ const setUserStatus = asyncHandler(async (req, res) => {
 
   user.status = status;
   await user.save();
+  if (status !== 'active') await require('../services/token.service').revokeAllForUser(user._id);
   return ok(res, { user: user.toSafeJSON() }, `User ${status}.`);
 });
 

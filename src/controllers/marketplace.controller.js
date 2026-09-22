@@ -62,8 +62,13 @@ const listProducts = asyncHandler(async (req, res) => {
 
 // GET /api/marketplace/products/:id — a real view counter, incremented atomically per request.
 const getProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findByIdAndUpdate(req.params.id, { $inc: { views: 1 } }, { new: true }).populate('seller', 'fullName email');
+  const product = await Product.findById(req.params.id).populate('seller', 'fullName email');
   if (!product) throw new AppError('Listing not found.', 404);
+  const isSeller = req.user && product.seller._id.toString() === req.user._id.toString();
+  const isModerator = req.user && req.user.roles.some((role) => ['admin', 'super_admin'].includes(role));
+  if (product.status !== 'active' && !isSeller && !isModerator) throw new AppError('Listing not found.', 404);
+  product.views += 1;
+  await product.save();
   return ok(res, product);
 });
 

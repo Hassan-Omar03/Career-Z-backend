@@ -179,7 +179,7 @@ const refresh = asyncHandler(async (req, res) => {
   }
 
   const user = await User.findById(payload.sub);
-  if (!user) throw new AppError('User no longer exists.', 401);
+  if (!user || user.status !== 'active') throw new AppError('Account is not active. Please log in again.', 401);
 
   const tokens = await tokenService.rotateRefreshToken(refreshToken, user, {
     deviceInfo: req.headers['user-agent'],
@@ -224,6 +224,7 @@ const resetPassword = asyncHandler(async (req, res) => {
 
   user.passwordHash = await User.hashPassword(newPassword);
   await user.save();
+  await tokenService.revokeAllForUser(user._id);
 
   return ok(res, null, 'Password reset successfully. Please log in.');
 });

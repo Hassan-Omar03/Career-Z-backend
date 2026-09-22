@@ -12,6 +12,14 @@ router.get('/finance', requireDepartment('finance'), ctrl.getFinanceSummary);
 router.get('/institution-fee-commission-rate', requireDepartment('finance'), ctrl.getInstitutionFeeCommissionRate);
 router.patch('/institution-fee-commission-rate', requireRole('super_admin'), ctrl.setInstitutionFeeCommissionRate);
 
+// AI provider availability — Super Admin controls which BYOK providers users/institutions may connect.
+router.get('/ai-providers', ctrl.getAiProviderConfig);
+router.patch('/ai-providers', requireRole('super_admin'), ctrl.setAiProviderConfig);
+
+// Subscription plan pricing/limits — Super Admin controls the business model, everyone else just reads it.
+router.get('/subscription-plans', ctrl.getSubscriptionPlanConfig);
+router.patch('/subscription-plans', requireRole('super_admin'), ctrl.setSubscriptionPlanConfig);
+
 // Read-only platform overview — any staff member can see it.
 router.get('/reports', ctrl.getPlatformReports);
 router.get('/dashboard', ctrl.getDashboard);

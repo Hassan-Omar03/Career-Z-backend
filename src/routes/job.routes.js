@@ -12,7 +12,9 @@ router.get('/:id', optionalAuth, ctrl.getJob);
 router.use(protect);
 
 router.patch('/featured-fee', requireRole('super_admin'), ctrl.setFeaturedFee);
-router.post('/:id/feature', requireRole('employer', 'education_agent'), ctrl.featureJob);
+// Manual/off-platform record only — real self-service purchases go through the Paddle checkout
+// in payment.routes.js (createFeaturedJobCheckout), which requires an actually-verified charge.
+router.post('/:id/feature', requireRole('admin', 'super_admin'), ctrl.featureJob);
 
 // Employer / agent — posting and managing jobs.
 router.post('/', requireRole('employer', 'education_agent'), ctrl.createJob);

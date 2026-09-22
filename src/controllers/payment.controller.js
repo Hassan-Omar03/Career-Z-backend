@@ -1,4 +1,7 @@
 const Fee = require('../models/Fee');
+const Course = require('../models/Course');
+const Enrollment = require('../models/Enrollment');
+const CoursePurchase = require('../models/CoursePurchase');
 const ParentChildLink = require('../models/ParentChildLink');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -6,6 +9,7 @@ const { ok } = require('../utils/apiResponse');
 const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
 const env = require('../config/env');
+const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
 
 // Same authorization as the self-report fee-payment endpoints (student themselves, or any
 // approved parent/guardian/sponsor link) — paying a fee doesn't require being a legal guardian.
@@ -14,6 +18,63 @@ async function assertCanPayFee(fee, user) {
   const link = await ParentChildLink.findOne({ parent: user._id, student: fee.student, status: 'approved' });
   if (!link) throw new AppError('You are not authorized to pay this fee.', 403);
 }
+
+async function loadPayableCourse(courseId, userId) {
+  const course = await Course.findById(courseId);
+  if (!course) throw new AppError('Course not found.', 404);
+  if (!course.published) throw new AppError('This course is not published yet.', 400);
+  if (course.isFree) throw new AppError('This course is free. Use the enroll action.', 400);
+  if (await Enrollment.exists({ course: course._id, student: userId })) throw new AppError('Already enrolled.', 409);
+  const amount = Number(course.price);
+  const currency = normalizeCurrency(course.currency);
+  if (!Number.isFinite(amount) || amount <= 0 || !Number.isSafeInteger(Math.round(amount * 100)) || Math.abs(amount * 100 - Math.round(amount * 100)) > 1e-6) {
+    throw new AppError('Course price must be a positive amount with at most two decimal places.', 422);
+  }
+  return { course, amountMinor: Math.round(amount * 100), currency };
+}
+
+const createStripeCourseCheckout = asyncHandler(async (req, res) => {
+  if (!isStripeConfigured()) throw new AppError('Stripe checkout is not configured.', 503);
+  const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
+  const checkout = await getStripeClient().checkout.sessions.create({
+    mode: 'payment', payment_method_types: ['card'],
+    line_items: [{ price_data: { currency: currency.toLowerCase(), product_data: { name: course.title }, unit_amount: amountMinor }, quantity: 1 }],
+    success_url: `${env.clientUrl}/dashboard?courseCheckout=success&courseId=${course._id}`,
+    cancel_url: `${env.clientUrl}/dashboard?courseCheckout=cancelled&courseId=${course._id}`,
+    metadata: { kind: 'course', courseId: course._id.toString(), studentId: req.user._id.toString() }
+  });
+  await CoursePurchase.create({ course: course._id, student: req.user._id, provider: 'stripe',
+    providerCheckoutId: checkout.id, amountMinor, currency });
+  return ok(res, { url: checkout.url, sessionId: checkout.id });
+});
+
+const createPaddleCourseCheckout = asyncHandler(async (req, res) => {
+  if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
+  const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
+  const transaction = await paddleService.createTransaction({
+    title: course.title, amount: amountMinor / 100, currencyCode: currency,
+    customerEmail: req.user.email,
+    metadata: { kind: 'course', courseId: course._id.toString(), studentId: req.user._id.toString() }
+  });
+  await CoursePurchase.create({ course: course._id, student: req.user._id, provider: 'paddle',
+    providerCheckoutId: transaction.id, amountMinor, currency });
+  return ok(res, { transactionId: transaction.id, status: transaction.status });
+});
+
+const syncPaddleCourseStatus = asyncHandler(async (req, res) => {
+  const purchase = await CoursePurchase.findOne({ course: req.params.courseId, student: req.user._id,
+    provider: 'paddle', providerCheckoutId: req.params.transactionId });
+  if (!purchase) throw new AppError('Course checkout not found.', 404);
+  if (purchase.status !== 'paid') {
+    const transaction = await paddleService.getTransaction(purchase.providerCheckoutId);
+    if (transaction.status === 'completed') {
+      const { handleCoursePaddleCompleted } = require('./webhook.controller');
+      await handleCoursePaddleCompleted(transaction);
+    }
+  }
+  const refreshed = await CoursePurchase.findById(purchase._id);
+  return ok(res, { status: refreshed.status });
+});
 
 // POST /api/payments/stripe/fees/:feeId/checkout — creates a real Stripe Checkout Session.
 // Unlike the self-report payment methods (bank_transfer/cash/mobile_wallet), this fee is NOT
@@ -130,8 +191,8 @@ const createWalletTopup = asyncHandler(async (req, res) => {
     throw new AppError('Card payments are not set up yet — ask the Super Admin to configure PADDLE_API_KEY and PADDLE_WEBHOOK_SECRET.', 503);
   }
   const { amount, currency } = req.body;
-  if (!amount || amount <= 0) throw new AppError('A positive amount is required.', 422);
-  const cur = (currency || 'USD').toUpperCase();
+  validateAmount(amount);
+  const cur = normalizeCurrency(currency);
 
   const transaction = await paddleService.createTransaction({
     title: `Wallet top-up — ${cur} ${amount}`,
@@ -148,7 +209,9 @@ const createWalletTopup = asyncHandler(async (req, res) => {
 // as the fee sync endpoint, for when Paddle's webhook can't reach localhost.
 const syncWalletTopup = asyncHandler(async (req, res) => {
   const transaction = await paddleService.getTransaction(req.params.transactionId);
-  if (transaction.custom_data?.userId !== req.user._id.toString()) throw new AppError('Not your transaction.', 403);
+  if (transaction.custom_data?.kind !== 'wallet_topup' || transaction.custom_data?.userId !== req.user._id.toString()) {
+    throw new AppError('Not your wallet top-up transaction.', 403);
+  }
 
   if (transaction.status === 'completed') {
     const { handleWalletTopupCompleted } = require('./webhook.controller');
@@ -157,7 +220,49 @@ const syncWalletTopup = asyncHandler(async (req, res) => {
   return ok(res, { status: transaction.status });
 });
 
+// POST /api/payments/paddle/jobs/:jobId/feature-checkout — the poster's own real, verified
+// Paddle payment (replaces the old self-report "trust me I paid" endpoint). Creates a 'pending'
+// FeaturedListing so the webhook/sync path has something to match the confirmed transaction
+// against (job ownership, fee, expiry window) — same anti-tampering shape as the course flow.
+const createPaddleFeaturedJobCheckout = asyncHandler(async (req, res) => {
+  if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
+  const { loadFeaturableJob } = require('./job.controller');
+  const { job, fee, days } = await loadFeaturableJob(req.params.jobId, req.user._id);
+
+  const transaction = await paddleService.createTransaction({
+    title: `Featured job listing — ${job.title}`, amount: fee, currencyCode: 'USD',
+    customerEmail: req.user.email,
+    metadata: { kind: 'featured_job', jobId: job._id.toString(), purchasedBy: req.user._id.toString() }
+  });
+
+  const FeaturedListing = require('../models/FeaturedListing');
+  await FeaturedListing.create({
+    listingType: 'job', job: job._id, purchasedBy: req.user._id, amount: fee, currency: 'USD',
+    paymentMethod: 'paddle', paddleTransactionId: transaction.id, status: 'pending',
+    expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+  });
+
+  return ok(res, { transactionId: transaction.id, status: transaction.status });
+});
+
+const syncPaddleFeaturedJobStatus = asyncHandler(async (req, res) => {
+  const FeaturedListing = require('../models/FeaturedListing');
+  const listing = await FeaturedListing.findOne({ job: req.params.jobId, purchasedBy: req.user._id,
+    paddleTransactionId: req.params.transactionId });
+  if (!listing) throw new AppError('Featured job checkout not found.', 404);
+  if (listing.status !== 'paid') {
+    const transaction = await paddleService.getTransaction(listing.paddleTransactionId);
+    if (transaction.status === 'completed') {
+      const { handleFeaturedJobPaddleCompleted } = require('./webhook.controller');
+      await handleFeaturedJobPaddleCompleted(transaction);
+    }
+  }
+  const refreshed = await FeaturedListing.findById(listing._id);
+  return ok(res, { status: refreshed.status });
+});
+
 module.exports = {
   createFeeCheckoutSession, getStripeConfig, getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus,
-  createWalletTopup, syncWalletTopup
+  createWalletTopup, syncWalletTopup, createStripeCourseCheckout, createPaddleCourseCheckout, syncPaddleCourseStatus,
+  createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus
 };

@@ -8,6 +8,10 @@ router.get('/config', ctrl.getConfig);
 router.put('/config', ctrl.saveConfig);
 router.delete('/config/:purpose', ctrl.removeConfig);
 
+router.get('/institutions/:id/config', ctrl.getInstitutionConfig);
+router.put('/institutions/:id/config', ctrl.saveInstitutionConfig);
+router.delete('/institutions/:id/config/:purpose', ctrl.removeInstitutionConfig);
+
 router.post('/generate', ctrl.generate);
 router.post('/image', ctrl.image);
 router.post('/3d-model', ctrl.create3DModel);

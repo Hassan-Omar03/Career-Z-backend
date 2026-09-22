@@ -40,7 +40,17 @@ const institutionSchema = new mongoose.Schema(
       }
     ],
 
-    status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' }
+    status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' },
+
+    // Master spec Part 17E "Subscription System" — every institution starts on Free; paid tiers
+    // are 30-day purchases via Paddle (see subscription.controller.js), not true recurring
+    // billing yet. A lapsed paid plan just falls back to Free-tier limits (see subscriptionGate.js).
+    subscription: {
+      plan: { type: String, enum: ['free', 'basic', 'professional', 'enterprise'], default: 'free' },
+      status: { type: String, enum: ['active', 'expired'], default: 'active' },
+      currentPeriodEnd: { type: Date, default: null },
+      paddleTransactionId: { type: String, default: null }
+    }
   },
   { timestamps: true }
 );

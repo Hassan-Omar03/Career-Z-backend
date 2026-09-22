@@ -1,11 +1,13 @@
 const AiCredential = require('../models/AiCredential');
+const Institution = require('../models/Institution');
 const { encrypt, decrypt } = require('../utils/encryption');
 
 // Real BYOK AI integration hub (spec Part 14/17E, and "AI Creative Teacher" Part 15B.6-15B.7).
-// CareerZ never supplies or pays for AI itself — every call here uses the calling user's own API
-// key, for their own chosen provider, billed to their own account. A user can have one credential
-// per "purpose" at once (text, image, threed, voice, avatar) since the Creative Teacher pipeline
-// combines several different AI categories.
+// CareerZ never supplies or pays for AI itself — every call here uses either the calling user's
+// own personal key, or (when acting inside an institution with an 'ai:use' permission) that
+// institution's own connected key, billed to whichever account owns the key. A user/institution
+// can have one credential per "purpose" at once (text, image, threed, voice, avatar) since the
+// Creative Teacher pipeline combines several different AI categories.
 
 const DEFAULT_MODEL = {
   text: { openai: 'gpt-4o-mini', claude: 'claude-3-5-haiku-20241022', gemini: 'gemini-1.5-flash', deepseek: 'deepseek-chat' },
@@ -16,35 +18,101 @@ const DEFAULT_MODEL = {
   animation: { runway: 'gen4.5' }
 };
 
+// A short, safe-to-store display hint — never enough to reconstruct the real key.
+function computeKeyPreview(apiKey) {
+  const trimmed = apiKey.trim();
+  if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}...`;
+  return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
+}
+
+// Confirms the user may act as this institution for AI purposes — owner always can; staff need
+// the explicit 'ai:use' permission (institution owner decides who gets to spend the institution's
+// AI budget, same pattern as 'application:approve').
+async function assertInstitutionAiAccess(institutionId, userId) {
+  const institution = await Institution.findById(institutionId);
+  if (!institution) { const err = new Error('Institution not found.'); err.statusCode = 404; throw err; }
+  const isOwner = institution.owner.toString() === userId.toString();
+  if (isOwner) return institution;
+  const staffEntry = institution.staff.find((s) => s.user.toString() === userId.toString());
+  if (!staffEntry || !staffEntry.permissions.includes('ai:use')) {
+    const err = new Error('You do not have permission to use this institution\'s AI providers.');
+    err.statusCode = 403;
+    throw err;
+  }
+  return institution;
+}
+
 async function saveCredential(userId, purpose, provider, apiKey, model) {
   const apiKeyEncrypted = encrypt(apiKey);
+  const keyPreview = computeKeyPreview(apiKey);
   return AiCredential.findOneAndUpdate(
-    { user: userId, purpose },
-    { user: userId, purpose, provider, apiKeyEncrypted, model: model || '' },
+    { user: userId, purpose, scope: 'user' },
+    { user: userId, purpose, scope: 'user', institution: null, provider, apiKeyEncrypted, keyPreview, model: model || '' },
     { upsert: true, new: true, runValidators: true }
   );
 }
 
+// Institution-owned key — connectable only by the owner or a staff member with 'ai:use'
+// (assertInstitutionAiAccess), so it's a deliberate institution decision, not any staff member
+// unilaterally spending the institution's provider budget.
+async function saveInstitutionCredential(institutionId, userId, purpose, provider, apiKey, model) {
+  await assertInstitutionAiAccess(institutionId, userId);
+  const apiKeyEncrypted = encrypt(apiKey);
+  const keyPreview = computeKeyPreview(apiKey);
+  return AiCredential.findOneAndUpdate(
+    { institution: institutionId, purpose, scope: 'institution' },
+    { user: userId, institution: institutionId, purpose, scope: 'institution', provider, apiKeyEncrypted, keyPreview, model: model || '' },
+    { upsert: true, new: true, runValidators: true }
+  );
+}
+
+function statusShape(cred, purpose) {
+  if (!cred) return { configured: false, provider: null, keyPreview: null, model: null };
+  return { configured: true, provider: cred.provider, keyPreview: cred.keyPreview || null, model: cred.model || DEFAULT_MODEL[purpose]?.[cred.provider] };
+}
+
 async function getCredentialStatus(userId, purpose) {
-  const cred = await AiCredential.findOne({ user: userId, purpose });
-  if (!cred) return { configured: false, provider: null };
-  return { configured: true, provider: cred.provider, model: cred.model || DEFAULT_MODEL[purpose]?.[cred.provider] };
+  const cred = await AiCredential.findOne({ user: userId, purpose, scope: 'user' });
+  return statusShape(cred, purpose);
 }
 
 async function getAllCredentialStatuses(userId) {
-  const creds = await AiCredential.find({ user: userId });
+  const creds = await AiCredential.find({ user: userId, scope: 'user' });
   const byPurpose = {};
-  ['text', 'image', 'threed', 'voice', 'avatar'].forEach((p) => { byPurpose[p] = { configured: false, provider: null }; });
-  creds.forEach((c) => { byPurpose[c.purpose] = { configured: true, provider: c.provider }; });
+  ['text', 'image', 'threed', 'voice', 'avatar', 'animation'].forEach((p) => { byPurpose[p] = statusShape(null, p); });
+  creds.forEach((c) => { byPurpose[c.purpose] = statusShape(c, c.purpose); });
+  return byPurpose;
+}
+
+async function getAllInstitutionCredentialStatuses(institutionId) {
+  const creds = await AiCredential.find({ institution: institutionId, scope: 'institution' });
+  const byPurpose = {};
+  ['text', 'image', 'threed', 'voice', 'avatar', 'animation'].forEach((p) => { byPurpose[p] = statusShape(null, p); });
+  creds.forEach((c) => { byPurpose[c.purpose] = statusShape(c, c.purpose); });
   return byPurpose;
 }
 
 async function removeCredential(userId, purpose) {
-  await AiCredential.deleteOne({ user: userId, purpose });
+  await AiCredential.deleteOne({ user: userId, purpose, scope: 'user' });
 }
 
-async function getDecryptedCredential(userId, purpose) {
-  const cred = await AiCredential.findOne({ user: userId, purpose });
+async function removeInstitutionCredential(institutionId, userId, purpose) {
+  await assertInstitutionAiAccess(institutionId, userId);
+  await AiCredential.deleteOne({ institution: institutionId, purpose, scope: 'institution' });
+}
+
+// Resolves which key to actually use: when acting inside an institution (institutionId given)
+// and that institution has its own key for this purpose, use it (billed to the institution) —
+// otherwise fall back to the caller's personal key. Institution access is checked either way, so
+// a caller can't silently "borrow" an institution's key just by passing its id.
+async function getDecryptedCredential(userId, purpose, institutionId) {
+  if (institutionId) {
+    await assertInstitutionAiAccess(institutionId, userId);
+    const instCred = await AiCredential.findOne({ institution: institutionId, purpose, scope: 'institution' });
+    if (instCred) return { provider: instCred.provider, apiKey: decrypt(instCred.apiKeyEncrypted), model: instCred.model || DEFAULT_MODEL[purpose]?.[instCred.provider] };
+  }
+
+  const cred = await AiCredential.findOne({ user: userId, purpose, scope: 'user' });
   if (!cred) {
     const err = new Error(`No ${purpose} AI provider configured — connect one in AI Settings first.`);
     err.statusCode = 503;
@@ -96,8 +164,8 @@ async function callGemini(apiKey, model, systemPrompt, userPrompt) {
   return payload.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
-async function generate(userId, systemPrompt, userPrompt) {
-  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'text');
+async function generate(userId, systemPrompt, userPrompt, institutionId) {
+  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'text', institutionId);
   switch (provider) {
     case 'openai': return callOpenAiCompatible('https://api.openai.com/v1/chat/completions', apiKey, model, systemPrompt, userPrompt);
     case 'deepseek': return callOpenAiCompatible('https://api.deepseek.com/chat/completions', apiKey, model, systemPrompt, userPrompt);
@@ -111,8 +179,8 @@ async function generate(userId, systemPrompt, userPrompt) {
 
 // Verified live: POST https://api.openai.com/v1/images/generations returns 401 with a proper
 // structured auth error on a bad key, confirming this exact endpoint/shape is correct.
-async function generateImage(userId, prompt) {
-  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'image');
+async function generateImage(userId, prompt, institutionId) {
+  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'image', institutionId);
   if (provider === 'openai') {
     const res = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
@@ -142,8 +210,8 @@ async function generateImage(userId, prompt) {
 // key — endpoint/method confirmed real. This is an async job: create, then poll.
 // NOTE (honesty): the success response's exact field names follow Meshy's documented v2 API as
 // of this writing; if Meshy changes their contract, only this one function needs updating.
-async function create3DModelTask(userId, prompt) {
-  const { apiKey, model } = await getDecryptedCredential(userId, 'threed');
+async function create3DModelTask(userId, prompt, institutionId) {
+  const { apiKey, model } = await getDecryptedCredential(userId, 'threed', institutionId);
   const res = await fetch('https://api.meshy.ai/v2/text-to-3d', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
@@ -154,8 +222,8 @@ async function create3DModelTask(userId, prompt) {
   return payload.result;
 }
 
-async function get3DModelTaskStatus(userId, taskId) {
-  const { apiKey } = await getDecryptedCredential(userId, 'threed');
+async function get3DModelTaskStatus(userId, taskId, institutionId) {
+  const { apiKey } = await getDecryptedCredential(userId, 'threed', institutionId);
   const res = await fetch(`https://api.meshy.ai/v2/text-to-3d/${taskId}`, {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
@@ -201,8 +269,8 @@ async function generateSpeechGoogle(apiKey, text, languageCode = 'en-US') {
   return `data:audio/mpeg;base64,${payload.audioContent}`;
 }
 
-async function generateSpeech(userId, text, voiceId) {
-  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'voice');
+async function generateSpeech(userId, text, voiceId, institutionId) {
+  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'voice', institutionId);
   if (provider === 'google') return generateSpeechGoogle(apiKey, text);
   return generateSpeechElevenLabs(apiKey, model, text, voiceId);
 }
@@ -212,8 +280,8 @@ async function generateSpeech(userId, text, voiceId) {
 // Verified live: POST https://api.heygen.com/v2/video/generate returns 401 on a bad key (with a
 // notice that the v2 endpoint is being phased out — kept for now since it's the version whose
 // contract is documented; revisit if HeyGen removes it).
-async function createAvatarVideoTask(userId, script, avatarId, voiceId) {
-  const { apiKey } = await getDecryptedCredential(userId, 'avatar');
+async function createAvatarVideoTask(userId, script, avatarId, voiceId, institutionId) {
+  const { apiKey } = await getDecryptedCredential(userId, 'avatar', institutionId);
   const res = await fetch('https://api.heygen.com/v2/video/generate', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
@@ -230,8 +298,8 @@ async function createAvatarVideoTask(userId, script, avatarId, voiceId) {
   return payload.data?.video_id;
 }
 
-async function getAvatarVideoTaskStatus(userId, videoId) {
-  const { apiKey } = await getDecryptedCredential(userId, 'avatar');
+async function getAvatarVideoTaskStatus(userId, videoId, institutionId) {
+  const { apiKey } = await getDecryptedCredential(userId, 'avatar', institutionId);
   const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${videoId}`, {
     headers: { 'X-Api-Key': apiKey }
   });
@@ -245,8 +313,8 @@ async function getAvatarVideoTaskStatus(userId, videoId) {
 // Verified live: POST https://api.dev.runwayml.com/v1/image_to_video returns 401 with a
 // structured error on a bad key (naming the expected `key_...` prefix), confirming this exact
 // endpoint, subdomain and header set are correct. Async — create, then poll /v1/tasks/{id}.
-async function createAnimationTask(userId, promptText, promptImage) {
-  const { apiKey, model } = await getDecryptedCredential(userId, 'animation');
+async function createAnimationTask(userId, promptText, promptImage, institutionId) {
+  const { apiKey, model } = await getDecryptedCredential(userId, 'animation', institutionId);
   const body = { model: model || 'gen4.5', promptText, ratio: '1280:720', duration: 5 };
   if (promptImage) body.promptImage = promptImage;
 
@@ -260,8 +328,8 @@ async function createAnimationTask(userId, promptText, promptImage) {
   return payload.id;
 }
 
-async function getAnimationTaskStatus(userId, taskId) {
-  const { apiKey } = await getDecryptedCredential(userId, 'animation');
+async function getAnimationTaskStatus(userId, taskId, institutionId) {
+  const { apiKey } = await getDecryptedCredential(userId, 'animation', institutionId);
   const res = await fetch(`https://api.dev.runwayml.com/v1/tasks/${taskId}`, {
     headers: { Authorization: `Bearer ${apiKey}`, 'X-Runway-Version': '2024-11-06' }
   });
@@ -275,5 +343,6 @@ async function getAnimationTaskStatus(userId, taskId) {
 module.exports = {
   saveCredential, getCredentialStatus, getAllCredentialStatuses, removeCredential, generate,
   generateImage, create3DModelTask, get3DModelTaskStatus, generateSpeech,
-  createAvatarVideoTask, getAvatarVideoTaskStatus, createAnimationTask, getAnimationTaskStatus
+  createAvatarVideoTask, getAvatarVideoTaskStatus, createAnimationTask, getAnimationTaskStatus,
+  saveInstitutionCredential, getAllInstitutionCredentialStatuses, removeInstitutionCredential
 };

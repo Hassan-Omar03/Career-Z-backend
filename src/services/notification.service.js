@@ -2,11 +2,18 @@ const Notification = require('../models/Notification');
 const ParentChildLink = require('../models/ParentChildLink');
 const User = require('../models/User');
 const { sendEmail, noticeEmailTemplate } = require('./email.service');
+const { emitToUser } = require('../realtime/socket');
 
 // Creates an in-app notification, and optionally emails it too.
 // Never throws on email failure — a broken SMTP config must not block the in-app notification.
 async function notify(userId, { title, body = '', sentBy = null }, { email = false, toAddress = null } = {}) {
   const notification = await Notification.create({ user: userId, title, body, sentBy });
+
+  // Live push — every notify() call reaches any open tab instantly (bell badge, toast) instead
+  // of waiting for the next poll/refresh. Silently a no-op if that user has no socket connected.
+  emitToUser(userId, 'notification:new', {
+    _id: notification._id, title, body, createdAt: notification.createdAt, read: false
+  });
 
   if (email && toAddress) {
     try {

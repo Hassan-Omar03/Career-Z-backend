@@ -12,6 +12,8 @@ const BlockedIp = require('../models/BlockedIp');
 const Country = require('../models/Country');
 const Setting = require('../models/Setting');
 const FeaturedListing = require('../models/FeaturedListing');
+const { DEFAULT_PLANS } = require('../config/subscriptionPlans');
+const { getEffectivePlans, PLAN_CONFIG_KEY } = require('../utils/subscriptionGate');
 const AppError = require('../utils/AppError');
 const { ROLES } = require('../config/rbac');
 const CENTROIDS = require('../utils/countryCentroids');
@@ -22,6 +24,75 @@ const INSTITUTION_FEE_COMMISSION_KEY = 'institution_fee_commission_percent';
 const DEFAULT_INSTITUTION_FEE_COMMISSION = 5;
 const MARKETPLACE_COMMISSION_KEY = 'marketplace_commission_percent';
 const DEFAULT_MARKETPLACE_COMMISSION = 10;
+const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
+const ALL_AI_PROVIDERS = {
+  text: ['openai', 'claude', 'gemini', 'deepseek'],
+  image: ['openai', 'stability'],
+  threed: ['meshy'],
+  voice: ['elevenlabs', 'google'],
+  avatar: ['heygen'],
+  animation: ['runway']
+};
+
+// GET /api/admin/ai-providers — Super Admin's control over which BYOK providers users/
+// institutions are even allowed to connect per AI purpose (spec: "provider/model management").
+const getAiProviderConfig = asyncHandler(async (req, res) => {
+  const setting = await Setting.findOne({ key: AI_PROVIDER_CONFIG_KEY });
+  return ok(res, { all: ALL_AI_PROVIDERS, enabled: setting ? setting.value : ALL_AI_PROVIDERS });
+});
+
+// PATCH /api/admin/ai-providers (super_admin only, enforced at route level)
+const setAiProviderConfig = asyncHandler(async (req, res) => {
+  const { enabled } = req.body;
+  if (!enabled || typeof enabled !== 'object') throw new AppError('enabled must be an object of purpose -> provider[].', 422);
+  for (const purpose of Object.keys(enabled)) {
+    if (!ALL_AI_PROVIDERS[purpose]) throw new AppError(`Unknown AI purpose: ${purpose}.`, 422);
+    if (!Array.isArray(enabled[purpose]) || enabled[purpose].some((p) => !ALL_AI_PROVIDERS[purpose].includes(p))) {
+      throw new AppError(`enabled.${purpose} must be a subset of ${ALL_AI_PROVIDERS[purpose].join(', ')}.`, 422);
+    }
+  }
+  const setting = await Setting.findOneAndUpdate(
+    { key: AI_PROVIDER_CONFIG_KEY },
+    { key: AI_PROVIDER_CONFIG_KEY, value: enabled },
+    { new: true, upsert: true }
+  );
+  return ok(res, setting.value, 'AI provider availability updated.');
+});
+
+// GET /api/admin/subscription-plans — Super Admin's control over subscription plan pricing and
+// limits (spec Part 17E "Subscription System"). Returns both the built-in defaults and the
+// currently effective (override-merged) values so the UI can show what's customized.
+const getSubscriptionPlanConfig = asyncHandler(async (req, res) => {
+  const effective = await getEffectivePlans();
+  return ok(res, { defaults: DEFAULT_PLANS, effective });
+});
+
+// PATCH /api/admin/subscription-plans (super_admin only, enforced at route level) — body is a
+// partial override map, e.g. { basic: { monthlyPriceUSD: 35 } }. Only known plan keys and known
+// fields on each plan are accepted; unspecified fields keep the built-in default.
+const setSubscriptionPlanConfig = asyncHandler(async (req, res) => {
+  const { overrides } = req.body;
+  if (!overrides || typeof overrides !== 'object') throw new AppError('overrides must be an object of plan -> {field: value}.', 422);
+  const cleaned = {};
+  for (const planKey of Object.keys(overrides)) {
+    if (!DEFAULT_PLANS[planKey]) throw new AppError(`Unknown plan: ${planKey}.`, 422);
+    const fields = overrides[planKey];
+    if (!fields || typeof fields !== 'object') throw new AppError(`overrides.${planKey} must be an object.`, 422);
+    cleaned[planKey] = {};
+    for (const field of Object.keys(fields)) {
+      if (!(field in DEFAULT_PLANS[planKey])) throw new AppError(`Unknown field "${field}" for plan ${planKey}.`, 422);
+      cleaned[planKey][field] = fields[field];
+    }
+  }
+  const setting = await Setting.findOneAndUpdate(
+    { key: PLAN_CONFIG_KEY },
+    { key: PLAN_CONFIG_KEY, value: cleaned },
+    { new: true, upsert: true }
+  );
+  const merged = {};
+  for (const key of Object.keys(DEFAULT_PLANS)) merged[key] = { ...DEFAULT_PLANS[key], ...(setting.value[key] || {}) };
+  return ok(res, merged, 'Subscription plan configuration updated.');
+});
 
 // GET /api/admin/institution-fee-commission-rate
 const getInstitutionFeeCommissionRate = asyncHandler(async (req, res) => {
@@ -197,5 +268,7 @@ const getWorldMap = asyncHandler(async (req, res) => {
 
 module.exports = {
   getFinanceSummary, getPlatformReports, getDashboard, getWorldMap,
-  getInstitutionFeeCommissionRate, setInstitutionFeeCommissionRate
+  getInstitutionFeeCommissionRate, setInstitutionFeeCommissionRate,
+  getAiProviderConfig, setAiProviderConfig,
+  getSubscriptionPlanConfig, setSubscriptionPlanConfig
 };

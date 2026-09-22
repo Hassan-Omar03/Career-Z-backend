@@ -2,6 +2,9 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const aiService = require('../services/ai.service');
+const Setting = require('../models/Setting');
+const Institution = require('../models/Institution');
+const { assertAiInstitutionKeyAllowed } = require('../utils/subscriptionGate');
 
 const PURPOSES = ['text', 'image', 'threed', 'voice', 'avatar', 'animation'];
 const PROVIDERS_BY_PURPOSE = {
@@ -13,6 +16,15 @@ const PROVIDERS_BY_PURPOSE = {
   animation: ['runway']
 };
 const MAX_PROMPT_LENGTH = 4000;
+const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
+
+// Super Admin can narrow (never widen beyond PROVIDERS_BY_PURPOSE) which providers are
+// connectable per purpose — no Setting saved yet means "everything's allowed" (the default).
+async function getEnabledProviders(purpose) {
+  const setting = await Setting.findOne({ key: AI_PROVIDER_CONFIG_KEY });
+  const enabled = setting?.value?.[purpose];
+  return Array.isArray(enabled) ? enabled : PROVIDERS_BY_PURPOSE[purpose];
+}
 
 const FEATURE_PROMPTS = {
   teacher_notes: 'You are a teaching assistant. Given a topic, write clear, well-structured class notes with headings and bullet points suitable for students. Keep it concise and accurate.',
@@ -35,12 +47,14 @@ const getConfig = asyncHandler(async (req, res) => {
   return ok(res, statuses);
 });
 
-// PUT /api/ai/config — save/replace one purpose's provider + API key.
+// PUT /api/ai/config — save/replace one purpose's provider + API key (also used to update an
+// already-connected purpose — just resubmit provider/apiKey, no need to delete first).
 const saveConfig = asyncHandler(async (req, res) => {
   const { purpose, provider, apiKey, model } = req.body;
   if (!purpose || !PURPOSES.includes(purpose)) throw new AppError(`purpose must be one of: ${PURPOSES.join(', ')}.`, 422);
-  if (!provider || !PROVIDERS_BY_PURPOSE[purpose].includes(provider)) {
-    throw new AppError(`For ${purpose}, provider must be one of: ${PROVIDERS_BY_PURPOSE[purpose].join(', ')}.`, 422);
+  const enabledProviders = await getEnabledProviders(purpose);
+  if (!provider || !enabledProviders.includes(provider)) {
+    throw new AppError(`For ${purpose}, provider must be one of: ${enabledProviders.join(', ')}.`, 422);
   }
   if (!apiKey || apiKey.trim().length < 8) throw new AppError('A valid API key is required.', 422);
 
@@ -56,15 +70,59 @@ const removeConfig = asyncHandler(async (req, res) => {
   return ok(res, null, 'AI provider disconnected.');
 });
 
-// POST /api/ai/generate — text features (notes, quiz, slides, career advice, ...).
+// ---- Institution-owned AI keys (spec: "Institution apni key de aur authorized staff use kare
+// permissions ke mutabiq") — same shape as the personal config endpoints, scoped to an
+// institution instead of the caller. Institution access (owner, or staff with 'ai:use') is
+// enforced inside ai.service.js, not re-checked here, so there's one source of truth for it.
+
+const getInstitutionConfig = asyncHandler(async (req, res) => {
+  const statuses = await aiService.getAllInstitutionCredentialStatuses(req.params.id);
+  return ok(res, statuses);
+});
+
+const saveInstitutionConfig = asyncHandler(async (req, res) => {
+  const { purpose, provider, apiKey, model } = req.body;
+  if (!purpose || !PURPOSES.includes(purpose)) throw new AppError(`purpose must be one of: ${PURPOSES.join(', ')}.`, 422);
+  const enabledProviders = await getEnabledProviders(purpose);
+  if (!provider || !enabledProviders.includes(provider)) {
+    throw new AppError(`For ${purpose}, provider must be one of: ${enabledProviders.join(', ')}.`, 422);
+  }
+  if (!apiKey || apiKey.trim().length < 8) throw new AppError('A valid API key is required.', 422);
+
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  await assertAiInstitutionKeyAllowed(institution);
+
+  try {
+    await aiService.saveInstitutionCredential(req.params.id, req.user._id, purpose, provider, apiKey.trim(), model?.trim());
+    return ok(res, { configured: true, purpose, provider }, 'Institution AI provider connected.');
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
+});
+
+const removeInstitutionConfig = asyncHandler(async (req, res) => {
+  const { purpose } = req.params;
+  if (!PURPOSES.includes(purpose)) throw new AppError(`purpose must be one of: ${PURPOSES.join(', ')}.`, 422);
+  try {
+    await aiService.removeInstitutionCredential(req.params.id, req.user._id, purpose);
+    return ok(res, null, 'Institution AI provider disconnected.');
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
+});
+
+// POST /api/ai/generate — text features (notes, quiz, slides, career advice, ...). Optional
+// institutionId in the body uses that institution's own key (if the caller is authorized and one
+// is connected) instead of the caller's personal key.
 const generate = asyncHandler(async (req, res) => {
-  const { feature, prompt } = req.body;
+  const { feature, prompt, institutionId } = req.body;
   if (!feature || !FEATURE_PROMPTS[feature]) throw new AppError(`feature must be one of: ${Object.keys(FEATURE_PROMPTS).join(', ')}.`, 422);
   if (!prompt || !prompt.trim()) throw new AppError('prompt is required.', 422);
   if (prompt.length > MAX_PROMPT_LENGTH) throw new AppError(`Prompt too long — max ${MAX_PROMPT_LENGTH} characters.`, 422);
 
   try {
-    const result = await aiService.generate(req.user._id, FEATURE_PROMPTS[feature], prompt.trim());
+    const result = await aiService.generate(req.user._id, FEATURE_PROMPTS[feature], prompt.trim(), institutionId);
     return ok(res, { result });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -73,11 +131,11 @@ const generate = asyncHandler(async (req, res) => {
 
 // POST /api/ai/image — AI Creative Teacher: Graphics/Images (spec 15B.6).
 const image = asyncHandler(async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, institutionId } = req.body;
   if (!prompt || !prompt.trim()) throw new AppError('prompt is required.', 422);
   if (prompt.length > 1000) throw new AppError('Prompt too long — max 1000 characters.', 422);
   try {
-    const imageDataUrl = await aiService.generateImage(req.user._id, prompt.trim());
+    const imageDataUrl = await aiService.generateImage(req.user._id, prompt.trim(), institutionId);
     return ok(res, { imageDataUrl });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -85,12 +143,13 @@ const image = asyncHandler(async (req, res) => {
 });
 
 // POST /api/ai/3d-model — AI Creative Teacher: 3D Models (spec 15B.6). Async — returns a taskId
-// to poll via GET /api/ai/3d-model/:taskId.
+// to poll via GET /api/ai/3d-model/:taskId?institutionId=... (same institutionId must be passed
+// back on the status poll, since the institution's key — not the caller's — is what's polling).
 const create3DModel = asyncHandler(async (req, res) => {
-  const { prompt } = req.body;
+  const { prompt, institutionId } = req.body;
   if (!prompt || !prompt.trim()) throw new AppError('prompt is required.', 422);
   try {
-    const taskId = await aiService.create3DModelTask(req.user._id, prompt.trim());
+    const taskId = await aiService.create3DModelTask(req.user._id, prompt.trim(), institutionId);
     return ok(res, { taskId });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -99,7 +158,7 @@ const create3DModel = asyncHandler(async (req, res) => {
 
 const get3DModelStatus = asyncHandler(async (req, res) => {
   try {
-    const status = await aiService.get3DModelTaskStatus(req.user._id, req.params.taskId);
+    const status = await aiService.get3DModelTaskStatus(req.user._id, req.params.taskId, req.query.institutionId);
     return ok(res, status);
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -108,11 +167,11 @@ const get3DModelStatus = asyncHandler(async (req, res) => {
 
 // POST /api/ai/voice — AI Creative Teacher: narration voice (part of "Full AI Video" spec 15B.7).
 const voice = asyncHandler(async (req, res) => {
-  const { text } = req.body;
+  const { text, institutionId } = req.body;
   if (!text || !text.trim()) throw new AppError('text is required.', 422);
   if (text.length > 2500) throw new AppError('Text too long — max 2500 characters.', 422);
   try {
-    const audioDataUrl = await aiService.generateSpeech(req.user._id, text.trim());
+    const audioDataUrl = await aiService.generateSpeech(req.user._id, text.trim(), undefined, institutionId);
     return ok(res, { audioDataUrl });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -122,11 +181,11 @@ const voice = asyncHandler(async (req, res) => {
 // POST /api/ai/avatar-video — AI Creative Teacher: full AI video with a talking avatar (spec
 // 15B.7 "AI Voice, AI Avatar"). Async — poll via GET /api/ai/avatar-video/:videoId.
 const createAvatarVideo = asyncHandler(async (req, res) => {
-  const { script, avatarId, voiceId } = req.body;
+  const { script, avatarId, voiceId, institutionId } = req.body;
   if (!script || !script.trim()) throw new AppError('script is required.', 422);
   if (script.length > 2500) throw new AppError('Script too long — max 2500 characters.', 422);
   try {
-    const videoId = await aiService.createAvatarVideoTask(req.user._id, script.trim(), avatarId, voiceId);
+    const videoId = await aiService.createAvatarVideoTask(req.user._id, script.trim(), avatarId, voiceId, institutionId);
     return ok(res, { videoId });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -135,7 +194,7 @@ const createAvatarVideo = asyncHandler(async (req, res) => {
 
 const getAvatarVideoStatus = asyncHandler(async (req, res) => {
   try {
-    const status = await aiService.getAvatarVideoTaskStatus(req.user._id, req.params.videoId);
+    const status = await aiService.getAvatarVideoTaskStatus(req.user._id, req.params.videoId, req.query.institutionId);
     return ok(res, status);
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -146,11 +205,11 @@ const getAvatarVideoStatus = asyncHandler(async (req, res) => {
 // GET /api/ai/animation/:taskId. promptImage is optional (gen4.5 supports text-only per Runway's
 // current guide); when given it must be a real public HTTPS image URL Runway can fetch.
 const createAnimation = asyncHandler(async (req, res) => {
-  const { promptText, promptImage } = req.body;
+  const { promptText, promptImage, institutionId } = req.body;
   if (!promptText || !promptText.trim()) throw new AppError('promptText is required.', 422);
   if (promptText.length > 1000) throw new AppError('promptText too long — max 1000 characters.', 422);
   try {
-    const taskId = await aiService.createAnimationTask(req.user._id, promptText.trim(), promptImage?.trim() || null);
+    const taskId = await aiService.createAnimationTask(req.user._id, promptText.trim(), promptImage?.trim() || null, institutionId);
     return ok(res, { taskId });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -159,7 +218,7 @@ const createAnimation = asyncHandler(async (req, res) => {
 
 const getAnimationStatus = asyncHandler(async (req, res) => {
   try {
-    const status = await aiService.getAnimationTaskStatus(req.user._id, req.params.taskId);
+    const status = await aiService.getAnimationTaskStatus(req.user._id, req.params.taskId, req.query.institutionId);
     return ok(res, status);
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -169,5 +228,6 @@ const getAnimationStatus = asyncHandler(async (req, res) => {
 module.exports = {
   getConfig, saveConfig, removeConfig, generate,
   image, create3DModel, get3DModelStatus, voice, createAvatarVideo, getAvatarVideoStatus,
-  createAnimation, getAnimationStatus
+  createAnimation, getAnimationStatus,
+  getInstitutionConfig, saveInstitutionConfig, removeInstitutionConfig
 };

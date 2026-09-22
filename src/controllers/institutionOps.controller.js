@@ -22,7 +22,8 @@ async function loadInstitutionAndAssert(institutionId, userId) {
   const institution = await Institution.findById(institutionId);
   if (!institution) throw new AppError('Institution not found.', 404);
   const isOwner = institution.owner.toString() === userId.toString();
-  const isStaff = institution.staff.some((s) => s.user.toString() === userId.toString());
+  const isStaff = institution.staff.some((s) => s.user.toString() === userId.toString()
+    && s.permissions.some((permission) => ['institution:ops:manage', 'ops:manage'].includes(permission)));
   if (!isOwner && !isStaff) throw new AppError('You do not manage this institution.', 403);
   return institution;
 }
@@ -331,14 +332,16 @@ const createHealthIncident = asyncHandler(async (req, res) => {
 const getStudentHealthRecord = asyncHandler(async (req, res) => {
   const profile = await StudentProfile.findOne({ user: req.params.userId }).select('bloodGroup allergies medicalNotes vaccinations emergencyContact primaryInstitution');
   if (!profile) throw new AppError('Student profile not found.', 404);
-  if (profile.primaryInstitution) await loadInstitutionAndAssert(profile.primaryInstitution, req.user._id);
+  if (!profile.primaryInstitution) throw new AppError('Student is not linked to an institution.', 403);
+  await loadInstitutionAndAssert(profile.primaryInstitution, req.user._id);
   return ok(res, profile);
 });
 
 const updateStudentHealthRecord = asyncHandler(async (req, res) => {
   const profile = await StudentProfile.findOne({ user: req.params.userId });
   if (!profile) throw new AppError('Student profile not found.', 404);
-  if (profile.primaryInstitution) await loadInstitutionAndAssert(profile.primaryInstitution, req.user._id);
+  if (!profile.primaryInstitution) throw new AppError('Student is not linked to an institution.', 403);
+  await loadInstitutionAndAssert(profile.primaryInstitution, req.user._id);
 
   const { bloodGroup, allergies, medicalNotes, vaccinations } = req.body;
   if (bloodGroup !== undefined) profile.bloodGroup = bloodGroup;

@@ -117,8 +117,11 @@ const childAttendance = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
-  const records = await Attendance.find({ 'records.student': req.params.studentId }).sort({ date: -1 });
-  return ok(res, records);
+  const records = await Attendance.find({ 'records.student': req.params.studentId }).sort({ date: -1 }).lean();
+  return ok(res, records.map((entry) => ({
+    ...entry,
+    records: entry.records.filter((record) => record.student.toString() === req.params.studentId)
+  })));
 });
 
 // GET /api/parents/children/:studentId/results
@@ -177,11 +180,8 @@ const childExams = asyncHandler(async (req, res) => {
   return ok(res, exams);
 });
 
-// PATCH /api/parents/children/:studentId/fees/:feeId/pay — the parent self-confirms payment of
-// their child's fee, same honesty pattern as FundingRequest.donate: no real payment gateway
-// exists yet, so the payer picks a method and gets a real, unique, server-generated receipt
-// reference. Previously only institution staff could mark a fee paid — this closes that gap so
-// the person actually paying can do it themselves, like Donation already allows for donors.
+// PATCH /api/parents/children/:studentId/fees/:feeId/pay — report a manual payment
+// for institution verification. Gateway payments use their own checkout endpoints.
 const payChildFee = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
@@ -196,31 +196,24 @@ const payChildFee = asyncHandler(async (req, res) => {
   if (fee.student.toString() !== req.params.studentId) throw new AppError('This fee does not belong to that child.', 400);
   if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
 
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
+  if (paymentMethod === 'card') throw new AppError('Use the secure payment checkout for card payments.', 422);
+  if (fee.status === 'processing') throw new AppError('Payment is already awaiting institution confirmation.', 409);
 
-  fee.status = 'paid';
-  fee.paidAt = new Date();
+  fee.status = 'processing';
   fee.paymentMethod = paymentMethod;
   fee.paidVia = PAYMENT_METHOD_LABEL[paymentMethod];
-  fee.transactionId = generateTransactionId();
   fee.paidBy = req.user._id;
-  fee.grossAmount = receipt.grossAmount;
-  fee.platformCommission = receipt.platformCommission;
-  fee.gatewayCharges = receipt.gatewayCharges;
-  fee.taxAmount = receipt.taxAmount;
-  fee.netAmount = receipt.netAmount;
-  fee.escrowStatus = 'held';
   await fee.save();
 
   const institution = await Institution.findById(fee.institution);
   if (institution) {
     await notify(institution.owner, {
-      title: `Fee paid: ${fee.currency} ${fee.amount} — ${fee.title} (receipt ${fee.transactionId})`,
+      title: `Fee payment awaiting verification: ${fee.currency} ${fee.amount} — ${fee.title}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
 
-  return ok(res, fee, `Payment confirmed. Receipt ${fee.transactionId}`);
+  return ok(res, fee, 'Payment reported. Awaiting institution confirmation.');
 });
 
 // GET /api/parents/children/:studentId/health — Health Record (spec Part 11.13). Only the

@@ -7,6 +7,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
+const { assertStudentCapAllows } = require('../utils/subscriptionGate');
 
 const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, waitlisted: 70, accepted: 100, rejected: 100 };
 function withProgress(app) {
@@ -52,6 +53,8 @@ const submitApplication = asyncHandler(async (req, res) => {
   const application = await InstitutionApplication.findById(req.params.id).populate('institution');
   if (!application) throw new AppError('Application not found.', 404);
   if (application.applicant.toString() !== req.user._id.toString()) throw new AppError('This is not your application.', 403);
+
+  if (application.status !== 'draft') throw new AppError('Only a draft application can be submitted.', 409);
 
   application.status = 'submitted';
   application.submittedAt = new Date();
@@ -256,11 +259,18 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
     throw new AppError('Only the institution owner or a staff member with final-approval permission can accept.', 403);
   }
 
+  const existingProfile = await StudentProfile.findOne({ user: application.applicant });
+  const alreadyAtThisInstitution = existingProfile?.primaryInstitution?.toString() === application.institution._id.toString();
+  if (!alreadyAtThisInstitution) {
+    const currentStudentCount = await StudentProfile.countDocuments({ primaryInstitution: application.institution._id });
+    await assertStudentCapAllows(application.institution, currentStudentCount);
+  }
+
   application.status = 'accepted';
   application.reviewedBy = req.user._id;
   application.admissionLetter = { verifyCode: crypto.randomBytes(8).toString('hex'), issuedAt: new Date() };
 
-  let profile = await StudentProfile.findOne({ user: application.applicant });
+  let profile = existingProfile;
   if (!profile) {
     profile = await StudentProfile.create({
       user: application.applicant,

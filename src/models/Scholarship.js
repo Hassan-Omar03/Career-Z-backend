@@ -11,6 +11,7 @@ const scholarshipSchema = new mongoose.Schema(
     country: { type: String, default: '' },
     applicationDeadline: { type: Date },
     seatsAvailable: { type: Number, default: 1, min: 0 },
+    seatRevision: { type: Number, default: 0 },
     status: { type: String, enum: ['open', 'closed'], default: 'open' }
   },
   { timestamps: true }
