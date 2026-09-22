@@ -38,6 +38,7 @@ router.use('/ai', require('./ai.routes'));
 router.use('/security', require('./security.routes'));
 router.use('/webauthn', require('./webauthn.routes'));
 router.use('/media', require('./media.routes'));
+router.use('/wallet', require('./wallet.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/', require('./cms.routes'));
 

@@ -1,5 +1,7 @@
 const Fee = require('../models/Fee');
 const Institution = require('../models/Institution');
+const Wallet = require('../models/Wallet');
+const WalletTransaction = require('../models/WalletTransaction');
 const WebhookEvent = require('../models/WebhookEvent');
 const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
@@ -116,6 +118,7 @@ async function handlePaddleWebhook(req, res) {
     if (event.event_type === 'transaction.completed') {
       const transaction = event.data;
       if (transaction.custom_data?.kind === 'fee') await handleFeePaddleCompleted(transaction);
+      if (transaction.custom_data?.kind === 'wallet_topup') await handleWalletTopupCompleted(transaction);
     }
   } catch (err) {
     console.error('[paddle webhook] handler error:', err.message);
@@ -155,4 +158,29 @@ async function handleFeePaddleCompleted(transaction) {
   }
 }
 
-module.exports = { handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted };
+// Credits the wallet only once a Paddle transaction is genuinely confirmed complete — same
+// idempotency guarantee as fees (the WebhookEvent unique index already prevents double-processing
+// the same event; this also self-guards via paddleTransactionId in case sync + webhook both fire).
+async function handleWalletTopupCompleted(transaction) {
+  const { userId, currency } = transaction.custom_data;
+  const already = await WalletTransaction.findOne({ paddleTransactionId: transaction.id });
+  if (already) return;
+
+  const amount = Number(transaction.items?.[0]?.price?.unit_price?.amount || transaction.details?.totals?.grand_total || 0) / 100;
+  if (!amount) return;
+
+  await Wallet.findOneAndUpdate(
+    { user: userId, currency },
+    { $inc: { available: amount } },
+    { upsert: true }
+  );
+  await WalletTransaction.create({ user: userId, type: 'topup', amount, currency, status: 'completed', paddleTransactionId: transaction.id });
+
+  await notify(userId, {
+    title: `Wallet topped up: ${currency} ${amount.toFixed(2)}`,
+    body: `Receipt ${transaction.id}`,
+    sentBy: null
+  }).catch(() => {});
+}
+
+module.exports = { handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted };

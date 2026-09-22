@@ -122,4 +122,42 @@ const syncPaddleFeeStatus = asyncHandler(async (req, res) => {
   return ok(res, refreshed);
 });
 
-module.exports = { createFeeCheckoutSession, getStripeConfig, getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus };
+// POST /api/payments/paddle/wallet/topup — creates a real Paddle transaction for a wallet
+// top-up. Like the fee flow, the wallet is NOT credited here — only the webhook (or sync
+// fallback below), after confirming the transaction actually completed, credits it.
+const createWalletTopup = asyncHandler(async (req, res) => {
+  if (!paddleService.isPaddleConfigured()) {
+    throw new AppError('Card payments are not set up yet — ask the Super Admin to configure PADDLE_API_KEY and PADDLE_WEBHOOK_SECRET.', 503);
+  }
+  const { amount, currency } = req.body;
+  if (!amount || amount <= 0) throw new AppError('A positive amount is required.', 422);
+  const cur = (currency || 'USD').toUpperCase();
+
+  const transaction = await paddleService.createTransaction({
+    title: `Wallet top-up — ${cur} ${amount}`,
+    amount,
+    currencyCode: cur,
+    customerEmail: req.user.email,
+    metadata: { userId: req.user._id.toString(), currency: cur, kind: 'wallet_topup' }
+  });
+
+  return ok(res, { transactionId: transaction.id, status: transaction.status });
+});
+
+// GET /api/payments/paddle/wallet/topup/:transactionId/sync — same local-dev fallback pattern
+// as the fee sync endpoint, for when Paddle's webhook can't reach localhost.
+const syncWalletTopup = asyncHandler(async (req, res) => {
+  const transaction = await paddleService.getTransaction(req.params.transactionId);
+  if (transaction.custom_data?.userId !== req.user._id.toString()) throw new AppError('Not your transaction.', 403);
+
+  if (transaction.status === 'completed') {
+    const { handleWalletTopupCompleted } = require('./webhook.controller');
+    await handleWalletTopupCompleted(transaction);
+  }
+  return ok(res, { status: transaction.status });
+});
+
+module.exports = {
+  createFeeCheckoutSession, getStripeConfig, getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus,
+  createWalletTopup, syncWalletTopup
+};
