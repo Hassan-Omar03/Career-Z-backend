@@ -27,5 +27,6 @@ router.get('/children/:studentId/permissions', ctrl.listChildPermissions);
 router.post('/children/:studentId/permissions', ctrl.grantChildPermission);
 router.get('/children/:studentId/teachers', ptmCtrl.listChildTeachers);
 router.post('/children/:studentId/ai-assistant', ctrl.getAiAssistantInsights);
+router.post('/institutions/:institutionId/feedback', ctrl.submitInstitutionFeedback);
 
 module.exports = router;

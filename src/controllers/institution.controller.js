@@ -1,4 +1,5 @@
 const crypto = require('crypto');
+const mongoose = require('mongoose');
 const Institution = require('../models/Institution');
 const Campus = require('../models/Campus');
 const ClassSection = require('../models/ClassSection');
@@ -678,6 +679,92 @@ const listInstitutionStudents = asyncHandler(async (req, res) => {
   return ok(res, students);
 });
 
+// GET /api/institutions/:id/parents — a real parent directory (spec: Institution<->Parent
+// "parent directory relationship"): every parent with an approved link to one of this
+// institution's students, which of their children are here, and whether the institution has
+// separately verified that link.
+const listInstitutionParents = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const studentIds = await StudentProfile.find({ primaryInstitution: institution._id }).distinct('user');
+  const links = await ParentChildLink.find({ student: { $in: studentIds }, status: 'approved' })
+    .populate('parent', 'fullName email phone')
+    .populate('student', 'fullName')
+    .sort({ createdAt: -1 });
+
+  const byParent = new Map();
+  for (const link of links) {
+    if (!link.parent) continue;
+    const key = link.parent._id.toString();
+    if (!byParent.has(key)) {
+      byParent.set(key, { parent: link.parent, children: [] });
+    }
+    byParent.get(key).children.push({
+      linkId: link._id, name: link.student?.fullName, relationship: link.relationship,
+      institutionVerified: link.institutionVerified
+    });
+  }
+
+  return ok(res, Array.from(byParent.values()));
+});
+
+// PATCH /api/institutions/:id/parents/:linkId/verify — institution's own extra confirmation on
+// top of student consent (spec: "guardian verification").
+const verifyParentLink = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const link = await ParentChildLink.findById(req.params.linkId);
+  if (!link || link.status !== 'approved') throw new AppError('Parent-child link not found.', 404);
+  const studentBelongsHere = await StudentProfile.exists({ user: link.student, primaryInstitution: institution._id });
+  if (!studentBelongsHere) throw new AppError('That link is not for one of this institution\'s students.', 403);
+
+  link.institutionVerified = req.body.verified !== false;
+  link.institutionVerifiedBy = req.user._id;
+  link.institutionVerifiedAt = new Date();
+  await link.save();
+  return ok(res, link, link.institutionVerified ? 'Guardian link verified.' : 'Guardian verification removed.');
+});
+
+// GET /api/institutions/:id/feedback — parent satisfaction ratings received (spec:
+// Institution<->Parent "parent satisfaction/feedback", "parent engagement analytics").
+const getInstitutionFeedback = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+
+  const InstitutionFeedback = require('../models/InstitutionFeedback');
+  const [entries, agg] = await Promise.all([
+    InstitutionFeedback.find({ institution: institution._id }).populate('fromUser', 'fullName').sort({ createdAt: -1 }),
+    InstitutionFeedback.aggregate([{ $match: { institution: institution._id } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }])
+  ]);
+  return ok(res, {
+    average: agg[0] ? Math.round(agg[0].average * 10) / 10 : null,
+    count: agg[0]?.count || 0,
+    entries
+  });
+});
+
+// GET /api/institutions/:id/feedback/summary — average + count only (no comments), visible to
+// any authenticated user (e.g. a parent deciding whether/how to rate), plus their own rating if
+// they've already left one.
+const getInstitutionFeedbackSummary = asyncHandler(async (req, res) => {
+  const InstitutionFeedback = require('../models/InstitutionFeedback');
+  const [agg, mine] = await Promise.all([
+    InstitutionFeedback.aggregate([{ $match: { institution: new mongoose.Types.ObjectId(req.params.id) } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
+    InstitutionFeedback.findOne({ institution: req.params.id, fromUser: req.user._id })
+  ]);
+  return ok(res, {
+    average: agg[0] ? Math.round(agg[0].average * 10) / 10 : null,
+    count: agg[0]?.count || 0,
+    myRating: mine?.rating || null,
+    myComment: mine?.comment || ''
+  });
+});
+
 const updateStudentStatus = asyncHandler(async (req, res) => {
   const profile = await StudentProfile.findById(req.params.profileId);
   if (!profile) throw new AppError('Student profile not found.', 404);
@@ -1040,6 +1127,10 @@ module.exports = {
   addStaff,
   removeStaff,
   updateStaffAiPermissions,
+  listInstitutionParents,
+  verifyParentLink,
+  getInstitutionFeedback,
+  getInstitutionFeedbackSummary,
   listStaffAttendance,
   listCampusBuildings,
   createCampusBuilding,

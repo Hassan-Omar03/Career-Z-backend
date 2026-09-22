@@ -61,6 +61,11 @@ router.get('/:id/students', ctrl.listInstitutionStudents);
 router.patch('/students/:profileId/status', ctrl.updateStudentStatus);
 router.get('/:id/attendance', ctrl.listInstitutionAttendance);
 
+router.get('/:id/parents', ctrl.listInstitutionParents);
+router.patch('/:id/parents/:linkId/verify', ctrl.verifyParentLink);
+router.get('/:id/feedback', ctrl.getInstitutionFeedback);
+router.get('/:id/feedback/summary', ctrl.getInstitutionFeedbackSummary);
+
 router.post('/:id/payroll', ctrl.createPayslip);
 router.get('/:id/payroll', ctrl.listInstitutionPayroll);
 router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);

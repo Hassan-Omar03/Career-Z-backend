@@ -435,6 +435,29 @@ Parent's question: ${question.trim()}`;
   }
 });
 
+// POST /api/parents/institutions/:institutionId/feedback — a parent's satisfaction rating of an
+// institution (spec: Institution<->Parent "parent satisfaction/feedback"). Only accepted from a
+// parent with a real, approved link to a student actually enrolled there — no fake ratings.
+const submitInstitutionFeedback = asyncHandler(async (req, res) => {
+  const { rating, comment } = req.body;
+  if (!rating || rating < 1 || rating > 5) throw new AppError('rating must be between 1 and 5.', 422);
+
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' }).select('student');
+  const childIds = links.map((l) => l.student);
+  if (childIds.length === 0) throw new AppError('You have no linked children.', 403);
+
+  const enrolledHere = await StudentProfile.exists({ user: { $in: childIds }, primaryInstitution: req.params.institutionId });
+  if (!enrolledHere) throw new AppError('You can only rate an institution one of your linked children is actually enrolled at.', 403);
+
+  const InstitutionFeedback = require('../models/InstitutionFeedback');
+  const feedback = await InstitutionFeedback.findOneAndUpdate(
+    { institution: req.params.institutionId, fromUser: req.user._id },
+    { institution: req.params.institutionId, fromUser: req.user._id, rating, comment: comment || '' },
+    { upsert: true, new: true, runValidators: true }
+  );
+  return created(res, feedback, 'Feedback submitted.');
+});
+
 module.exports = {
   requestLink,
   myChildren,
@@ -454,5 +477,6 @@ module.exports = {
   listChildPermissions,
   grantChildPermission,
   getMyDashboard,
-  getAiAssistantInsights
+  getAiAssistantInsights,
+  submitInstitutionFeedback
 };

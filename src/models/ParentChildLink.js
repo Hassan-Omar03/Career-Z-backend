@@ -8,7 +8,12 @@ const parentChildLinkSchema = new mongoose.Schema(
     relationship: { type: String, enum: ['father', 'mother', 'guardian', 'sponsor'], default: 'guardian' },
     status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-    approvedAt: { type: Date, default: null }
+    approvedAt: { type: Date, default: null },
+    // Extra institution-side check on top of student consent — e.g. matches admission records —
+    // settable only by the student's institution (spec: Institution<->Parent "guardian verification").
+    institutionVerified: { type: Boolean, default: false },
+    institutionVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    institutionVerifiedAt: { type: Date, default: null }
   },
   { timestamps: true }
 );
