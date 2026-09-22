@@ -387,6 +387,54 @@ const getMyDashboard = asyncHandler(async (req, res) => {
   return ok(res, { children, notifications });
 });
 
+// POST /api/parents/children/:studentId/ai-assistant — spec Part 11.10 "AI Parent Assistant".
+// BYOK (parent's own connected AI provider, Profile → AI Settings) summarizes this one child's
+// real attendance/results/fees/exam data and answers the parent's question about it. CareerZ
+// never decides anything here — same "summarize, don't decide" pattern as the Institution and
+// Teacher AI assistants.
+const getAiAssistantInsights = asyncHandler(async (req, res) => {
+  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
+  assertApprovedLink(links, req.params.studentId);
+  const { question } = req.body;
+  if (!question || !question.trim()) throw new AppError('question is required.', 422);
+  if (question.length > 1000) throw new AppError('Question too long — max 1000 characters.', 422);
+
+  const student = await User.findById(req.params.studentId).select('fullName');
+  const profile = await StudentProfile.findOne({ user: req.params.studentId }).populate('primaryInstitution', 'name');
+
+  const [attendanceRecords, results, fees, upcomingExams] = await Promise.all([
+    Attendance.find({ 'records.student': req.params.studentId }).sort({ date: -1 }).limit(30).lean(),
+    Result.find({ student: req.params.studentId }).sort({ createdAt: -1 }).limit(10),
+    Fee.find({ student: req.params.studentId }),
+    Exam.find({ course: { $in: await Enrollment.find({ student: req.params.studentId }).distinct('course') }, published: true, scheduledDate: { $gte: new Date() } }).limit(5)
+  ]);
+
+  const presentCount = attendanceRecords.filter((a) => a.records.find((r) => r.student.toString() === req.params.studentId)?.status === 'present').length;
+  const attendanceRate = attendanceRecords.length > 0 ? Math.round((presentCount / attendanceRecords.length) * 100) : null;
+  const overdueFees = fees.filter((f) => f.status === 'overdue').length;
+  const pendingFees = fees.filter((f) => f.status === 'pending').length;
+
+  const dataSummary = `Student: ${student?.fullName || 'Unknown'}
+Institution: ${profile?.primaryInstitution?.name || 'Unknown'}
+Attendance (last ${attendanceRecords.length} sessions): ${attendanceRate === null ? 'no data' : `${attendanceRate}% present`}
+Recent results: ${results.map((r) => `${r.subject || r.term || 'Result'}: ${r.marksObtained}/${r.totalMarks}${r.grade ? ` (${r.grade})` : ''}`).join('; ') || 'none recorded'}
+Fees: ${fees.length} total, ${overdueFees} overdue, ${pendingFees} pending
+Upcoming exams: ${upcomingExams.map((e) => `${e.title} (${e.scheduledDate ? new Date(e.scheduledDate).toLocaleDateString() : 'date TBD'})`).join('; ') || 'none scheduled'}
+Parent's question: ${question.trim()}`;
+
+  const aiService = require('../services/ai.service');
+  try {
+    const result = await aiService.generate(
+      req.user._id,
+      'You are a helpful assistant for a parent tracking their child\'s education. Given real, structured data about the child (attendance, results, fees, upcoming exams) and the parent\'s specific question, answer clearly and concretely using only the data given — never invent numbers, grades or dates not provided. If the data doesn\'t answer the question, say so plainly. Keep it to a short, warm, practical response.',
+      dataSummary
+    );
+    return ok(res, { answer: result, dataSummary });
+  } catch (err) {
+    throw new AppError(err.message, err.statusCode || 500);
+  }
+});
+
 module.exports = {
   requestLink,
   myChildren,
@@ -405,5 +453,6 @@ module.exports = {
   updateChildHealth,
   listChildPermissions,
   grantChildPermission,
-  getMyDashboard
+  getMyDashboard,
+  getAiAssistantInsights
 };

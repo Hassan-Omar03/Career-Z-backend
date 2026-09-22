@@ -26,5 +26,6 @@ router.patch('/children/:studentId/health', ctrl.updateChildHealth);
 router.get('/children/:studentId/permissions', ctrl.listChildPermissions);
 router.post('/children/:studentId/permissions', ctrl.grantChildPermission);
 router.get('/children/:studentId/teachers', ptmCtrl.listChildTeachers);
+router.post('/children/:studentId/ai-assistant', ctrl.getAiAssistantInsights);
 
 module.exports = router;
