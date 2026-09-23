@@ -198,7 +198,7 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
 
   let sheet = await Attendance.findOne({ course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
   if (!sheet) {
-    sheet = await Attendance.create({ course, classSection: courseDoc.classSection, date, markedBy: req.user._id, records: [] });
+    sheet = await Attendance.create({ institution: courseDoc.institution, course, classSection: courseDoc.classSection, date, markedBy: req.user._id, records: [] });
   }
 
   const already = sheet.records.find((r) => r.student.toString() === studentId);
@@ -253,7 +253,7 @@ const reviewFaceCheckInRequest = asyncHandler(async (req, res) => {
     const dayEnd = new Date(request.date); dayEnd.setHours(23, 59, 59, 999);
     let sheet = await Attendance.findOne({ course: request.course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
     if (!sheet) {
-      sheet = await Attendance.create({ course: request.course, classSection: courseDoc.classSection, date: request.date, markedBy: req.user._id, records: [] });
+      sheet = await Attendance.create({ institution: courseDoc.institution, course: request.course, classSection: courseDoc.classSection, date: request.date, markedBy: req.user._id, records: [] });
     }
     if (!sheet.records.some((r) => r.student.toString() === request.student._id.toString())) {
       sheet.records.push({ student: request.student._id, status: 'present', method: 'face_remote', checkedInAt: new Date() });

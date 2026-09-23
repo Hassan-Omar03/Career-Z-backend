@@ -134,7 +134,7 @@ const qrCheckIn = asyncHandler(async (req, res) => {
   const dayEnd = new Date(session.date); dayEnd.setHours(23, 59, 59, 999);
   let sheet = await Attendance.findOne({ course: session.course, date: { $gte: dayStart, $lte: dayEnd } });
   if (!sheet) {
-    sheet = await Attendance.create({ course: session.course, classSection: courseDoc.classSection, date: session.date, markedBy: courseDoc.teacher, records: [] });
+    sheet = await Attendance.create({ institution: courseDoc.institution, course: session.course, classSection: courseDoc.classSection, date: session.date, markedBy: courseDoc.teacher, records: [] });
   }
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
   if (!already) {
@@ -173,7 +173,7 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
   const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
   let sheet = await Attendance.findOne({ course: courseId, date: { $gte: dayStart, $lte: dayEnd } });
   if (!sheet) {
-    sheet = await Attendance.create({ course: courseId, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
+    sheet = await Attendance.create({ institution: courseDoc.institution, course: courseId, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
   }
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
   if (already) return ok(res, { alreadyMarked: true, distanceMeters: Math.round(distance) }, 'You were already marked present today.');
