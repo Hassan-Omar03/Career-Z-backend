@@ -47,7 +47,10 @@ module.exports = {
     provider: process.env.TRANSLATION_PROVIDER || 'mymemory',
     myMemoryEmail: process.env.MYMEMORY_EMAIL || '', // optional — raises the free daily cap
     libretranslateUrl: process.env.LIBRETRANSLATE_URL || '',
-    libretranslateApiKey: process.env.LIBRETRANSLATE_API_KEY || ''
+    libretranslateApiKey: process.env.LIBRETRANSLATE_API_KEY || '',
+    // Automatic fallback when the primary (self-hosted LibreTranslate) is overloaded, slow or
+    // down — never leaves translation completely broken. Google Cloud Translation API key.
+    googleTranslateApiKey: process.env.GOOGLE_TRANSLATE_API_KEY || ''
   },
   // Platform-wide media storage (client-provided, free-tier Cloudinary account works) — separate
   // from the per-user BYOK MediaCredential (used only for the teacher's own AI-video pipeline).
