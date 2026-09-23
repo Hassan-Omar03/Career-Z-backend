@@ -144,15 +144,7 @@ const qrCheckIn = asyncHandler(async (req, res) => {
   return ok(res, { alreadyMarked: false }, 'Attendance marked via QR check-in.');
 });
 
-// Haversine formula — great-circle distance between two lat/lng points, in meters.
-function distanceMeters(lat1, lng1, lat2, lng2) {
-  const R = 6371000;
-  const toRad = (d) => (d * Math.PI) / 180;
-  const dLat = toRad(lat2 - lat1);
-  const dLng = toRad(lng2 - lng1);
-  const a = Math.sin(dLat / 2) ** 2 + Math.cos(toRad(lat1)) * Math.cos(toRad(lat2)) * Math.sin(dLng / 2) ** 2;
-  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1 - a));
-}
+const { distanceMeters } = require('../utils/geo');
 
 // POST /api/students/me/attendance/gps-checkin — optional GPS attendance (spec: optional, since
 // it needs browser/device location permission). Only accepted if the course has GPS attendance

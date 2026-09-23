@@ -137,6 +137,7 @@ async function handlePaddleWebhook(req, res) {
       if (transaction.custom_data?.kind === 'course') return handleCoursePaddleCompleted(transaction, session);
       if (transaction.custom_data?.kind === 'featured_job') return handleFeaturedJobPaddleCompleted(transaction, session);
       if (transaction.custom_data?.kind === 'subscription') return handleSubscriptionPaddleCompleted(transaction, session);
+      if (transaction.custom_data?.kind === 'tutoring_fee') return handleTutoringFeePaddleCompleted(transaction, session);
     }
     return [];
   }, res);
@@ -284,7 +285,34 @@ async function handleSubscriptionPaddleCompleted(transaction, session) {
   }, session);
 }
 
+async function handleTutoringFeePaddleCompleted(transaction, session) {
+  return settle(async (dbSession) => {
+    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'tutoring_fee') {
+      throw new AppError('Expected a completed tutoring fee payment.', 422);
+    }
+    const TeacherStudentLink = require('../models/TeacherStudentLink');
+    const link = await TeacherStudentLink.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
+    if (!link) throw new AppError('Tutoring fee checkout not found.', 404);
+    if (link.feePaidAt) return [];
+
+    if (transaction.custom_data.linkId !== link._id.toString() || transaction.custom_data.studentId !== link.student.toString()
+      || transaction.currency_code !== link.feeCurrency) {
+      throw new AppError('Tutoring fee transaction ownership/currency does not match.', 422);
+    }
+    const price = transaction.items?.[0]?.price?.unit_price;
+    if (Number(price?.amount) !== Math.round(link.feeAmount * 100) || price?.currency_code !== link.feeCurrency) {
+      throw new AppError('Tutoring fee transaction amount does not match.', 422);
+    }
+
+    link.feePaidAt = new Date();
+    await link.save({ session: dbSession });
+
+    return [{ userId: link.teacher, payload: { title: `Tuition fee paid: ${link.feeCurrency} ${link.feeAmount}`, body: `Receipt ${transaction.id}`, sentBy: null } }];
+  }, session);
+}
+
 module.exports = {
   handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
-  handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted
+  handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted,
+  handleTutoringFeePaddleCompleted
 };

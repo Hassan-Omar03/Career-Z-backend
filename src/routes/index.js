@@ -43,6 +43,9 @@ router.use('/subscriptions', require('./subscription.routes'));
 router.use('/teacher-feedback', require('./teacherFeedback.routes'));
 router.use('/teacher-employments', require('./teacherEmployment.routes'));
 router.use('/employment', require('./employment.routes'));
+router.use('/transport', require('./transportTracking.routes'));
+router.use('/teacher-students', require('./teacherStudentLink.routes'));
+router.use('/parent-reputation', require('./parentReputation.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/', require('./cms.routes'));
 
