@@ -16,7 +16,7 @@ const Notification = require('../models/Notification');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const { notifyParentsOfStudent } = require('../services/notification.service');
+const { notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
 
 const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -126,7 +126,20 @@ const createQrSession = asyncHandler(async (req, res) => {
   });
 
   const qrDataUrl = await QRCode.toDataURL(JSON.stringify({ t: session.token }));
-  return ok(res, { sessionId: session._id, qrDataUrl, expiresAt, checkedIn: 0 }, 'QR session started.');
+
+  // Physical classrooms don't need this (students see the projected QR directly), but a remote/
+  // online student has no other way to know a session just opened — so every enrolled student
+  // gets the join code pushed to them the moment it's created.
+  const enrolledIds = await Enrollment.find({ course }).distinct('student');
+  if (enrolledIds.length > 0) {
+    await notifyMany(enrolledIds, {
+      title: `Attendance session open: ${courseDoc.title}`,
+      body: `Enter code ${session.code} in Attendance > Scan Teacher QR, or scan the QR on your teacher's screen. Expires ${expiresAt.toLocaleTimeString()}.`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
+
+  return ok(res, { sessionId: session._id, qrDataUrl, sessionCode: session.code, expiresAt, checkedIn: 0 }, 'QR session started.');
 });
 
 // GET /api/teachers/me/attendance/qr-session/:id — live check-in count while the QR is displayed.
