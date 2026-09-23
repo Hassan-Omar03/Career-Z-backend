@@ -9,6 +9,7 @@ router.post('/link-requests', ctrl.requestLink);
 router.get('/link-requests', ctrl.myLinkRequests);
 router.get('/incoming-requests', ctrl.incomingRequests);
 router.patch('/link-requests/:id/respond', ctrl.respondToLink);
+router.patch('/link-requests/:id/permissions', ctrl.updateLinkPermissions);
 router.delete('/link-requests/:id', ctrl.unlinkChild);
 
 router.get('/me/dashboard', ctrl.getMyDashboard);

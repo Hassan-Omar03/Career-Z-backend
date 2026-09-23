@@ -13,7 +13,16 @@ const parentChildLinkSchema = new mongoose.Schema(
     // settable only by the student's institution (spec: Institution<->Parent "guardian verification").
     institutionVerified: { type: Boolean, default: false },
     institutionVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    institutionVerifiedAt: { type: Date, default: null }
+    institutionVerifiedAt: { type: Date, default: null },
+    // Detailed guardian/custody permission levels (spec) — the student is the account holder who
+    // consents to being linked at all, so they're also the one who can narrow what a specific
+    // guardian can do beyond the relationship-type default. A 'sponsor' defaults more restricted
+    // (matches the existing GUARDIAN_RELATIONSHIPS rule); father/mother/guardian default to full.
+    permissions: {
+      payFees: { type: Boolean, default: true },
+      viewHealth: { type: Boolean, default: true },
+      giveConsent: { type: Boolean, default: true }
+    }
   },
   { timestamps: true }
 );

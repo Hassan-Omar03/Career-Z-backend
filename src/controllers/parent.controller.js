@@ -86,10 +86,37 @@ const respondToLink = asyncHandler(async (req, res) => {
   if (link.status !== 'pending') throw new AppError('This request has already been responded to.', 400);
 
   link.status = decision;
-  if (decision === 'approved') link.approvedAt = new Date();
+  if (decision === 'approved') {
+    link.approvedAt = new Date();
+    // A sponsor is a financial supporter, not a legal guardian — defaults reflect that from the
+    // start (spec: "detailed guardian/custody permission levels"); the student can adjust any of
+    // these later either way.
+    if (link.relationship === 'sponsor') {
+      link.permissions.viewHealth = false;
+      link.permissions.giveConsent = false;
+    }
+  }
   await link.save();
 
   return ok(res, link, `Link request ${decision}.`);
+});
+
+// PATCH /api/parents/link-requests/:id/permissions — the student (the account holder who
+// consented to the link in the first place) narrows what a specific linked guardian can do.
+const updateLinkPermissions = asyncHandler(async (req, res) => {
+  const link = await ParentChildLink.findById(req.params.id);
+  if (!link) throw new AppError('Link not found.', 404);
+  if (link.student.toString() !== req.user._id.toString()) throw new AppError('Only the student can set these permissions.', 403);
+  if (link.status !== 'approved') throw new AppError('This link is not approved yet.', 400);
+
+  const { payFees, viewHealth, giveConsent } = req.body;
+  if (payFees !== undefined) link.permissions.payFees = Boolean(payFees);
+  if (viewHealth !== undefined) link.permissions.viewHealth = Boolean(viewHealth);
+  if (giveConsent !== undefined) link.permissions.giveConsent = Boolean(giveConsent);
+  await link.save();
+
+  await notify(link.parent, { title: 'Your guardian permissions were updated', sentBy: req.user._id }).catch(() => {});
+  return ok(res, link, 'Permissions updated.');
 });
 
 // DELETE /api/parents/link-requests/:id — either party in the link (the parent, or the student)
@@ -118,10 +145,13 @@ function assertApprovedLink(links, studentId) {
 // records or sign consent for trips/events/medical treatment on the child's behalf.
 const GUARDIAN_RELATIONSHIPS = ['father', 'mother', 'guardian'];
 
-function assertGuardianLink(links, studentId) {
+function assertGuardianLink(links, studentId, permissionKey) {
   const found = assertApprovedLink(links, studentId);
   if (!GUARDIAN_RELATIONSHIPS.includes(found.relationship)) {
     throw new AppError('Only a father, mother or guardian link can do this — a sponsor link is view/pay-only.', 403);
+  }
+  if (permissionKey && found.permissions?.[permissionKey] === false) {
+    throw new AppError('The student has restricted this permission for your account.', 403);
   }
   return found;
 }
@@ -198,7 +228,8 @@ const childExams = asyncHandler(async (req, res) => {
 // for institution verification. Gateway payments use their own checkout endpoints.
 const payChildFee = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
-  assertApprovedLink(links, req.params.studentId);
+  const link = assertApprovedLink(links, req.params.studentId);
+  if (link.permissions?.payFees === false) throw new AppError('The student has restricted your fee-payment permission for this account.', 403);
 
   const { paymentMethod } = req.body;
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
@@ -235,7 +266,7 @@ const payChildFee = asyncHandler(async (req, res) => {
 // Guardian-only (father/mother/guardian) — a sponsor link cannot view medical information.
 const getChildHealth = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
-  assertGuardianLink(links, req.params.studentId);
+  assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
   const profile = await StudentProfile.findOne({ user: req.params.studentId });
   return ok(res, {
@@ -249,7 +280,7 @@ const getChildHealth = asyncHandler(async (req, res) => {
 // PATCH /api/parents/children/:studentId/health — guardian-only.
 const updateChildHealth = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
-  assertGuardianLink(links, req.params.studentId);
+  assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
   const allowed = ['bloodGroup', 'allergies', 'medicalNotes', 'emergencyContact'];
   const update = {};
@@ -278,7 +309,7 @@ const listChildPermissions = asyncHandler(async (req, res) => {
 // Guardian-only — legal consent cannot be signed by a sponsor link.
 const grantChildPermission = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
-  assertGuardianLink(links, req.params.studentId);
+  assertGuardianLink(links, req.params.studentId, 'giveConsent');
 
   const { type, title, details, decision, signedName } = req.body;
   const validTypes = ['trip', 'event', 'competition', 'photo', 'medical', 'other'];
@@ -478,6 +509,7 @@ module.exports = {
   myLinkRequests,
   incomingRequests,
   respondToLink,
+  updateLinkPermissions,
   childAttendance,
   childResults,
   childFees,

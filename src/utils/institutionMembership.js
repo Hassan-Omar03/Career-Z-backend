@@ -23,7 +23,9 @@ async function recordJoin(studentUserId, institutionId, program) {
   });
 
   if (membership.isPrimary) {
-    await StudentProfile.findOneAndUpdate({ user: studentUserId }, { $set: { primaryInstitution: institutionId } });
+    // upsert: true — this function must be safe to call on its own (not just from callers that
+    // happen to have already created a StudentProfile first), otherwise it silently no-ops.
+    await StudentProfile.findOneAndUpdate({ user: studentUserId }, { $set: { primaryInstitution: institutionId } }, { upsert: true });
   }
   return membership;
 }
