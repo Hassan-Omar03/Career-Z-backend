@@ -24,6 +24,9 @@ const issueCertificate = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can issue certificates.', 403);
+  }
 
   const { student, title, course } = req.body;
   if (!student || !title) throw new AppError('student and title are required.', 422);

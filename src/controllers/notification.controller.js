@@ -45,6 +45,9 @@ const broadcast = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can broadcast.', 403);
+  }
 
   const { audience, title, body, channels } = req.body;
   if (!title || !audience) throw new AppError('audience and title are required.', 422);
@@ -98,6 +101,9 @@ const saveCommsCredential = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can connect SMS/WhatsApp.', 403);
+  }
 
   const { accountSid, authToken, smsFromNumber, whatsappFromNumber } = req.body;
   if (!accountSid || !authToken) throw new AppError('accountSid and authToken are required.', 422);

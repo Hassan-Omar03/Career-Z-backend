@@ -7,6 +7,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify, notifyMany } = require('../services/notification.service');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
+const { isRoleVerified } = require('../utils/roleVerification');
 
 const DONATIONS_ENABLED_KEY = 'donations_enabled';
 const DONATION_COMMISSION_KEY = 'donation_commission_percent';
@@ -125,6 +126,10 @@ const myFundingRequests = asyncHandler(async (req, res) => {
 // POST /api/funding-requests/:id/donate — "Donate Now" (type=donation) or "Sponsor Student"
 // (type=sponsorship). Both create a real Donation record and bump collectedAmount for real.
 const donate = asyncHandler(async (req, res) => {
+  if (!(await isRoleVerified(req.user._id, 'donor'))) {
+    throw new AppError('Your Donor account is pending Super Admin verification. You can browse requests but cannot donate until it is approved.', 403);
+  }
+
   const donationsEnabled = await Setting.findOne({ key: DONATIONS_ENABLED_KEY });
   if (donationsEnabled && donationsEnabled.value === false) {
     throw new AppError('Donations are temporarily disabled platform-wide by the Super Admin.', 403);

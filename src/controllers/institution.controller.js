@@ -115,6 +115,18 @@ function assertOwnerOrStaff(institution, userId) {
   return isOwner;
 }
 
+// No account type can act on the platform until Super Admin has approved it — an unverified
+// (potentially fake) institution must not be able to hire staff, charge fees, issue certificates,
+// broadcast notifications, etc. Setup/editing basic details and submitting verification documents
+// stay allowed (updateInstitution, submitVerificationDocuments) since those are how an owner
+// actually reaches verification in the first place; everything that acts on real people or money
+// is gated here.
+function assertInstitutionVerified(institution) {
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can do this.', 403);
+  }
+}
+
 // PATCH /api/institutions/:id
 const updateInstitution = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -186,9 +198,7 @@ const addStaff = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff.', 403);
-  if (institution.verificationStatus !== 'approved') {
-    throw new AppError('This institution must be verified by Super Admin before it can add staff.', 403);
-  }
+  assertInstitutionVerified(institution);
 
   const { userId, role, permissions, department, designation } = req.body;
   if (!userId || !role) throw new AppError('userId and role are required.', 422);
@@ -220,6 +230,7 @@ const updateStaffAiPermissions = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff AI permissions.', 403);
+  assertInstitutionVerified(institution);
 
   const staffEntry = institution.staff.find((s) => s.user.toString() === req.params.userId);
   if (!staffEntry) throw new AppError('Staff member not found.', 404);
@@ -264,6 +275,7 @@ const createCampusBuilding = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const { name, type, color, positionX, positionZ, width, depth, floors, description, photo } = req.body;
   if (!name) throw new AppError('Building name is required.', 422);
@@ -279,6 +291,7 @@ const updateCampusBuilding = asyncHandler(async (req, res) => {
   if (!building) throw new AppError('Building not found.', 404);
   const institution = await Institution.findById(building.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const allowed = ['name', 'type', 'color', 'positionX', 'positionZ', 'width', 'depth', 'floors', 'description', 'photo', 'order'];
   allowed.forEach((f) => { if (req.body[f] !== undefined) building[f] = req.body[f]; });
@@ -301,6 +314,7 @@ const createCampus = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const campus = await Campus.create({ institution: institution._id, ...req.body });
   return created(res, campus);
@@ -316,6 +330,7 @@ const createClassSection = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const section = await ClassSection.create({ institution: institution._id, ...req.body });
   return created(res, section);
@@ -331,6 +346,7 @@ const updateClassSection = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const allowed = ['name', 'academicYear', 'classTeacher'];
   const update = {};
@@ -351,6 +367,7 @@ const createFee = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const { student, title, feeType, amount, currency, dueDate, installments } = req.body;
   if (!student || !title || amount === undefined) {
@@ -411,6 +428,7 @@ const remindFee = asyncHandler(async (req, res) => {
   if (!fee) throw new AppError('Fee record not found.', 404);
   const institution = await Institution.findById(fee.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
   if (fee.status === 'paid') throw new AppError('This fee is already paid.', 400);
 
   await notifyParentsOfStudent(fee.student._id, {
@@ -459,6 +477,7 @@ const decideFeeRefund = asyncHandler(async (req, res) => {
   if (!fee) throw new AppError('Fee record not found.', 404);
   const institution = await Institution.findById(fee.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const { decision } = req.body; // 'approved' | 'rejected' | 'refunded'
   if (!['approved', 'rejected', 'refunded'].includes(decision)) throw new AppError('decision must be approved, rejected or refunded.', 422);
@@ -500,6 +519,7 @@ const listFees = asyncHandler(async (req, res) => {
       && staff.permissions.includes('fee:manage'))) {
       throw new AppError('Fee management permission is required.', 403);
     }
+    assertInstitutionVerified(institution);
     if (fee.status === 'paid') throw new AppError('Fee is already paid.', 409);
 
     const { paidVia } = req.body;
@@ -532,6 +552,7 @@ const releaseFeeEscrow = asyncHandler(async (req, res) => {
 
   const institution = await Institution.findById(fee.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   if (fee.status !== 'paid') throw new AppError('Only a paid fee can be released.', 400);
   if (fee.escrowStatus === 'released') throw new AppError('This fee has already been released.', 400);
@@ -550,6 +571,7 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const section = await ClassSection.findById(req.params.sectionId);
   if (!section || section.institution.toString() !== institution._id.toString()) {
@@ -600,6 +622,7 @@ const updateTimetableEntry = asyncHandler(async (req, res) => {
 
   const institution = await Institution.findById(entry.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const allowed = ['teacher', 'subject', 'dayOfWeek', 'startTime', 'endTime', 'room', 'meetingLink'];
   const previousTeacher = entry.teacher;
@@ -698,6 +721,7 @@ const verifyParentLink = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const link = await ParentChildLink.findById(req.params.linkId);
   if (!link || link.status !== 'approved') throw new AppError('Parent-child link not found.', 404);
@@ -754,6 +778,7 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(profile.primaryInstitution);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const { status, classSection, rollNumber, reason } = req.body;
   if (status !== undefined) {
@@ -807,6 +832,7 @@ const createPayslip = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   const { staff, month, year, basicSalary, bonuses, overtimeAmount, allowances, deductions, currency } = req.body;
   if (!staff || !month || !year || basicSalary === undefined) {
@@ -856,6 +882,7 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
 
   const institution = await Institution.findById(payslip.institution);
   assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
 
   payslip.status = 'paid';
   payslip.paidAt = new Date();
