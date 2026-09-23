@@ -20,6 +20,7 @@ const Meeting = require('../models/Meeting');
 const Notification = require('../models/Notification');
 const Message = require('../models/Message');
 const ParentChildLink = require('../models/ParentChildLink');
+const RoleRequest = require('../models/RoleRequest');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -176,6 +177,17 @@ const reviewVerification = asyncHandler(async (req, res) => {
 
   institution.verificationStatus = decision;
   await institution.save();
+
+  // The owner's own "institution_owner"/"academy_owner" role request (from signup or /roles/
+  // request) is a separate, older approval trail that duplicates this one — an owner should only
+  // ever have to clear ONE approval, not two out-of-sync ones. Verifying the institution here is
+  // the real vetting, so mirror the same decision onto that role request instead of leaving it
+  // permanently pending (which would otherwise still show a stale "dashboard unlocked but posting
+  // locked" banner even after the institution itself is approved).
+  await RoleRequest.updateMany(
+    { user: institution.owner, requestedRole: { $in: ['institution_owner', 'academy_owner'] }, status: { $in: ['pending', 'under_review'] } },
+    { $set: { status: decision, reviewedBy: req.user._id, reviewedAt: new Date(), reviewNotes: `Auto-synced from ${institution.name} verification.` } }
+  );
 
   const owner = await User.findById(institution.owner).select('fullName email');
   if (owner) {
