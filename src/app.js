@@ -68,10 +68,12 @@ app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan(env.nodeEnv === 'development' ? 'dev' : 'combined'));
 
-// Rate limit auth endpoints to slow brute-force attempts.
+// Rate limit auth endpoints to slow brute-force attempts. Loosened outside production — a real
+// dev session with several tabs open (each independently retrying a failed token refresh) can
+// legitimately burn through 50 requests in 15 minutes without anything actually being wrong.
 const authLimiter = rateLimit({
   windowMs: 15 * 60 * 1000,
-  max: 50,
+  max: env.nodeEnv === 'production' ? 50 : 1000,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many requests. Please try again later.' }
