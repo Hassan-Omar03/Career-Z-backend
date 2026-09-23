@@ -225,13 +225,12 @@ async function generateImage(userId, prompt, institutionId) {
 
 // ---------------------------------------------------------------------- 3D model generation (Meshy)
 
-// Verified live: POST https://api.meshy.ai/v2/text-to-3d returns 401 "Invalid API key" on a bad
-// key — endpoint/method confirmed real. This is an async job: create, then poll.
-// NOTE (honesty): the success response's exact field names follow Meshy's documented v2 API as
-// of this writing; if Meshy changes their contract, only this one function needs updating.
+// Meshy moved their v2 text-to-3d endpoints under an /openapi/ prefix (confirmed against Meshy's
+// current API reference, docs.meshy.ai). Response field names (status/progress/model_urls/
+// thumbnail_url) and the Bearer auth header are unchanged — only the path moved.
 async function create3DModelTask(userId, prompt, institutionId) {
   const { apiKey, model } = await getDecryptedCredential(userId, 'threed', institutionId);
-  const res = await fetch('https://api.meshy.ai/v2/text-to-3d', {
+  const res = await fetch('https://api.meshy.ai/openapi/v2/text-to-3d', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
     body: JSON.stringify({ mode: 'preview', prompt, art_style: 'realistic', ai_model: model || 'meshy-4' })
@@ -243,7 +242,7 @@ async function create3DModelTask(userId, prompt, institutionId) {
 
 async function get3DModelTaskStatus(userId, taskId, institutionId) {
   const { apiKey } = await getDecryptedCredential(userId, 'threed', institutionId);
-  const res = await fetch(`https://api.meshy.ai/v2/text-to-3d/${taskId}`, {
+  const res = await fetch(`https://api.meshy.ai/openapi/v2/text-to-3d/${taskId}`, {
     headers: { Authorization: `Bearer ${apiKey}` }
   });
   const payload = await res.json();
