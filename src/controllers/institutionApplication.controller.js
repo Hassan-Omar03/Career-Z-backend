@@ -327,7 +327,7 @@ const setInterview = asyncHandler(async (req, res) => {
   if (!application) throw new AppError('Application not found.', 404);
   getStaffEntry(application.institution, req.user._id);
 
-  const { scheduledAt, mode, interviewer, completed, notes } = req.body;
+  const { scheduledAt, mode, interviewer, completed, notes, meetingLink, location, recommendation } = req.body;
   if (scheduledAt && application.admissionTest?.test && application.admissionTest.status !== 'passed') {
     throw new AppError('The applicant must pass the assigned online test before an interview is scheduled.', 409);
   }
@@ -336,6 +336,12 @@ const setInterview = asyncHandler(async (req, res) => {
   if (interviewer !== undefined) application.interview.interviewer = interviewer || null;
   if (completed !== undefined) application.interview.completed = completed;
   if (notes !== undefined) application.interview.notes = notes;
+  if (meetingLink !== undefined) application.interview.meetingLink = meetingLink;
+  if (location !== undefined) application.interview.location = location;
+  if (recommendation !== undefined) {
+    if (!['pass', 'reject', 'waitlist', ''].includes(recommendation)) throw new AppError('Invalid recommendation.', 422);
+    application.interview.recommendation = recommendation;
+  }
   await application.save();
 
   if (scheduledAt) {
