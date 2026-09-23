@@ -28,6 +28,7 @@ router.delete('/:id/staff/:userId', ctrl.removeStaff);
 router.patch('/:id/staff/:userId/ai-permissions', ctrl.updateStaffAiPermissions);
 router.get('/:id/staff-attendance', ctrl.listStaffAttendance);
 
+router.get('/:id/teacher-directory', employmentCtrl.listTeacherDirectory);
 router.post('/:id/teacher-offers', employmentCtrl.createOffer);
 router.get('/:id/teacher-employments', employmentCtrl.listInstitutionEmployments);
 

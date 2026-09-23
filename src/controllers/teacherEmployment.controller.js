@@ -1,4 +1,5 @@
 const TeacherEmployment = require('../models/TeacherEmployment');
+const TeacherProfile = require('../models/TeacherProfile');
 const Institution = require('../models/Institution');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
@@ -42,6 +43,47 @@ const createOffer = asyncHandler(async (req, res) => {
   }).catch(() => {});
 
   return created(res, offer, 'Offer sent.');
+});
+
+// GET /api/institutions/:id/teacher-directory — lets an institution browse teachers to hire,
+// instead of needing to already know a teacher's exact User ID (which used to be the only way
+// to send an offer). Only professional info is exposed here (no email/phone/address) — contact
+// happens through the offer itself or in-app messaging, never raw personal details in a public
+// list. Teachers can opt out via TeacherProfile.visibleToInstitutions.
+const listTeacherDirectory = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwner(institution, req.user._id);
+
+  const alreadyStaffIds = new Set(institution.staff.map((s) => s.user.toString()));
+  const { q } = req.query;
+  const filter = { visibleToInstitutions: true, status: 'active' };
+  if (q && q.trim()) {
+    filter.$or = [
+      { subjects: { $regex: q.trim(), $options: 'i' } },
+      { bio: { $regex: q.trim(), $options: 'i' } }
+    ];
+  }
+
+  const profiles = await TeacherProfile.find(filter)
+    .populate('user', 'fullName profilePhoto')
+    .sort({ experienceYears: -1 })
+    .limit(100);
+
+  const directory = profiles
+    .filter((p) => p.user && !alreadyStaffIds.has(p.user._id.toString()))
+    .map((p) => ({
+      userId: p.user._id,
+      fullName: p.user.fullName,
+      profilePhoto: p.user.profilePhoto || '',
+      subjects: p.subjects,
+      experienceYears: p.experienceYears,
+      qualifications: p.qualifications,
+      bio: p.bio,
+      independent: p.independent
+    }));
+
+  return ok(res, directory);
 });
 
 // PATCH /api/teacher-employments/:id/respond — the teacher accepts or declines. Accepting is
@@ -136,4 +178,4 @@ const listInstitutionEmployments = asyncHandler(async (req, res) => {
   return ok(res, employments);
 });
 
-module.exports = { createOffer, respondToOffer, resign, terminate, myEmployments, listInstitutionEmployments };
+module.exports = { createOffer, respondToOffer, resign, terminate, myEmployments, listInstitutionEmployments, listTeacherDirectory };

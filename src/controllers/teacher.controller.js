@@ -29,7 +29,7 @@ const getMyProfile = asyncHandler(async (req, res) => {
 
 // PATCH /api/teachers/me
 const updateMyProfile = asyncHandler(async (req, res) => {
-  const allowed = ['subjects', 'qualifications', 'experienceYears', 'bio', 'independent'];
+  const allowed = ['subjects', 'qualifications', 'experienceYears', 'bio', 'independent', 'visibleToInstitutions'];
   const update = {};
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) update[f] = req.body[f];
