@@ -95,7 +95,7 @@ test('joining a second institution does not overwrite the first (real simultaneo
 test('a teacher offer only touches institution staff once accepted, and resignation cleans up', async () => {
   const owner = await mkUser('Owner', 'owner2@rel.test', ['institution_owner']);
   const teacher = await mkUser('Teacher', 'teacher@rel.test', ['teacher']);
-  const institution = await Institution.create({ owner: owner._id, name: 'Emp Inst', slug: 'emp-' + Date.now(), type: 'school', country: 'PK' });
+  const institution = await Institution.create({ owner: owner._id, name: 'Emp Inst', slug: 'emp-' + Date.now(), type: 'school', country: 'PK', verificationStatus: 'approved' });
 
   const offerRes = await invoke(teacherEmploymentCtrl.createOffer, { params: { id: institution.id }, user: owner, body: { teacherUserId: teacher.id, role: 'teacher' } });
   assert.equal(offerRes.body.data.status, 'offered');

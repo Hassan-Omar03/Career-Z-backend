@@ -186,6 +186,9 @@ const addStaff = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff.', 403);
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can add staff.', 403);
+  }
 
   const { userId, role, permissions, department, designation } = req.body;
   if (!userId || !role) throw new AppError('userId and role are required.', 422);

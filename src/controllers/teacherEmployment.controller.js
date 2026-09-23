@@ -21,6 +21,9 @@ const createOffer = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwner(institution, req.user._id);
+  if (institution.verificationStatus !== 'approved') {
+    throw new AppError('This institution must be verified by Super Admin before it can send job offers.', 403);
+  }
 
   const { teacherUserId, role, designation, department, contractTerms } = req.body;
   if (!teacherUserId || !role) throw new AppError('teacherUserId and role are required.', 422);
@@ -109,6 +112,9 @@ const respondToOffer = asyncHandler(async (req, res) => {
   if (decision === 'accepted') {
     const institution = await Institution.findById(offer.institution);
     if (!institution) throw new AppError('Institution not found.', 404);
+    if (institution.verificationStatus !== 'approved') {
+      throw new AppError('This institution is no longer verified — it cannot be accepted until Super Admin re-verifies it.', 403);
+    }
     if (institution.staff.some((s) => s.user.toString() === offer.teacher.toString())) {
       throw new AppError('Already staff at this institution.', 409);
     }
