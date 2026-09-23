@@ -6,7 +6,7 @@ const { emitToUser } = require('../realtime/socket');
 
 // Creates an in-app notification, and optionally emails it too.
 // Never throws on email failure — a broken SMTP config must not block the in-app notification.
-async function notify(userId, { title, body = '', sentBy = null }, { email = false, toAddress = null } = {}) {
+async function notify(userId, { title, body = '', sentBy = null }, { email = false, toAddress = null, ctaUrl = null, ctaLabel = null } = {}) {
   const notification = await Notification.create({ user: userId, title, body, sentBy });
 
   // Live push — every notify() call reaches any open tab instantly (bell badge, toast) instead
@@ -21,7 +21,7 @@ async function notify(userId, { title, body = '', sentBy = null }, { email = fal
         to: toAddress,
         subject: title,
         text: body,
-        html: noticeEmailTemplate({ heading: title, body })
+        html: noticeEmailTemplate({ heading: title, body, ctaUrl, ctaLabel })
       });
     } catch (err) {
       console.error('[notification.service] Failed to email notification:', err.message);

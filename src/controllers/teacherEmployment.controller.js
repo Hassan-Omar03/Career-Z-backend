@@ -8,6 +8,7 @@ const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
 const { onboardStaff, offboardStaff } = require('../utils/staffOnboarding');
 const { assertStaffCapAllows } = require('../utils/subscriptionGate');
+const env = require('../config/env');
 
 function assertOwner(institution, userId) {
   if (institution.owner.toString() !== userId.toString()) throw new AppError('Only the institution owner can manage hiring.', 403);
@@ -36,10 +37,17 @@ const createOffer = asyncHandler(async (req, res) => {
     status: 'offered', offeredBy: req.user._id
   });
 
+  // Emailed (not just in-app) so a teacher who isn't already sitting on the dashboard still
+  // finds out — the button drops them straight onto the portal to accept/decline.
   await notify(teacherUserId, {
     title: `Job offer from ${institution.name}`,
     body: `Role: ${role}${designation ? ` (${designation})` : ''}. Review and respond from Employment Offers.`,
     sentBy: req.user._id
+  }, {
+    email: true,
+    toAddress: teacher.email,
+    ctaUrl: `${env.clientUrl}/dashboard`,
+    ctaLabel: 'Review Offer'
   }).catch(() => {});
 
   return created(res, offer, 'Offer sent.');
