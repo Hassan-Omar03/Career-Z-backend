@@ -296,20 +296,20 @@ async function generateSpeech(userId, text, voiceId, institutionId) {
 
 // ---------------------------------------------------------------------- Avatar video (HeyGen)
 
-// Verified live: POST https://api.heygen.com/v2/video/generate returns 401 on a bad key (with a
-// notice that the v2 endpoint is being phased out — kept for now since it's the version whose
-// contract is documented; revisit if HeyGen removes it).
+// HeyGen retired the old v2 /video/generate + v1 /video_status.get pair (confirmed live: v2 now
+// returns 401 "Unauthorized" regardless of key validity, with a response body pointing at v3).
+// Verified against HeyGen's own v3 API reference (developers.heygen.com) before switching.
 async function createAvatarVideoTask(userId, script, avatarId, voiceId, institutionId) {
   const { apiKey } = await getDecryptedCredential(userId, 'avatar', institutionId);
-  const res = await fetch('https://api.heygen.com/v2/video/generate', {
+  const res = await fetch('https://api.heygen.com/v3/videos', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'X-Api-Key': apiKey },
     body: JSON.stringify({
-      video_inputs: [{
-        character: { type: 'avatar', avatar_id: avatarId || 'Daisy-inskirt-20220818', avatar_style: 'normal' },
-        voice: { type: 'text', input_text: script, voice_id: voiceId || '1bd001e7e50f421d891986aad5158bc8' }
-      }],
-      dimension: { width: 1280, height: 720 }
+      type: 'avatar',
+      avatar_id: avatarId || 'Daisy-inskirt-20220818',
+      script,
+      voice_id: voiceId || '1bd001e7e50f421d891986aad5158bc8',
+      resolution: '720p'
     })
   });
   const payload = await res.json();
@@ -319,11 +319,12 @@ async function createAvatarVideoTask(userId, script, avatarId, voiceId, institut
 
 async function getAvatarVideoTaskStatus(userId, videoId, institutionId) {
   const { apiKey } = await getDecryptedCredential(userId, 'avatar', institutionId);
-  const res = await fetch(`https://api.heygen.com/v1/video_status.get?video_id=${videoId}`, {
+  const res = await fetch(`https://api.heygen.com/v3/videos/${videoId}`, {
     headers: { 'X-Api-Key': apiKey }
   });
   const payload = await res.json();
   if (!res.ok) throw providerError(payload, res);
+  // v3 status values include waiting/processing/completed/failed.
   return { status: payload.data?.status, videoUrl: payload.data?.video_url || null };
 }
 
