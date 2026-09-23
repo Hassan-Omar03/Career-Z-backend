@@ -1,0 +1,23 @@
+const router = require('express').Router();
+const ctrl = require('../controllers/adminOps.controller');
+const { protect } = require('../middleware/auth');
+const { requireRole, requireDepartment } = require('../middleware/rbac');
+const audit = require('../middleware/adminAudit');
+
+router.use(protect, requireRole('admin', 'super_admin', 'platform_staff'), audit);
+router.get('/settings', ctrl.getSettings);
+router.patch('/settings/:section', requireRole('super_admin'), ctrl.updateSettings);
+router.get('/resources/:type', ctrl.listResources);
+router.post('/resources/:type', requireRole('super_admin'), ctrl.createResource);
+router.patch('/resources/:type/:id', ctrl.updateResource);
+router.delete('/resources/:type/:id', requireRole('super_admin'), ctrl.deleteResource);
+router.get('/monitoring', requireDepartment('security'), ctrl.monitoring);
+router.get('/audit-logs', requireDepartment('security'), ctrl.auditLogs);
+router.get('/finance-audit', requireDepartment('finance'), ctrl.financeAudit);
+router.get('/refunds', requireDepartment('finance'), ctrl.refunds);
+router.get('/child-safety', requireDepartment('security'), ctrl.childSafety);
+router.get('/anomalies', requireDepartment('security'), ctrl.anomalies);
+router.get('/favorites', ctrl.getFavorites);
+router.put('/favorites', ctrl.saveFavorites);
+router.post('/backups/:id/restore', requireRole('super_admin'), ctrl.restoreBackup);
+module.exports = router;

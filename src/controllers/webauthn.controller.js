@@ -161,7 +161,7 @@ const verifyAttendance = asyncHandler(async (req, res) => {
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
   if (already) return ok(res, { alreadyMarked: true }, 'You were already marked present today.');
 
-  sheet.records.push({ student: req.user._id, status: 'present', method: 'webauthn' });
+  sheet.records.push({ student: req.user._id, status: 'present', method: 'webauthn', checkedInAt: new Date() });
   await sheet.save();
 
   return ok(res, { alreadyMarked: false }, 'Attendance marked via biometric verification.');

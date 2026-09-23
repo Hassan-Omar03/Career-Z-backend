@@ -193,7 +193,7 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
     return ok(res, { studentName: student.fullName, alreadyMarked: true }, `${student.fullName} was already marked present today.`);
   }
 
-  sheet.records.push({ student: studentId, status: 'present' });
+  sheet.records.push({ student: studentId, status: 'present', method: 'face', checkedInAt: new Date() });
   await sheet.save();
   return ok(res, { studentName: student.fullName, alreadyMarked: false }, `${student.fullName} marked present.`);
 });

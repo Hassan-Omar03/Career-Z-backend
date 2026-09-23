@@ -47,6 +47,7 @@ router.use('/transport', require('./transportTracking.routes'));
 router.use('/teacher-students', require('./teacherStudentLink.routes'));
 router.use('/parent-reputation', require('./parentReputation.routes'));
 router.use('/institution-employer', require('./institutionEmployer.routes'));
+router.use('/admin-ops', require('./adminOps.routes'));
 router.use('/admin', require('./admin.routes'));
 router.use('/', require('./cms.routes'));
 

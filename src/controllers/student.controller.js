@@ -111,8 +111,8 @@ const myInstitutionMemberships = asyncHandler(async (req, res) => {
 // locally by the browser) and self-checks-in. The token is single-session and time-limited, so
 // an old/screenshotted QR stops working once the session's `expiresAt` passes.
 const qrCheckIn = asyncHandler(async (req, res) => {
-  const { token, date } = req.body;
-  if (!token || !date) throw new AppError('token and date are required.', 422);
+  const { token } = req.body;
+  if (!token) throw new AppError('token is required.', 422);
 
   const session = await AttendanceSession.findOne({ token });
   if (!session) throw new AppError('This QR code is invalid.', 404);
@@ -129,15 +129,15 @@ const qrCheckIn = asyncHandler(async (req, res) => {
   session.checkedIn.push(req.user._id);
   await session.save();
 
-  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
-  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  const dayStart = new Date(session.date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(session.date); dayEnd.setHours(23, 59, 59, 999);
   let sheet = await Attendance.findOne({ course: session.course, date: { $gte: dayStart, $lte: dayEnd } });
   if (!sheet) {
-    sheet = await Attendance.create({ course: session.course, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
+    sheet = await Attendance.create({ course: session.course, classSection: courseDoc.classSection, date: session.date, markedBy: courseDoc.teacher, records: [] });
   }
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
   if (!already) {
-    sheet.records.push({ student: req.user._id, status: 'present', method: 'qr' });
+    sheet.records.push({ student: req.user._id, status: 'present', method: 'qr', checkedInAt: new Date(), session: session._id });
     await sheet.save();
   }
 
@@ -177,7 +177,7 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
   if (already) return ok(res, { alreadyMarked: true, distanceMeters: Math.round(distance) }, 'You were already marked present today.');
 
-  sheet.records.push({ student: req.user._id, status: 'present', method: 'gps', location: { lat, lng, distanceMeters: Math.round(distance) } });
+  sheet.records.push({ student: req.user._id, status: 'present', method: 'gps', checkedInAt: new Date(), location: { lat, lng, distanceMeters: Math.round(distance) } });
   await sheet.save();
 
   return ok(res, { alreadyMarked: false, distanceMeters: Math.round(distance) }, 'Attendance marked via GPS check-in.');

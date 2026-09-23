@@ -15,6 +15,8 @@ const allowedOrigins = new Set([
 const routes = require('./routes');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { maintenanceGate } = require('./middleware/maintenance');
+const { metricsMiddleware } = require('./services/platformMetrics');
+const { emergencyControls } = require('./middleware/emergencyControls');
 const { handleStripeWebhook, handlePaddleWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
@@ -96,7 +98,9 @@ app.use('/api', async (req, res, next) => {
     res.status(503).json({ success: false, message: 'Database connection unavailable. Please try again shortly.', errors: null });
   }
 });
+app.use('/api', metricsMiddleware);
 app.use('/api', maintenanceGate);
+app.use('/api', emergencyControls);
 app.use('/api', routes);
 
 app.get('/', (req, res) => {
