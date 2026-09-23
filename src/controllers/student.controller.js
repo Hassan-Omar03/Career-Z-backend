@@ -114,7 +114,8 @@ const qrCheckIn = asyncHandler(async (req, res) => {
   const { token } = req.body;
   if (!token) throw new AppError('token is required.', 422);
 
-  const session = await AttendanceSession.findOne({ token });
+  const submitted = String(token).trim();
+  const session = await AttendanceSession.findOne({ $or: [{ token: submitted }, { code: submitted.toUpperCase() }] });
   if (!session) throw new AppError('This QR code is invalid.', 404);
   if (session.expiresAt < new Date()) throw new AppError('This QR code has expired — ask your teacher for a new one.', 410);
 
@@ -187,7 +188,8 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
 const getMyAttendance = asyncHandler(async (req, res) => {
   const records = await Attendance.find({ 'records.student': req.user._id })
     .sort({ date: -1 })
-    .select('date institution course classSection records.$');
+    .select('date institution course classSection records.$')
+    .populate('course', 'title');
   return ok(res, records);
 });
 
@@ -539,6 +541,50 @@ const saveMyFaceDescriptor = asyncHandler(async (req, res) => {
   return ok(res, null, 'Face enrolled for attendance.');
 });
 
+// GET /api/students/me/face-descriptor — only ever returns the caller's own descriptor, so their
+// own browser can compare a fresh live frame against it for remote face check-in (see below).
+const getMyFaceDescriptor = asyncHandler(async (req, res) => {
+  const profile = await StudentProfile.findOne({ user: req.user._id }).select('faceDescriptor');
+  if (!profile?.faceDescriptor?.length) throw new AppError('Enroll your face first (Digital Student ID page).', 404);
+  return ok(res, { descriptor: profile.faceDescriptor });
+});
+
+// POST /api/students/me/attendance/face-checkin-request — remote counterpart to the teacher's
+// in-person face-scan: the student's own browser already computed this distance (client-side,
+// against their own enrolled descriptor), never an image. This never auto-marks attendance — it
+// queues a request the teacher must approve, since a self-reported score alone can be spoofed.
+const requestFaceCheckIn = asyncHandler(async (req, res) => {
+  const FaceCheckInRequest = require('../models/FaceCheckInRequest');
+  const { course: courseId, date, distance } = req.body;
+  if (!courseId || !date || typeof distance !== 'number') {
+    throw new AppError('course, date and distance are required.', 422);
+  }
+  const courseDoc = await Course.findById(courseId);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  const enrolled = await Enrollment.findOne({ course: courseId, student: req.user._id });
+  if (!enrolled) throw new AppError('You are not enrolled in this course.', 400);
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  const existing = await FaceCheckInRequest.findOne({ course: courseId, student: req.user._id, date: { $gte: dayStart, $lte: dayEnd } });
+  if (existing) {
+    if (existing.status === 'approved') return ok(res, { status: 'approved' }, 'Already marked present today.');
+    existing.distance = distance;
+    existing.status = 'pending';
+    await existing.save();
+  } else {
+    await FaceCheckInRequest.create({ course: courseId, student: req.user._id, date, distance });
+  }
+
+  await notify(courseDoc.teacher, {
+    title: `Remote face check-in request: ${req.user.fullName}`,
+    body: `${courseDoc.title} — review in Student Attendance > Face Scan.`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, { status: 'pending' }, 'Request sent — waiting for your teacher to confirm.');
+});
+
 // -------------------------------------------------------------- Learning Analytics (Part 10.12)
 
 // GET /api/students/me/learning-analytics — real per-subject averages computed from actual
@@ -727,6 +773,8 @@ module.exports = {
   getMyStudentId,
   verifyStudentId,
   saveMyFaceDescriptor,
+  getMyFaceDescriptor,
+  requestFaceCheckIn,
   getMyLearningAnalytics,
   listMyGoals,
   addMyGoal,

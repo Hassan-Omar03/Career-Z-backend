@@ -12,6 +12,8 @@ router.post('/me/attendance', ctrl.markAttendance);
 router.post('/me/attendance/qr-session', ctrl.createQrSession);
 router.get('/me/attendance/qr-session/:id', ctrl.getQrSession);
 router.post('/me/attendance/face-scan', ctrl.markAttendanceByFace);
+router.get('/me/attendance/face-requests', ctrl.listFaceCheckInRequests);
+router.patch('/me/attendance/face-requests/:id', ctrl.reviewFaceCheckInRequest);
 router.patch('/me/courses/:id/attendance-location', ctrl.setAttendanceLocation);
 router.get('/me/attendance', ctrl.listAttendance);
 router.post('/me/self-attendance/check-in', ctrl.checkInMyAttendance);

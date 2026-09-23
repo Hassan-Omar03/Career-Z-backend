@@ -30,6 +30,8 @@ router.patch('/me/documents/:id', ctrl.updateMyDocument);
 router.delete('/me/documents/:id', ctrl.removeMyDocument);
 router.get('/me/student-id', ctrl.getMyStudentId);
 router.put('/me/face-descriptor', ctrl.saveMyFaceDescriptor);
+router.get('/me/face-descriptor', ctrl.getMyFaceDescriptor);
+router.post('/me/attendance/face-checkin-request', ctrl.requestFaceCheckIn);
 router.get('/me/learning-analytics', ctrl.getMyLearningAnalytics);
 router.get('/me/goals', ctrl.listMyGoals);
 router.post('/me/goals', ctrl.addMyGoal);

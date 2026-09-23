@@ -14,7 +14,7 @@ const attendanceSchema = new mongoose.Schema(
         reason: { type: String, default: '' },
         // How this record was captured (spec: online-only methods for a remote-study platform —
         // no RFID/NFC/physical-fingerprint/retina hardware).
-        method: { type: String, enum: ['manual', 'qr', 'face', 'gps', 'webauthn'], default: 'manual' },
+        method: { type: String, enum: ['manual', 'qr', 'face', 'face_remote', 'gps', 'webauthn'], default: 'manual' },
         checkedInAt: { type: Date, default: Date.now },
         session: { type: mongoose.Schema.Types.ObjectId, ref: 'AttendanceSession', default: null },
         // GPS check-ins record the student's submitted coordinates for audit purposes; never

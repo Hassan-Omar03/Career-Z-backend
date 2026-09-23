@@ -16,7 +16,7 @@ const Notification = require('../models/Notification');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const { notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
+const { notify, notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
 
 const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -211,6 +211,64 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
   return ok(res, { studentName: student.fullName, alreadyMarked: false }, `${student.fullName} marked present.`);
 });
 
+// GET /api/teachers/me/attendance/face-requests?course=&date= — pending remote face check-ins
+// (student is not physically in front of the teacher's own camera — see markAttendanceByFace's
+// comment for why that path only works in person).
+const listFaceCheckInRequests = asyncHandler(async (req, res) => {
+  const FaceCheckInRequest = require('../models/FaceCheckInRequest');
+  const { course, date } = req.query;
+  if (!course || !date) throw new AppError('course and date are required.', 422);
+  const courseDoc = await Course.findById(course);
+  if (!courseDoc) throw new AppError('Course not found.', 404);
+  if (courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
+
+  const dayStart = new Date(date); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(date); dayEnd.setHours(23, 59, 59, 999);
+  const requests = await FaceCheckInRequest.find({ course, date: { $gte: dayStart, $lte: dayEnd }, status: 'pending' })
+    .populate('student', 'fullName profilePhoto')
+    .sort({ createdAt: 1 });
+  return ok(res, requests);
+});
+
+// PATCH /api/teachers/me/attendance/face-requests/:id — teacher approves/rejects a remote face
+// check-in. Approving is what actually creates the real Attendance record.
+const reviewFaceCheckInRequest = asyncHandler(async (req, res) => {
+  const FaceCheckInRequest = require('../models/FaceCheckInRequest');
+  const { decision } = req.body;
+  if (!['approved', 'rejected'].includes(decision)) throw new AppError('decision must be approved or rejected.', 422);
+
+  const request = await FaceCheckInRequest.findById(req.params.id).populate('student', 'fullName');
+  if (!request) throw new AppError('Request not found.', 404);
+  const courseDoc = await Course.findById(request.course);
+  if (!courseDoc || courseDoc.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not teach this course.', 403);
+  if (request.status !== 'pending') throw new AppError('This request has already been reviewed.', 409);
+
+  request.status = decision;
+  request.reviewedBy = req.user._id;
+  request.reviewedAt = new Date();
+  await request.save();
+
+  if (decision === 'approved') {
+    const dayStart = new Date(request.date); dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(request.date); dayEnd.setHours(23, 59, 59, 999);
+    let sheet = await Attendance.findOne({ course: request.course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
+    if (!sheet) {
+      sheet = await Attendance.create({ course: request.course, classSection: courseDoc.classSection, date: request.date, markedBy: req.user._id, records: [] });
+    }
+    if (!sheet.records.some((r) => r.student.toString() === request.student._id.toString())) {
+      sheet.records.push({ student: request.student._id, status: 'present', method: 'face_remote', checkedInAt: new Date() });
+      await sheet.save();
+    }
+  }
+
+  await notify(request.student._id, {
+    title: `Remote face check-in ${decision}: ${courseDoc.title}`,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, request, `Request ${decision}.`);
+});
+
 // GET /api/teachers/me/attendance
 const listAttendance = asyncHandler(async (req, res) => {
   const attendance = await Attendance.find({ markedBy: req.user._id }).sort({ date: -1 });
@@ -347,5 +405,6 @@ const getMyDashboard = asyncHandler(async (req, res) => {
 module.exports = {
   getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByFace, listAttendance, getMyTimetable,
   createQrSession, getQrSession, setAttendanceLocation,
+  listFaceCheckInRequests, reviewFaceCheckInRequest,
   checkInMyAttendance, getMySelfAttendance, getMyPayslips, getMyDashboard
 };
