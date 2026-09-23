@@ -197,6 +197,7 @@ const applyToJob = asyncHandler(async (req, res) => {
   if (job.applicationDeadline && new Date(job.applicationDeadline) < new Date()) {
     throw new AppError('The application deadline has passed.', 400);
   }
+  if (!req.user.emailVerified) throw new AppError('Verify your email before applying to a job (Profile tab).', 403);
 
   const existing = await JobApplication.findOne({ job: job._id, applicant: req.user._id });
   if (existing) throw new AppError('You already applied to this job.', 409);

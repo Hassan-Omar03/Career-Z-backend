@@ -81,6 +81,7 @@ const applyToScholarship = asyncHandler(async (req, res) => {
   const scholarship = await Scholarship.findById(req.params.id);
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
   if (scholarship.status !== 'open') throw new AppError('This scholarship is closed.', 400);
+  if (!req.user.emailVerified) throw new AppError('Verify your email before applying to a scholarship (Profile tab).', 403);
 
   const existing = await ScholarshipApplication.findOne({ scholarship: scholarship._id, applicant: req.user._id });
   if (existing) throw new AppError('You already applied to this scholarship.', 409);

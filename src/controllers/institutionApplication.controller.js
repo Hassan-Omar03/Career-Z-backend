@@ -3,6 +3,7 @@ const InstitutionApplication = require('../models/InstitutionApplication');
 const Institution = require('../models/Institution');
 const StudentProfile = require('../models/StudentProfile');
 const User = require('../models/User');
+const AdmissionTest = require('../models/AdmissionTest');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -27,6 +28,9 @@ function getStaffEntry(institution, userId) {
 const createApplication = asyncHandler(async (req, res) => {
   const { institution, program, submit } = req.body;
   if (!institution || !program) throw new AppError('institution and program are required.', 422);
+  if (submit && !req.user.emailVerified) {
+    throw new AppError('Verify your email before submitting an application (Profile tab).', 403);
+  }
 
   const inst = await Institution.findById(institution);
   if (!inst) throw new AppError('Institution not found.', 404);
@@ -53,6 +57,7 @@ const submitApplication = asyncHandler(async (req, res) => {
   const application = await InstitutionApplication.findById(req.params.id).populate('institution');
   if (!application) throw new AppError('Application not found.', 404);
   if (application.applicant.toString() !== req.user._id.toString()) throw new AppError('This is not your application.', 403);
+  if (!req.user.emailVerified) throw new AppError('Verify your email before submitting an application (Profile tab).', 403);
 
   if (application.status !== 'draft') throw new AppError('Only a draft application can be submitted.', 409);
 
@@ -223,6 +228,99 @@ const setAdmissionTest = asyncHandler(async (req, res) => {
   return ok(res, withProgress(application), 'Admission test updated.');
 });
 
+// Institution-owned reusable online admission tests.
+const createOnlineTest = asyncHandler(async (req, res) => {
+  const { institution: institutionId, title, program, subject, instructions, durationMinutes, passingPercent, questions, published } = req.body;
+  if (!institutionId || !title || !Array.isArray(questions) || questions.length === 0) {
+    throw new AppError('institution, title and at least one question are required.', 422);
+  }
+  const institution = await Institution.findById(institutionId);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  getStaffEntry(institution, req.user._id);
+  for (const question of questions) {
+    if (!question.text || !Array.isArray(question.options) || question.options.length < 2) throw new AppError('Every question needs text and at least two options.', 422);
+    if (!Number.isInteger(Number(question.correctOption)) || Number(question.correctOption) < 0 || Number(question.correctOption) >= question.options.length) throw new AppError('Every question needs a valid correct option.', 422);
+  }
+  const test = await AdmissionTest.create({ institution: institutionId, createdBy: req.user._id, title, program, subject, instructions, durationMinutes: Number(durationMinutes) || 30, passingPercent: Number(passingPercent) || 50, questions, published: Boolean(published) });
+  return created(res, test, 'Online admission test created.');
+});
+
+const listOnlineTests = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.institutionId);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  getStaffEntry(institution, req.user._id);
+  return ok(res, await AdmissionTest.find({ institution: institution._id }).sort({ createdAt: -1 }));
+});
+
+const assignOnlineTest = asyncHandler(async (req, res) => {
+  const application = await InstitutionApplication.findById(req.params.id).populate('institution');
+  if (!application) throw new AppError('Application not found.', 404);
+  getStaffEntry(application.institution, req.user._id);
+  const test = await AdmissionTest.findOne({ _id: req.body.testId, institution: application.institution._id, published: true });
+  if (!test) throw new AppError('Published admission test not found.', 404);
+  const scheduledAt = new Date(req.body.scheduledAt);
+  if (Number.isNaN(scheduledAt.getTime())) throw new AppError('A valid scheduledAt is required.', 422);
+  application.admissionTest = { test: test._id, scheduledAt, subject: test.subject, maxScore: test.questions.reduce((sum, q) => sum + q.marks, 0), score: null, notes: '', status: 'scheduled', startedAt: null, submittedAt: null, answers: [] };
+  await application.save();
+  await notify(application.applicant, { title: `Online admission test scheduled: ${test.title}`, body: `${scheduledAt.toLocaleString()} · ${test.durationMinutes} minutes`, sentBy: req.user._id }).catch(() => {});
+  return ok(res, withProgress(application), 'Online admission test assigned.');
+});
+
+function publicTest(test) {
+  return { _id: test._id, title: test.title, subject: test.subject, instructions: test.instructions, durationMinutes: test.durationMinutes, questions: test.questions.map((q, index) => ({ index, text: q.text, type: q.type, options: q.options, marks: q.marks })) };
+}
+
+const startOnlineTest = asyncHandler(async (req, res) => {
+  const application = await InstitutionApplication.findById(req.params.id).populate('admissionTest.test');
+  if (!application) throw new AppError('Application not found.', 404);
+  if (application.applicant.toString() !== req.user._id.toString()) throw new AppError('This is not your application.', 403);
+  if (!req.user.emailVerified) throw new AppError('Verify your email before starting the admission test (Profile tab).', 403);
+  const test = application.admissionTest.test;
+  if (!test) throw new AppError('No online test is assigned.', 404);
+  const now = new Date();
+  if (now < application.admissionTest.scheduledAt) throw new AppError('This test is not open yet.', 409);
+  if (['submitted', 'passed', 'failed'].includes(application.admissionTest.status)) throw new AppError('This test has already been submitted.', 409);
+  if (!application.admissionTest.startedAt) {
+    await InstitutionApplication.updateOne({ _id: application._id }, { $set: { 'admissionTest.startedAt': now, 'admissionTest.status': 'in_progress' } });
+    application.admissionTest.startedAt = now;
+    application.admissionTest.status = 'in_progress';
+  }
+  const endsAt = new Date(application.admissionTest.startedAt.getTime() + test.durationMinutes * 60000);
+  if (now > endsAt) throw new AppError('The test time has expired. Submit your saved answers.', 410);
+  return ok(res, { applicationId: application._id, test: publicTest(test), startedAt: application.admissionTest.startedAt, endsAt });
+});
+
+const submitOnlineTest = asyncHandler(async (req, res) => {
+  const application = await InstitutionApplication.findById(req.params.id).populate('admissionTest.test');
+  if (!application) throw new AppError('Application not found.', 404);
+  if (application.applicant.toString() !== req.user._id.toString()) throw new AppError('This is not your application.', 403);
+  const test = application.admissionTest.test;
+  if (!test || !application.admissionTest.startedAt) throw new AppError('Start the assigned test first.', 409);
+  if (['submitted', 'passed', 'failed'].includes(application.admissionTest.status)) throw new AppError('This test has already been submitted.', 409);
+  const answers = Array.isArray(req.body.answers) ? req.body.answers : [];
+  const endsAt = new Date(application.admissionTest.startedAt.getTime() + test.durationMinutes * 60000);
+  if (Date.now() > endsAt.getTime() + 30000) throw new AppError('The test submission window has expired.', 410);
+  const unique = new Map();
+  for (const answer of answers) {
+    const index = Number(answer.questionIndex);
+    const selected = Number(answer.selectedOption);
+    if (!Number.isInteger(index) || index < 0 || index >= test.questions.length || unique.has(index)) throw new AppError('Answers contain an invalid or duplicate question.', 422);
+    if (!Number.isInteger(selected) || selected < 0 || selected >= test.questions[index].options.length) throw new AppError('An answer contains an invalid option.', 422);
+    unique.set(index, selected);
+  }
+  let score = 0;
+  test.questions.forEach((question, index) => { if (unique.get(index) === question.correctOption) score += question.marks; });
+  const maxScore = test.questions.reduce((sum, q) => sum + q.marks, 0);
+  const percent = maxScore ? Math.round((score / maxScore) * 100) : 0;
+  const finalStatus = percent >= test.passingPercent ? 'passed' : 'failed';
+  await InstitutionApplication.updateOne({ _id: application._id }, { $set: {
+    'admissionTest.answers': [...unique].map(([questionIndex, selectedOption]) => ({ questionIndex, selectedOption })),
+    'admissionTest.score': score, 'admissionTest.maxScore': maxScore,
+    'admissionTest.submittedAt': new Date(), 'admissionTest.status': finalStatus
+  } });
+  return ok(res, { score, maxScore, percent, passed: finalStatus === 'passed' }, 'Admission test submitted.');
+});
+
 // PATCH /api/institution-applications/:id/interview — schedule/complete the admission interview.
 const setInterview = asyncHandler(async (req, res) => {
   const application = await InstitutionApplication.findById(req.params.id).populate('institution');
@@ -230,6 +328,9 @@ const setInterview = asyncHandler(async (req, res) => {
   getStaffEntry(application.institution, req.user._id);
 
   const { scheduledAt, mode, interviewer, completed, notes } = req.body;
+  if (scheduledAt && application.admissionTest?.test && application.admissionTest.status !== 'passed') {
+    throw new AppError('The applicant must pass the assigned online test before an interview is scheduled.', 409);
+  }
   if (scheduledAt !== undefined) application.interview.scheduledAt = scheduledAt || null;
   if (mode !== undefined) application.interview.mode = mode;
   if (interviewer !== undefined) application.interview.interviewer = interviewer || null;
@@ -257,6 +358,12 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   const { isOwner, permissions } = getStaffEntry(application.institution, req.user._id);
   if (!isOwner && !permissions.includes('application:approve')) {
     throw new AppError('Only the institution owner or a staff member with final-approval permission can accept.', 403);
+  }
+  if (application.admissionTest?.test && application.admissionTest.status !== 'passed') {
+    throw new AppError('The assigned online admission test must be passed before acceptance.', 409);
+  }
+  if (application.admissionTest?.test && (!application.interview?.scheduledAt || !application.interview?.completed)) {
+    throw new AppError('The admission interview must be completed before acceptance.', 409);
   }
 
   let profile = await StudentProfile.findOne({ user: application.applicant });
@@ -291,4 +398,5 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
 module.exports = {
   createApplication, submitApplication, addDocument, myApplications, listInstitutionApplications, updateApplication,
   createOfflineApplication, setAdmissionTest, setInterview, acceptAndEnroll
+  ,createOnlineTest, listOnlineTests, assignOnlineTest, startOnlineTest, submitOnlineTest
 };
