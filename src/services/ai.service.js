@@ -150,11 +150,13 @@ function providerError(payload, res) {
 
 // ---------------------------------------------------------------------- Text (chat completion)
 
+// No `temperature` override — newer models (e.g. OpenAI's gpt-5 family) reject any value other
+// than their default (1) and error out entirely, while older models are fine without it too.
 async function callOpenAiCompatible(baseUrl, apiKey, model, systemPrompt, userPrompt) {
   const res = await fetch(baseUrl, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }], temperature: 0.6 })
+    body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] })
   });
   const payload = await res.json();
   if (!res.ok) throw providerError(payload, res);
