@@ -21,6 +21,11 @@ const courseSchema = new mongoose.Schema(
 
     certificateEnabled: { type: Boolean, default: false },
 
+    // Explicit marker for records created by automated tests/verification scripts, not real
+    // product data. Public listings must always exclude these — never rely on matching a title
+    // string, which is easy to forget to update and easy for a real course to collide with.
+    testOnly: { type: Boolean, default: false },
+
     // GPS/location attendance (spec: optional — browser/device location permission required).
     // When set, a student's GPS attendance check-in is only accepted inside this radius.
     attendanceLocation: {

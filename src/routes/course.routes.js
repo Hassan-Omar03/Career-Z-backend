@@ -16,6 +16,7 @@ router.patch('/:id', requirePermission('course:update:own'), ctrl.updateCourse);
 router.post('/:id/lessons', requirePermission('lesson:create:own'), ctrl.addLesson);
 router.post('/:id/ai-resource', requirePermission('lesson:create:own'), ctrl.shareAiResource);
 router.patch('/lessons/:lessonId', requirePermission('lesson:update:own'), ctrl.updateLesson);
+router.delete('/lessons/:lessonId', requirePermission('lesson:update:own'), ctrl.deleteLesson);
 router.patch('/lessons/:lessonId/complete', requirePermission('course:enroll:own'), ctrl.completeLesson);
 router.get('/:id/students', requirePermission('course:update:own'), ctrl.listEnrolledStudents);
 router.patch('/:id/students/:studentId/approve-completion', requirePermission('course:update:own'), ctrl.approveCompletion);

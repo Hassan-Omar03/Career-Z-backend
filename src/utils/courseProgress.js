@@ -24,8 +24,11 @@ const { notify } = require('../services/notification.service');
 const DEFAULT_WEIGHTS = { lessons: 40, assignments: 20, tests: 25, attendance: 15 };
 
 async function computeComponents(studentId, courseId) {
-  const totalLessons = await Lesson.countDocuments({ course: courseId });
-  const completedLessonsCount = (await Enrollment.findOne({ student: studentId, course: courseId }).select('completedLessons'))?.completedLessons.length || 0;
+  const publishedLessonIds = (await Lesson.find({ course: courseId, published: { $ne: false } }).select('_id')).map((lesson) => String(lesson._id));
+  const totalLessons = publishedLessonIds.length;
+  const completedLessonIds = (await Enrollment.findOne({ student: studentId, course: courseId }).select('completedLessons'))?.completedLessons || [];
+  const publishedSet = new Set(publishedLessonIds);
+  const completedLessonsCount = completedLessonIds.filter((id) => publishedSet.has(String(id))).length;
   const lessonsPct = totalLessons > 0 ? (completedLessonsCount / totalLessons) * 100 : 0;
 
   const assignmentIds = (await Assignment.find({ course: courseId }).select('_id')).map((a) => a._id);

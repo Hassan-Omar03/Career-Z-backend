@@ -2,8 +2,26 @@ const { Server } = require('socket.io');
 const env = require('../config/env');
 const jwt = require('jsonwebtoken');
 const User = require('../models/User');
+const Course = require('../models/Course');
+const Enrollment = require('../models/Enrollment');
+const TimetableEntry = require('../models/TimetableEntry');
+const { getBlockingInstitutionFee } = require('../utils/feeAccess');
+const crypto = require('crypto');
 
 let io = null;
+// Live classrooms are deliberately ephemeral. The durable deck remains a Lesson/Class Resource;
+// this map only represents the currently-running teaching session and is discarded on restart.
+const liveClasses = new Map();
+
+function publicSession(session) {
+  return { id: session.id, courseId: session.courseId, courseTitle: session.courseTitle, teacherName: session.teacherName, currentSlide: session.currentSlide, meetingLink: session.meetingLink, startedAt: session.startedAt };
+}
+
+async function authorizeStudent(userId, course) {
+  const enrollment = await Enrollment.findOne({ student: userId, course: course._id, status: 'active' });
+  if (!enrollment) throw new Error('You are not actively enrolled in this course.');
+  if (course.institution && await getBlockingInstitutionFee(userId, course.institution)) throw new Error('A due fee is blocking live-class access.');
+}
 
 function initSocket(httpServer) {
   io = new Server(httpServer, {
@@ -30,6 +48,98 @@ function initSocket(httpServer) {
     socket.join(`user:${socket.data.userId}`);
     const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, socket.data.expiresAt - Date.now()));
     expiryTimer.unref?.();
+    socket.data.liveSessionIds = new Set();
+
+    socket.on('class:start', async (payload = {}, reply = () => {}) => {
+      try {
+        const course = await Course.findById(payload.courseId).populate('teacher', 'fullName');
+        if (!course || String(course.teacher._id) !== socket.data.userId) throw new Error('Only the course teacher can start this class.');
+        if (!Array.isArray(payload.slides) || payload.slides.length < 1 || payload.slides.length > 50) throw new Error('A live class needs 1–50 slides.');
+        for (const existing of liveClasses.values()) {
+          if (existing.teacherId === socket.data.userId) {
+            io.to(`class:${existing.id}`).emit('class:ended', { sessionId: existing.id });
+            liveClasses.delete(existing.id);
+          }
+        }
+        const timetable = await TimetableEntry.findOne({ course: course._id, teacher: socket.data.userId }).select('meetingLink');
+        const session = {
+          id: crypto.randomUUID(), courseId: String(course._id), courseTitle: course.title,
+          teacherId: socket.data.userId, teacherName: course.teacher.fullName,
+          slides: payload.slides.map((slide) => ({ title: String(slide.title || '').slice(0, 300), bullets: (slide.bullets || []).slice(0, 20).map((b) => String(b).slice(0, 2000)), background: slide.background, accent: slide.accent, text: slide.text, imageUrl: /^https:\/\//i.test(slide.imageUrl || slide.image || '') ? (slide.imageUrl || slide.image) : '' })),
+          currentSlide: 0, meetingLink: timetable?.meetingLink || '', startedAt: new Date(), messages: []
+        };
+        liveClasses.set(session.id, session);
+        socket.join(`class:${session.id}`); socket.data.liveSessionIds.add(session.id);
+        const enrollments = await Enrollment.find({ course: course._id, status: 'active' }).select('student');
+        enrollments.forEach((row) => io.to(`user:${row.student}`).emit('class:started', publicSession(session)));
+        reply({ ok: true, session: { ...publicSession(session), slides: session.slides, messages: [] } });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('class:list', async (_, reply = () => {}) => {
+      try {
+        const result = [];
+        for (const session of liveClasses.values()) {
+          const course = await Course.findById(session.courseId);
+          if (!course) continue;
+          if (session.teacherId === socket.data.userId) result.push(publicSession(session));
+          else {
+            try { await authorizeStudent(socket.data.userId, course); result.push(publicSession(session)); } catch { /* not eligible */ }
+          }
+        }
+        reply({ ok: true, sessions: result });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('class:join', async ({ sessionId } = {}, reply = () => {}) => {
+      try {
+        const session = liveClasses.get(sessionId);
+        if (!session) throw new Error('This live class has ended.');
+        const course = await Course.findById(session.courseId);
+        if (session.teacherId !== socket.data.userId) await authorizeStudent(socket.data.userId, course);
+        socket.join(`class:${session.id}`); socket.data.liveSessionIds.add(session.id);
+        const user = await User.findById(socket.data.userId).select('fullName');
+        socket.to(`class:${session.id}`).emit('class:participant', { userId: socket.data.userId, name: user?.fullName || 'Participant', joined: true });
+        reply({ ok: true, session: { ...publicSession(session), slides: session.slides, messages: session.messages } });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('class:control', ({ sessionId, currentSlide } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || session.teacherId !== socket.data.userId) return reply({ ok: false, message: 'Teacher control rejected.' });
+      const next = Math.max(0, Math.min(session.slides.length - 1, Number(currentSlide) || 0));
+      session.currentSlide = next;
+      io.to(`class:${session.id}`).emit('class:slide', { sessionId, currentSlide: next });
+      reply({ ok: true });
+    });
+
+    socket.on('class:message', async ({ sessionId, text } = {}, reply = () => {}) => {
+      try {
+        const session = liveClasses.get(sessionId);
+        if (!session || !socket.data.liveSessionIds.has(sessionId)) throw new Error('Join the class before sending a message.');
+        const clean = String(text || '').trim().slice(0, 1000);
+        if (!clean) throw new Error('Message is empty.');
+        const user = await User.findById(socket.data.userId).select('fullName');
+        const message = { id: crypto.randomUUID(), userId: socket.data.userId, name: user?.fullName || 'Participant', text: clean, at: new Date().toISOString(), teacher: session.teacherId === socket.data.userId };
+        session.messages.push(message); if (session.messages.length > 200) session.messages.shift();
+        io.to(`class:${session.id}`).emit('class:message', message); reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('class:raise-hand', async ({ sessionId, raised = true } = {}, reply = () => {}) => {
+      try {
+        const session = liveClasses.get(sessionId);
+        if (!session || !socket.data.liveSessionIds.has(sessionId) || session.teacherId === socket.data.userId) throw new Error('Student hand-raise rejected.');
+        const user = await User.findById(socket.data.userId).select('fullName');
+        io.to(`class:${session.id}`).emit('class:hand', { userId: socket.data.userId, name: user?.fullName || 'Student', raised: Boolean(raised) }); reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('class:end', ({ sessionId } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || session.teacherId !== socket.data.userId) return reply({ ok: false, message: 'Only the teacher can end this class.' });
+      io.to(`class:${session.id}`).emit('class:ended', { sessionId }); liveClasses.delete(session.id); reply({ ok: true });
+    });
     socket.on('disconnect', () => clearTimeout(expiryTimer));
   });
 

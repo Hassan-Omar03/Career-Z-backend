@@ -23,6 +23,29 @@ function assertTeacherOwnsCourse(course, userId) {
   }
 }
 
+function sanitizeSlideDeck(deck) {
+  if (!deck || !Array.isArray(deck.slides) || deck.slides.length < 1 || deck.slides.length > 50) {
+    throw new AppError('A slide deck must contain between 1 and 50 slides.', 422);
+  }
+  return {
+    version: 1,
+    slides: deck.slides.map((slide) => {
+      const imageUrl = String(slide.imageUrl || '');
+      if (imageUrl && !/^https:\/\//i.test(imageUrl)) {
+        throw new AppError('Slide images must be uploaded to permanent HTTPS storage before sharing.', 422);
+      }
+      return {
+        title: String(slide.title || '').trim().slice(0, 300),
+        bullets: (Array.isArray(slide.bullets) ? slide.bullets : []).slice(0, 20).map((b) => String(b).trim().slice(0, 2000)),
+        background: /^#[0-9a-f]{6}$/i.test(slide.background) ? slide.background : '#fff8e7',
+        accent: /^#[0-9a-f]{6}$/i.test(slide.accent) ? slide.accent : '#d97706',
+        text: /^#[0-9a-f]{6}$/i.test(slide.text) ? slide.text : '#1f2937',
+        imageUrl
+      };
+    })
+  };
+}
+
 // ---- Courses ----
 
 // POST /api/courses
@@ -64,7 +87,7 @@ const createCourse = asyncHandler(async (req, res) => {
 // GET /api/courses (public, published only)
 const listCourses = asyncHandler(async (req, res) => {
   const { subject, institution, q } = req.query;
-  const filter = { published: true };
+  const filter = { published: true, testOnly: { $ne: true } };
   if (subject) filter.subject = subject;
   if (institution) filter.institution = institution;
   if (q) filter.title = { $regex: q, $options: 'i' };
@@ -98,7 +121,9 @@ const getCourse = asyncHandler(async (req, res) => {
     if (canSeeLessons && course.institution) await assertInstitutionFeeAccess(req.user._id, course.institution._id || course.institution);
   }
 
-  const lessons = canSeeLessons ? await Lesson.find({ course: course._id }).sort({ order: 1 }) : [];
+  const lessonFilter = { course: course._id };
+  if (!isOwner) lessonFilter.published = { $ne: false };
+  const lessons = canSeeLessons ? await Lesson.find(lessonFilter).sort({ order: 1 }) : [];
   return ok(res, { course, lessons });
 });
 
@@ -160,17 +185,31 @@ const shareAiResource = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const { title, content } = req.body;
-  if (!title || !content) throw new AppError('Title and content are required.', 422);
+  const { title, content, deck } = req.body;
+  if (!title || (!content && !deck)) throw new AppError('Title and content or a slide deck are required.', 422);
+
+  const cleanDeck = deck ? sanitizeSlideDeck(deck) : undefined;
 
   const lastLesson = await Lesson.findOne({ course: course._id }).sort({ order: -1 });
-  const lesson = await Lesson.create({ course: course._id, title, content, order: (lastLesson?.order || 0) + 1 });
+  const lesson = await Lesson.create({
+    course: course._id,
+    title: String(title).trim().slice(0, 300),
+    content: content || '',
+    kind: cleanDeck ? 'slide_deck' : 'lesson',
+    deck: cleanDeck,
+    published: true,
+    order: (lastLesson?.order || 0) + 1
+  });
   await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
 
   // Same rule the student's own course/lesson view already enforces (getCourse, above): a
   // student with an unpaid blocking fee at this institution does not get told about new material
-  // they cannot open yet.
-  const enrollments = await Enrollment.find({ course: course._id, status: 'active' }).populate('student', 'email fullName');
+  // they cannot open yet. Deliberately status != 'dropped' rather than status === 'active' — a
+  // student who already finished the course (status 'completed', via the weighted completion
+  // engine) is still a real member and should still hear about new material, not be silently
+  // excluded the moment they cross 100%. This was the actual cause of "0 students notified" on a
+  // course with a real, active-looking enrollment: their status had flipped to 'completed'.
+  const enrollments = await Enrollment.find({ course: course._id, status: { $ne: 'dropped' } }).populate('student', 'email fullName');
   const notifiable = [];
   for (const e of enrollments) {
     if (!e.student) continue;
@@ -198,12 +237,30 @@ const updateLesson = asyncHandler(async (req, res) => {
   const course = await Course.findById(lesson.course);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const allowed = ['title', 'content', 'videoUrl', 'resources', 'order'];
+  const allowed = ['title', 'content', 'videoUrl', 'resources', 'order', 'published'];
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) lesson[f] = req.body[f];
   });
+  if (req.body.deck !== undefined) {
+    lesson.deck = sanitizeSlideDeck(req.body.deck);
+    lesson.kind = 'slide_deck';
+  }
   await lesson.save();
+  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   return ok(res, lesson);
+});
+
+// DELETE /api/courses/lessons/:lessonId — owning teacher removes a lesson/deck from the class.
+const deleteLesson = asyncHandler(async (req, res) => {
+  const lesson = await Lesson.findById(req.params.lessonId);
+  if (!lesson) throw new AppError('Lesson not found.', 404);
+  const course = await Course.findById(lesson.course);
+  if (!course) throw new AppError('Course not found.', 404);
+  assertTeacherOwnsCourse(course, req.user._id);
+  await lesson.deleteOne();
+  await Enrollment.updateMany({ course: course._id }, { $pull: { completedLessons: lesson._id } });
+  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
+  return ok(res, null, 'Lesson deleted.');
 });
 
 // PATCH /api/courses/lessons/:lessonId/complete — student marks a lesson watched/done. Updates
@@ -212,6 +269,7 @@ const updateLesson = asyncHandler(async (req, res) => {
 const completeLesson = asyncHandler(async (req, res) => {
   const lesson = await Lesson.findById(req.params.lessonId);
   if (!lesson) throw new AppError('Lesson not found.', 404);
+  if (lesson.published === false) throw new AppError('This lesson is not published.', 404);
 
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: lesson.course });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
@@ -660,7 +718,7 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
 
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
-  addLesson, updateLesson, completeLesson, shareAiResource,
+  addLesson, updateLesson, deleteLesson, completeLesson, shareAiResource,
   enroll, listEnrolledStudents, approveCompletion, listFaceDescriptors,
   createAssignment, listAssignments,
   submitAssignment, listSubmissions, gradeSubmission,
