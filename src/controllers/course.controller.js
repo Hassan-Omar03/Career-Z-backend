@@ -8,12 +8,14 @@ const Exam = require('../models/Exam');
 const ExamSubmission = require('../models/ExamSubmission');
 const TeacherProfile = require('../models/TeacherProfile');
 const StudentProfile = require('../models/StudentProfile');
+const { assertInstitutionFeeAccess, getBlockingInstitutionFee } = require('../utils/feeAccess');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { isRoleVerified } = require('../utils/roleVerification');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify, notifyParentsOfStudent } = require('../services/notification.service');
+const { recalculateEnrollmentProgress, recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
 
 function assertTeacherOwnsCourse(course, userId) {
   if (course.teacher.toString() !== userId.toString()) {
@@ -43,7 +45,9 @@ const createCourse = asyncHandler(async (req, res) => {
     language,
     price: price || 0,
     currency: currency || 'USD',
-    isFree: isFree !== undefined ? isFree : true
+    // Institution subjects are assigned through the degree plan; they are never a public
+    // zero-price self-enrolment product. Independent teachers may still publish free courses.
+    isFree: institution ? false : (isFree !== undefined ? isFree : true)
   });
 
   if (institution) {
@@ -65,7 +69,11 @@ const listCourses = asyncHandler(async (req, res) => {
   if (institution) filter.institution = institution;
   if (q) filter.title = { $regex: q, $options: 'i' };
 
-  const courses = await Course.find(filter).populate('teacher', 'fullName').sort({ createdAt: -1 });
+  const courses = await Course.find(filter)
+    .populate('teacher', 'fullName email')
+    .populate('institution', 'name')
+    .populate('classSection', 'name academicYear')
+    .sort({ createdAt: -1 });
   return ok(res, courses);
 });
 
@@ -87,6 +95,7 @@ const getCourse = asyncHandler(async (req, res) => {
   if (!canSeeLessons && req.user) {
     const enrollment = await Enrollment.findOne({ student: req.user._id, course: course._id });
     canSeeLessons = Boolean(enrollment);
+    if (canSeeLessons && course.institution) await assertInstitutionFeeAccess(req.user._id, course.institution._id || course.institution);
   }
 
   const lessons = canSeeLessons ? await Lesson.find({ course: course._id }).sort({ order: 1 }) : [];
@@ -103,7 +112,24 @@ const updateCourse = asyncHandler(async (req, res) => {
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) course[f] = req.body[f];
   });
+
+  let rulesChanged = false;
+  if (req.body.completionRules) {
+    const { weights, minAttendancePercent, requireTeacherApproval } = req.body.completionRules;
+    if (weights) {
+      const sum = ['lessons', 'assignments', 'tests', 'attendance'].reduce((s, k) => s + (Number(weights[k]) || 0), 0);
+      if (Math.abs(sum - 100) > 1) throw new AppError('Completion weights must add up to 100.', 422);
+      course.completionRules.weights = weights;
+    }
+    if (minAttendancePercent !== undefined) course.completionRules.minAttendancePercent = minAttendancePercent;
+    if (requireTeacherApproval !== undefined) course.completionRules.requireTeacherApproval = requireTeacherApproval;
+    rulesChanged = true;
+  }
+
   await course.save();
+  // Changing the rules can move students in either direction (stricter rules reopen someone who
+  // was done under the old ones; looser rules complete someone who was blocked under the old ones).
+  if (rulesChanged) await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   return ok(res, course);
 });
 
@@ -119,7 +145,49 @@ const addLesson = asyncHandler(async (req, res) => {
   if (!title) throw new AppError('Lesson title is required.', 422);
 
   const lesson = await Lesson.create({ course: course._id, title, content, videoUrl, resources, order: order || 0 });
+  // A new lesson changes the lesson-progress denominator for every enrolled student — anyone
+  // previously at 100%/completed needs to be re-evaluated against the new total.
+  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   return created(res, lesson);
+});
+
+// POST /api/courses/:id/ai-resource — teacher shares AI-generated notes/quiz/lesson-plan text
+// with this course. Saved as a real Lesson (so it shows up in the student's course view and the
+// teacher's Resource Library the same as any manually-added lesson), then every actively
+// enrolled student is notified in-app and by email that a new lecture was shared.
+const shareAiResource = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+  assertTeacherOwnsCourse(course, req.user._id);
+
+  const { title, content } = req.body;
+  if (!title || !content) throw new AppError('Title and content are required.', 422);
+
+  const lastLesson = await Lesson.findOne({ course: course._id }).sort({ order: -1 });
+  const lesson = await Lesson.create({ course: course._id, title, content, order: (lastLesson?.order || 0) + 1 });
+  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
+
+  // Same rule the student's own course/lesson view already enforces (getCourse, above): a
+  // student with an unpaid blocking fee at this institution does not get told about new material
+  // they cannot open yet.
+  const enrollments = await Enrollment.find({ course: course._id, status: 'active' }).populate('student', 'email fullName');
+  const notifiable = [];
+  for (const e of enrollments) {
+    if (!e.student) continue;
+    if (course.institution) {
+      const blockingFee = await getBlockingInstitutionFee(e.student._id, course.institution);
+      if (blockingFee) continue;
+    }
+    notifiable.push(e);
+  }
+
+  await Promise.all(notifiable.map((e) => notify(
+    e.student._id,
+    { title: `New lecture shared: ${title}`, body: `${req.user.fullName} shared "${title}" in ${course.title}.`, sentBy: req.user._id },
+    { email: true, toAddress: e.student.email, ctaUrl: `/courses/${course._id}`, ctaLabel: 'View lecture' }
+  )));
+
+  return created(res, { lesson, notifiedCount: notifiable.length, feeBlockedCount: enrollments.length - notifiable.length });
 });
 
 // PATCH /api/lessons/:lessonId
@@ -138,25 +206,23 @@ const updateLesson = asyncHandler(async (req, res) => {
   return ok(res, lesson);
 });
 
-// PATCH /api/courses/lessons/:lessonId/complete — student marks a lesson watched/done;
-// recalculates the enrollment's progressPercent from real completed-vs-total lesson counts.
+// PATCH /api/courses/lessons/:lessonId/complete — student marks a lesson watched/done. Updates
+// lesson progress, then hands off to utils/courseProgress.js to recompute the real weighted
+// course-completion score (lessons are only one of up to four inputs — see that file for why).
 const completeLesson = asyncHandler(async (req, res) => {
   const lesson = await Lesson.findById(req.params.lessonId);
   if (!lesson) throw new AppError('Lesson not found.', 404);
 
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: lesson.course });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
+  const course = await Course.findById(lesson.course);
+  await assertInstitutionFeeAccess(req.user._id, course?.institution);
 
   enrollment.completedLessons.addToSet(lesson._id);
-  const totalLessons = await Lesson.countDocuments({ course: lesson.course });
-  enrollment.progressPercent = totalLessons > 0 ? Math.round((enrollment.completedLessons.length / totalLessons) * 100) : 0;
-  if (enrollment.progressPercent >= 100 && enrollment.status === 'active') {
-    enrollment.status = 'completed';
-    enrollment.completedAt = new Date();
-  }
   await enrollment.save();
 
-  return ok(res, enrollment, 'Lesson marked complete.');
+  const updated = await recalculateEnrollmentProgress(req.user._id, lesson.course);
+  return ok(res, updated || enrollment, 'Lesson marked complete.');
 });
 
 // ---- Enrollment ----
@@ -170,7 +236,10 @@ const enroll = asyncHandler(async (req, res) => {
   const existing = await Enrollment.findOne({ student: req.user._id, course: course._id });
   if (existing) throw new AppError('You are already enrolled in this course.', 409);
 
-  // Note: paid-course checkout is covered under Wallet/Payments scope; free courses enroll directly here.
+  if (course.institution) {
+    throw new AppError('Institution courses are assigned through admission/program enrollment. Self-enrollment is not available.', 403);
+  }
+  // Independent public courses may be free; paid ones require verified checkout.
   if (!course.isFree) {
     throw new AppError('This is a paid course. Complete checkout via the payments module first.', 402);
   }
@@ -189,6 +258,38 @@ const listEnrolledStudents = asyncHandler(async (req, res) => {
   return ok(res, enrollments);
 });
 
+// PATCH /api/courses/:id/students/:studentId/approve-completion — only meaningful when the
+// course's completionRules.requireTeacherApproval is on; the student must already have met every
+// automated requirement (completionStatus === 'pending_approval') — this never lets a teacher
+// approve someone who hasn't actually finished the work, only confirm someone who has.
+const approveCompletion = asyncHandler(async (req, res) => {
+  const course = await Course.findById(req.params.id);
+  if (!course) throw new AppError('Course not found.', 404);
+  assertTeacherOwnsCourse(course, req.user._id);
+
+  const enrollment = await Enrollment.findOne({ student: req.params.studentId, course: course._id });
+  if (!enrollment) throw new AppError('Student is not enrolled in this course.', 404);
+  if (enrollment.completionStatus !== 'pending_approval') {
+    throw new AppError('This student is not waiting for completion approval.', 400);
+  }
+
+  enrollment.completionStatus = 'completed';
+  enrollment.status = 'completed';
+  enrollment.completedAt = new Date();
+  await enrollment.save();
+
+  const student = await User.findById(enrollment.student).select('fullName email');
+  if (student) {
+    await notify(
+      enrollment.student,
+      { title: `Course completed: "${course.title}"`, body: `Your teacher approved your completion of "${course.title}".`, sentBy: req.user._id },
+      { email: true, toAddress: student.email }
+    ).catch(() => {});
+  }
+
+  return ok(res, enrollment, 'Completion approved.');
+});
+
 // GET /api/courses/:id/face-descriptors (teacher view) — spec 15B.9 "Face Recognition"
 // attendance. Returns each enrolled student's pre-computed 128-number face descriptor (from
 // student.controller.js's saveMyFaceDescriptor) so the teacher's own browser can run live
@@ -198,7 +299,7 @@ const listFaceDescriptors = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const enrollments = await Enrollment.find({ course: course._id }).populate('student', 'fullName');
+  const enrollments = await Enrollment.find({ course: course._id }).populate('student', 'fullName profilePhoto');
   const studentIds = enrollments.map((e) => e.student._id);
   const profiles = await StudentProfile.find({ user: { $in: studentIds }, faceDescriptor: { $ne: null } }).select('user faceDescriptor');
 
@@ -207,7 +308,7 @@ const listFaceDescriptors = asyncHandler(async (req, res) => {
 
   const enrolled = enrollments
     .filter((e) => byUser[e.student._id.toString()])
-    .map((e) => ({ studentId: e.student._id, fullName: e.student.fullName, descriptor: byUser[e.student._id.toString()] }));
+    .map((e) => ({ studentId: e.student._id, fullName: e.student.fullName, profilePhoto: e.student.profilePhoto || '', descriptor: byUser[e.student._id.toString()] }));
 
   return ok(res, enrolled);
 });
@@ -232,6 +333,8 @@ const createAssignment = asyncHandler(async (req, res) => {
     maxMarks: maxMarks || 100,
     attachments: attachments || []
   });
+  // New assignment changes the assignments-component denominator for every enrolled student.
+  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   return created(res, assignment);
 });
 
@@ -316,6 +419,7 @@ const gradeSubmission = asyncHandler(async (req, res) => {
   submission.status = 'graded';
   await submission.save();
 
+  await recalculateEnrollmentProgress(submission.student, submission.assignment.course).catch(() => {});
   return ok(res, submission, 'Submission graded.');
 });
 
@@ -414,6 +518,8 @@ const publishExam = asyncHandler(async (req, res) => {
 
   exam.published = true;
   await exam.save();
+  // Publishing changes the tests-component denominator for every enrolled student.
+  await recalculateEnrollmentProgressForCourse(exam.course).catch(() => {});
 
   // "Upcoming examination" notification for parents — only meaningful once a date is set.
   if (exam.scheduledDate) {
@@ -493,6 +599,7 @@ const submitExam = asyncHandler(async (req, res) => {
       body: `${exam.title}: ${score}/${exam.toObject().totalMarks}`,
       sentBy: exam.teacher
     }).catch(() => {});
+    await recalculateEnrollmentProgress(req.user._id, exam.course).catch(() => {});
   }
 
   return created(res, submission, 'Exam submitted.');
@@ -547,13 +654,14 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
     sentBy: req.user._id
   }).catch(() => {});
 
+  await recalculateEnrollmentProgress(submission.student, submission.exam.course).catch(() => {});
   return ok(res, submission, 'Exam graded.');
 });
 
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
-  addLesson, updateLesson, completeLesson,
-  enroll, listEnrolledStudents, listFaceDescriptors,
+  addLesson, updateLesson, completeLesson, shareAiResource,
+  enroll, listEnrolledStudents, approveCompletion, listFaceDescriptors,
   createAssignment, listAssignments,
   submitAssignment, listSubmissions, gradeSubmission,
   recordResult,

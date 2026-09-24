@@ -12,6 +12,7 @@ const attendanceSessionSchema = new mongoose.Schema(
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     date: { type: Date, required: true },
     token: { type: String, required: true, unique: true, default: () => crypto.randomBytes(16).toString('hex') },
+    code: { type: String, required: true, unique: true, default: () => crypto.randomBytes(4).toString('hex').toUpperCase() },
     expiresAt: { type: Date, required: true },
     checkedIn: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }]
   },

@@ -5,6 +5,7 @@ const timetableEntrySchema = new mongoose.Schema(
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', required: true, index: true },
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null, index: true },
     subject: { type: String, required: true },
     dayOfWeek: { type: String, enum: ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'], required: true },
     startTime: { type: String, required: true }, // "09:00"

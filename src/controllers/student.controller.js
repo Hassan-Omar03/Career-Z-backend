@@ -26,6 +26,8 @@ const Sponsorship = require('../models/Sponsorship');
 const Institution = require('../models/Institution');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
+const { getBlockingInstitutionFee, assertInstitutionFeeAccess } = require('../utils/feeAccess');
+const { recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
 const { ok, created } = require('../utils/apiResponse');
 const { notify, notifyMany } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
@@ -121,6 +123,7 @@ const qrCheckIn = asyncHandler(async (req, res) => {
 
   const courseDoc = await Course.findById(session.course);
   if (!courseDoc) throw new AppError('Course not found.', 404);
+  await assertInstitutionFeeAccess(req.user._id, courseDoc.institution);
   const enrolled = await Enrollment.findOne({ course: session.course, student: req.user._id });
   if (!enrolled) throw new AppError('You are not enrolled in this course.', 400);
 
@@ -140,6 +143,7 @@ const qrCheckIn = asyncHandler(async (req, res) => {
   if (!already) {
     sheet.records.push({ student: req.user._id, status: 'present', method: 'qr', checkedInAt: new Date(), session: session._id });
     await sheet.save();
+    await recalculateEnrollmentProgressForCourse(session.course).catch(() => {});
   }
 
   return ok(res, { alreadyMarked: false }, 'Attendance marked via QR check-in.');
@@ -158,6 +162,7 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
 
   const courseDoc = await Course.findById(courseId);
   if (!courseDoc) throw new AppError('Course not found.', 404);
+  await assertInstitutionFeeAccess(req.user._id, courseDoc.institution);
   if (!courseDoc.attendanceLocation?.enabled) throw new AppError('GPS attendance is not enabled for this course.', 400);
 
   const enrolled = await Enrollment.findOne({ course: courseId, student: req.user._id });
@@ -180,6 +185,7 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
 
   sheet.records.push({ student: req.user._id, status: 'present', method: 'gps', checkedInAt: new Date(), location: { lat, lng, distanceMeters: Math.round(distance) } });
   await sheet.save();
+  await recalculateEnrollmentProgressForCourse(courseId).catch(() => {});
 
   return ok(res, { alreadyMarked: false, distanceMeters: Math.round(distance) }, 'Attendance marked via GPS check-in.');
 });
@@ -253,12 +259,25 @@ const payMyFee = asyncHandler(async (req, res) => {
 // GET /api/students/me/timetable
 const getMyTimetable = asyncHandler(async (req, res) => {
   const profile = await StudentProfile.findOne({ user: req.user._id });
-  if (!profile || !profile.classSection) return ok(res, []);
-
-  const entries = await TimetableEntry.find({ classSection: profile.classSection })
-    .populate('teacher', 'fullName')
-    .sort({ dayOfWeek: 1, startTime: 1 });
-  return ok(res, entries);
+  const courseIds = await Enrollment.find({ student: req.user._id, status: 'active' }).distinct('course');
+  const filter = { $or: [{ course: { $in: courseIds } }] };
+  if (profile?.classSection) filter.$or.push({ classSection: profile.classSection });
+  if (courseIds.length === 0 && !profile?.classSection) return ok(res, []);
+  const entries = await TimetableEntry.find(filter)
+    .populate('teacher', 'fullName email')
+    .populate('course', 'title subject')
+    .populate('classSection', 'name academicYear')
+    .sort({ dayOfWeek: 1, startTime: 1 })
+    .lean();
+  const institutionIds = [...new Set(entries.map((entry) => String(entry.institution)).filter(Boolean))];
+  const blockers = new Map();
+  await Promise.all(institutionIds.map(async (institutionId) => {
+    blockers.set(institutionId, await getBlockingInstitutionFee(req.user._id, institutionId));
+  }));
+  return ok(res, entries.map((entry) => {
+    const fee = blockers.get(String(entry.institution));
+    return { ...entry, feeAccess: fee ? { blocked: true, feeId: fee._id, title: fee.title, amount: fee.amount, currency: fee.currency, status: fee.status, dueDate: fee.dueDate } : { blocked: false } };
+  }));
 });
 
 const DOW_ORDER = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
@@ -561,6 +580,7 @@ const requestFaceCheckIn = asyncHandler(async (req, res) => {
   }
   const courseDoc = await Course.findById(courseId);
   if (!courseDoc) throw new AppError('Course not found.', 404);
+  await assertInstitutionFeeAccess(req.user._id, courseDoc.institution);
   const enrolled = await Enrollment.findOne({ course: courseId, student: req.user._id });
   if (!enrolled) throw new AppError('You are not enrolled in this course.', 400);
 

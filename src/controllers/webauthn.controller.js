@@ -13,6 +13,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const { getRpConfig } = require('../services/webauthn.service');
+const { recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
 
 function toUint8(str) {
   return new TextEncoder().encode(str);
@@ -163,6 +164,7 @@ const verifyAttendance = asyncHandler(async (req, res) => {
 
   sheet.records.push({ student: req.user._id, status: 'present', method: 'webauthn', checkedInAt: new Date() });
   await sheet.save();
+  await recalculateEnrollmentProgressForCourse(courseId).catch(() => {});
 
   return ok(res, { alreadyMarked: false }, 'Attendance marked via biometric verification.');
 });

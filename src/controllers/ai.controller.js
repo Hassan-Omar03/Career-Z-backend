@@ -37,7 +37,20 @@ const FEATURE_PROMPTS = {
   cover_letter: 'You are a cover letter writer. Given the job details and the applicant\'s background, write a professional, specific cover letter (not generic filler) in 3-4 short paragraphs.',
   linkedin_optimize: 'You are a LinkedIn profile optimizer. Given the person\'s current headline/summary/experience text, rewrite it to be more compelling and keyword-relevant, and list 3-5 specific improvement suggestions.',
   interview_coach: 'You are an interview coach. Given the job role and the candidate\'s background, generate 5 likely interview questions for that role, and for each one give a short tip on how to answer it well.',
-  teacher_slides: 'You are a presentation slide generator for teachers. Given a topic (and grade level if mentioned), generate 6 to 10 presentation slides. Output ONLY in this exact format, nothing else — no intro, no explanation:\n---SLIDE---\nTITLE: <slide title>\n- <bullet point>\n- <bullet point>\n- <bullet point>\n(repeat ---SLIDE--- for each slide, 3-5 short bullets per slide, no sub-bullets, no markdown formatting inside bullets)',
+  teacher_slides: `You are an expert presentation designer and teacher. Create a polished, classroom-ready deck from the user's request. Treat every instruction as a requirement: topic, grade, language, visual style, requested or forbidden colors, slide count, and image needs. Never repeat design instructions as slide content. Teach accurately with an opening, a logical learning sequence, a recap, and a short check-for-understanding slide.
+
+Return exactly the number of slides/pages requested by the user. If no count is requested, return 8 slides. Use this exact format for every block:
+---SLIDE---
+TITLE: <specific slide title>
+BACKGROUND: <six-digit hex color>
+ACCENT: <six-digit hex color>
+TEXT: <six-digit high-contrast text color>
+IMAGE_PROMPT: <self-contained educational illustration prompt for this slide; obey requested and forbidden colors; no text or labels in the image>
+- <useful teaching point>
+- <useful teaching point>
+- <useful teaching point>
+
+Rules: 5-7 factual, age-appropriate teaching points per content slide. Each point must explain a concrete fact, step, example, cause, effect, or classroom takeaway rather than vague agenda language. The opening slide may use 3-4 points and the final knowledge-check slide may contain 3-5 questions. Never put meta commentary, color instructions, or an "Image:" placeholder in bullets; no markdown inside fields; use a varied but coherent palette; never use a color the user forbids.`,
   video_lesson_script: 'You are a scriptwriter for short educational videos. Given lesson content/a topic, break it into 4 to 8 scenes that together teach the material. Output ONLY in this exact format, nothing else — no intro, no explanation:\n---SCENE---\nTITLE: <short on-screen title, under 8 words>\nNARRATION: <2-4 natural spoken sentences a narrator would read aloud for this scene — no bullet points, write it as continuous speech>\n- <on-screen bullet point>\n- <on-screen bullet point>\n(repeat ---SCENE--- for each scene, 2-4 short on-screen bullets per scene, narration should sound natural when read aloud, not like a list)'
 };
 
@@ -126,7 +139,25 @@ const generate = asyncHandler(async (req, res) => {
   if (prompt.length > MAX_PROMPT_LENGTH) throw new AppError(`Prompt too long — max ${MAX_PROMPT_LENGTH} characters.`, 422);
 
   try {
-    const result = await aiService.generate(req.user._id, FEATURE_PROMPTS[feature], prompt.trim(), institutionId);
+    let systemPrompt = FEATURE_PROMPTS[feature];
+    let requestedSlideCount = null;
+    if (feature === 'teacher_slides') {
+      const countMatch = prompt.match(/\b(\d{1,2})\s*(?:slides?|pages?)\b/i);
+      if (countMatch) {
+        requestedSlideCount = Number(countMatch[1]);
+        if (requestedSlideCount < 3 || requestedSlideCount > 30) throw new AppError('Slide count must be between 3 and 30.', 422);
+        systemPrompt += `\nThe user explicitly requested exactly ${requestedSlideCount} slides. You MUST output exactly ${requestedSlideCount} ---SLIDE--- blocks.`;
+      }
+    }
+
+    let result = await aiService.generate(req.user._id, systemPrompt, prompt.trim(), institutionId);
+    if (requestedSlideCount) {
+      const actualCount = (result.match(/---SLIDE---/g) || []).length;
+      if (actualCount !== requestedSlideCount) {
+        const correctionPrompt = `${systemPrompt}\nYour previous response contained ${actualCount} slides. Regenerate the complete deck now with exactly ${requestedSlideCount} ---SLIDE--- blocks. Do not shorten or summarize it.`;
+        result = await aiService.generate(req.user._id, correctionPrompt, prompt.trim(), institutionId);
+      }
+    }
     return ok(res, { result });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);

@@ -8,6 +8,22 @@ const institutionApplicationSchema = new mongoose.Schema(
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     applicant: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     program: { type: String, required: true },
+    feePlanSnapshot: {
+      department: { type: String, default: '' },
+      durationTerms: { type: Number, default: null },
+      admissionFee: { type: Number, default: null },
+      totalTuitionFee: { type: Number, default: null },
+      installments: { type: Number, default: null },
+      currency: { type: String, default: '' },
+      additionalFees: {
+        exam: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
+        hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
+        transport: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
+        library: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
+        activity: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } }
+      },
+      capturedAt: { type: Date, default: null }
+    },
     status: {
       type: String,
       enum: ['draft', 'submitted', 'under_review', 'documents_required', 'waitlisted', 'accepted', 'rejected'],

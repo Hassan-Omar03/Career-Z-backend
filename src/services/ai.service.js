@@ -21,12 +21,23 @@ async function getAdminDefaultModel(purpose, provider) {
 // Creative Teacher pipeline combines several different AI categories.
 
 const DEFAULT_MODEL = {
-  text: { openai: 'gpt-4o-mini', claude: 'claude-3-5-haiku-20241022', gemini: 'gemini-1.5-flash', deepseek: 'deepseek-chat' },
-  image: { openai: 'dall-e-3', stability: 'stable-diffusion-xl-1024-v1-0' },
-  threed: { meshy: 'meshy-4' },
+  text: { openai: 'gpt-4o-mini', claude: 'claude-haiku-4-5-20251001', gemini: 'gemini-3.5-flash', deepseek: 'deepseek-flash' },
+  image: { openai: 'gpt-image-1-mini', stability: 'stable-diffusion-xl-1024-v1-0' },
+  threed: { meshy: 'latest' },
   voice: { elevenlabs: 'eleven_multilingual_v2' },
   avatar: { heygen: 'default' },
   animation: { runway: 'gen4.5' }
+};
+
+// Provider-retired model IDs can remain in older encrypted credential records. Resolve those
+// records to the documented successor so an existing BYOK connection does not fail after a
+// provider retirement; the UI status also reports the effective model.
+const RETIRED_MODEL_REPLACEMENT = {
+  'claude-3-5-haiku-20241022': 'claude-haiku-4-5-20251001',
+  'gemini-1.5-flash': 'gemini-3.5-flash',
+  'deepseek-chat': 'deepseek-flash',
+  'dall-e-3': 'gpt-image-1-mini',
+  'meshy-4': 'latest'
 };
 
 // A short, safe-to-store display hint — never enough to reconstruct the real key.
@@ -78,7 +89,7 @@ async function saveInstitutionCredential(institutionId, userId, purpose, provide
 }
 
 async function resolveModel(purpose, provider, explicitModel) {
-  if (explicitModel) return explicitModel;
+  if (explicitModel) return RETIRED_MODEL_REPLACEMENT[explicitModel] || explicitModel;
   if (!provider) return null;
   const adminDefault = await getAdminDefaultModel(purpose, provider);
   return adminDefault || DEFAULT_MODEL[purpose]?.[provider] || null;
@@ -206,11 +217,22 @@ async function generateImage(userId, prompt, institutionId) {
     const res = await fetch('https://api.openai.com/v1/images/generations', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-      body: JSON.stringify({ model: model || 'dall-e-3', prompt, n: 1, size: '1024x1024', response_format: 'b64_json' })
+      // OpenAI's live Image API currently rejects response_format for some routed/deprecated
+      // DALL-E deployments even though the reference still documents it. Omit it and accept
+      // either response representation so saved credentials keep working during migration.
+      body: JSON.stringify({ model: model || 'gpt-image-1-mini', prompt, n: 1, size: '1024x1024' })
     });
     const payload = await res.json();
     if (!res.ok) throw providerError(payload, res);
-    return `data:image/png;base64,${payload.data[0].b64_json}`;
+    const image = payload.data?.[0];
+    if (image?.b64_json) return `data:image/png;base64,${image.b64_json}`;
+    if (image?.url) {
+      const imageRes = await fetch(image.url);
+      if (!imageRes.ok) throw Object.assign(new Error('Generated image could not be downloaded.'), { statusCode: 502 });
+      const mime = imageRes.headers.get('content-type') || 'image/png';
+      return `data:${mime};base64,${Buffer.from(await imageRes.arrayBuffer()).toString('base64')}`;
+    }
+    throw Object.assign(new Error('OpenAI returned no image data.'), { statusCode: 502 });
   }
   if (provider === 'stability') {
     const res = await fetch(`https://api.stability.ai/v1/generation/${model || 'stable-diffusion-xl-1024-v1-0'}/text-to-image`, {
@@ -235,7 +257,7 @@ async function create3DModelTask(userId, prompt, institutionId) {
   const res = await fetch('https://api.meshy.ai/openapi/v2/text-to-3d', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
-    body: JSON.stringify({ mode: 'preview', prompt, art_style: 'realistic', ai_model: model || 'meshy-4' })
+    body: JSON.stringify({ mode: 'preview', prompt, ai_model: model || 'latest' })
   });
   const payload = await res.json();
   if (!res.ok) throw providerError(payload, res);

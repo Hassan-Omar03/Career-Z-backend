@@ -17,6 +17,8 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const { notify, notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
+const { getBlockingInstitutionFee, assertInstitutionFeeAccess } = require('../utils/feeAccess');
+const { recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
 
 const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -82,6 +84,9 @@ const markAttendance = asyncHandler(async (req, res) => {
     }
     const enrolled = await Enrollment.find({ course, student: { $in: studentIds } }).distinct('student');
     if (enrolled.length !== studentIds.length) throw new AppError('Attendance can only include enrolled students.', 403);
+    const presentIds = records.filter((record) => record.status !== 'absent').map((record) => record.student);
+    const blockers = await Promise.all(presentIds.map((studentId) => getBlockingInstitutionFee(studentId, courseDoc.institution)));
+    if (blockers.some(Boolean)) throw new AppError('A student with a due fee cannot be marked present. Record payment first or mark that student absent.', 402);
   }
 
   const attendance = await Attendance.create({
@@ -92,6 +97,7 @@ const markAttendance = asyncHandler(async (req, res) => {
     markedBy: req.user._id,
     records
   });
+  if (course) await recalculateEnrollmentProgressForCourse(course).catch(() => {});
 
   // Parent dashboard's "Child absent" notification — fired the moment attendance goes in.
   const absentIds = records.filter((r) => r.status === 'absent').map((r) => r.student);
@@ -189,6 +195,7 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
 
   const enrolled = await Enrollment.findOne({ course, student: studentId });
   if (!enrolled) throw new AppError('That student is not enrolled in this course.', 400);
+  await assertInstitutionFeeAccess(studentId, courseDoc.institution);
 
   const student = await User.findById(studentId).select('fullName');
   if (!student) throw new AppError('Student not found.', 404);
@@ -208,6 +215,7 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
 
   sheet.records.push({ student: studentId, status: 'present', method: 'face', checkedInAt: new Date() });
   await sheet.save();
+  await recalculateEnrollmentProgressForCourse(course).catch(() => {});
   return ok(res, { studentName: student.fullName, alreadyMarked: false }, `${student.fullName} marked present.`);
 });
 
@@ -249,6 +257,7 @@ const reviewFaceCheckInRequest = asyncHandler(async (req, res) => {
   await request.save();
 
   if (decision === 'approved') {
+    await assertInstitutionFeeAccess(request.student._id, courseDoc.institution);
     const dayStart = new Date(request.date); dayStart.setHours(0, 0, 0, 0);
     const dayEnd = new Date(request.date); dayEnd.setHours(23, 59, 59, 999);
     let sheet = await Attendance.findOne({ course: request.course, date: { $gte: dayStart, $lte: dayEnd }, markedBy: req.user._id });
@@ -258,6 +267,7 @@ const reviewFaceCheckInRequest = asyncHandler(async (req, res) => {
     if (!sheet.records.some((r) => r.student.toString() === request.student._id.toString())) {
       sheet.records.push({ student: request.student._id, status: 'present', method: 'face_remote', checkedInAt: new Date() });
       await sheet.save();
+      await recalculateEnrollmentProgressForCourse(request.course).catch(() => {});
     }
   }
 

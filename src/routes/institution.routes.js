@@ -11,6 +11,7 @@ router.get('/:id', optionalAuth, ctrl.getInstitution);
 router.get('/:id/campuses', ctrl.listCampuses);
 router.get('/:id/class-sections', ctrl.listClassSections);
 router.get('/:id/campus-buildings', ctrl.listCampusBuildings);
+router.get('/:id/programs', ctrl.listPrograms);
 
 router.use(protect);
 
@@ -39,6 +40,7 @@ router.delete('/:id/campus-buildings/:buildingId', ctrl.deleteCampusBuilding);
 router.post('/:id/campuses', ctrl.createCampus);
 router.post('/:id/class-sections', ctrl.createClassSection);
 router.patch('/:id/class-sections/:sectionId', ctrl.updateClassSection);
+router.post('/:id/programs', ctrl.createProgram);
 
 router.post('/:id/fees', ctrl.createFee);
 router.get('/:id/fees', ctrl.listFees);

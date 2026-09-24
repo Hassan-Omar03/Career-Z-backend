@@ -4,6 +4,10 @@ const Institution = require('../models/Institution');
 const StudentProfile = require('../models/StudentProfile');
 const User = require('../models/User');
 const AdmissionTest = require('../models/AdmissionTest');
+const InstitutionProgram = require('../models/InstitutionProgram');
+const Course = require('../models/Course');
+const Enrollment = require('../models/Enrollment');
+const Fee = require('../models/Fee');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -34,9 +38,14 @@ const createApplication = asyncHandler(async (req, res) => {
 
   const inst = await Institution.findById(institution);
   if (!inst) throw new AppError('Institution not found.', 404);
+  const programPlan = await InstitutionProgram.findOne({ institution, name: program, active: true });
+  if (!programPlan) throw new AppError('Select an active program published by this institution.', 422);
+  const duplicate = await InstitutionApplication.exists({ institution, applicant: req.user._id, program, status: { $nin: ['rejected'] } });
+  if (duplicate) throw new AppError('You already have an active application for this program.', 409);
 
   const application = await InstitutionApplication.create({
     institution, applicant: req.user._id, program,
+    feePlanSnapshot: { department: programPlan.department, durationTerms: programPlan.durationTerms, admissionFee: programPlan.admissionFee, totalTuitionFee: programPlan.totalTuitionFee, installments: programPlan.installments, currency: programPlan.currency, additionalFees: programPlan.additionalFees, capturedAt: new Date() },
     status: submit ? 'submitted' : 'draft',
     submittedAt: submit ? new Date() : null
   });
@@ -373,6 +382,8 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   }
 
   let profile = await StudentProfile.findOne({ user: application.applicant });
+  const programPlan = await InstitutionProgram.findOne({ institution: application.institution._id, name: application.program, active: true });
+  if (!programPlan) throw new AppError('Configure this program, class section and fee plan before accepting the applicant.', 409);
 
   application.status = 'accepted';
   application.reviewedBy = req.user._id;
@@ -386,11 +397,37 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   const membership = await recordJoin(application.applicant, application.institution._id, application.program);
   if (membership.isPrimary) {
     profile.program = application.program;
+    profile.classSection = programPlan.classSection;
     profile.admissionDate = profile.admissionDate || new Date();
     await profile.save();
   }
   application.generatedStudentProfile = profile._id;
   await application.save();
+
+  const programCourses = await Course.find({ institution: application.institution._id, classSection: programPlan.classSection, published: true });
+  await Promise.all(programCourses.map((course) => Enrollment.updateOne({ student: application.applicant, course: course._id }, { $setOnInsert: { student: application.applicant, course: course._id, status: 'active' } }, { upsert: true })));
+
+  const existingFees = await Fee.exists({ student: application.applicant, institution: application.institution._id, 'installment.planId': `program-${application._id}` });
+  if (!existingFees) {
+    const planId = `program-${application._id}`;
+    const fees = [];
+    const agreed = application.feePlanSnapshot?.totalTuitionFee != null ? application.feePlanSnapshot : programPlan;
+    if (agreed.admissionFee > 0) fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} Admission Fee`, feeType: 'admission', amount: agreed.admissionFee, currency: agreed.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: agreed.installments }, recordedBy: req.user._id });
+    for (const type of ['exam', 'hostel', 'transport', 'library', 'activity']) {
+      const extra = agreed.additionalFees?.[type];
+      if (extra?.enabled && extra.amount > 0) fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} ${type.charAt(0).toUpperCase() + type.slice(1)} Fee`, feeType: type, amount: extra.amount, currency: agreed.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: agreed.installments }, recordedBy: req.user._id });
+    }
+    let allocated = 0;
+    for (let number = 1; number <= agreed.installments; number += 1) {
+      const amount = number === agreed.installments
+        ? Math.round((agreed.totalTuitionFee - allocated) * 100) / 100
+        : Math.round((agreed.totalTuitionFee / agreed.installments) * 100) / 100;
+      allocated += amount;
+      const dueDate = new Date(); dueDate.setMonth(dueDate.getMonth() + number - 1);
+      fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} Tuition - Installment ${number}/${agreed.installments}`, feeType: 'tuition', amount, currency: agreed.currency, dueDate, installment: { planId, number, totalInstallments: agreed.installments }, recordedBy: req.user._id });
+    }
+    if (fees.length) await Fee.insertMany(fees);
+  }
 
   await notify(application.applicant, {
     title: `Congratulations! Admitted to ${application.institution.name}`,

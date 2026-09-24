@@ -5,6 +5,7 @@ const Campus = require('../models/Campus');
 const ClassSection = require('../models/ClassSection');
 const Fee = require('../models/Fee');
 const TimetableEntry = require('../models/TimetableEntry');
+const InstitutionProgram = require('../models/InstitutionProgram');
 const TeacherProfile = require('../models/TeacherProfile');
 const StudentProfile = require('../models/StudentProfile');
 const Attendance = require('../models/Attendance');
@@ -12,6 +13,7 @@ const StaffAttendance = require('../models/StaffAttendance');
 const CampusBuilding = require('../models/CampusBuilding');
 const Payslip = require('../models/Payslip');
 const Course = require('../models/Course');
+const Enrollment = require('../models/Enrollment');
 const Exam = require('../models/Exam');
 const User = require('../models/User');
 const Inquiry = require('../models/Inquiry');
@@ -35,6 +37,58 @@ const { onboardStaff, offboardStaff } = require('../utils/staffOnboarding');
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
 const DOW_FULL = { mon: 'Monday', tue: 'Tuesday', wed: 'Wednesday', thu: 'Thursday', fri: 'Friday', sat: 'Saturday', sun: 'Sunday' };
+
+const createProgram = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const { name, department, classSection, durationTerms, admissionFee, totalTuitionFee, installments, currency, additionalFees = {} } = req.body;
+  if (!name || !department || !classSection || totalTuitionFee === undefined) throw new AppError('name, department, classSection and totalTuitionFee are required.', 422);
+  if (!Number.isFinite(Number(totalTuitionFee)) || Number(totalTuitionFee) <= 0) throw new AppError('Total degree tuition must be greater than zero.', 422);
+  const section = await ClassSection.findOne({ _id: classSection, institution: institution._id });
+  if (!section) throw new AppError('Class section does not belong to this institution.', 422);
+  const normalizedAdditionalFees = {};
+  for (const type of ['exam', 'hostel', 'transport', 'library', 'activity']) {
+    normalizedAdditionalFees[type] = { enabled: Boolean(additionalFees[type]?.enabled), amount: Boolean(additionalFees[type]?.enabled) ? Number(additionalFees[type]?.amount) || 0 : 0 };
+  }
+  const program = await InstitutionProgram.create({ institution: institution._id, name, department, classSection, durationTerms: Number(durationTerms) || 8, admissionFee: Number(admissionFee) || 0, totalTuitionFee: Number(totalTuitionFee), installments: Number(installments) || Number(durationTerms) || 8, currency: currency || 'PKR', additionalFees: normalizedAdditionalFees, createdBy: req.user._id });
+
+  // Apply a newly configured plan to students who were accepted before fee plans existed.
+  const students = await StudentProfile.find({ primaryInstitution: institution._id, program: name });
+  const programCourses = await Course.find({ institution: institution._id, classSection: section._id, published: true });
+  for (const student of students) {
+    student.classSection = section._id;
+    await student.save();
+    await Promise.all(programCourses.map((course) => Enrollment.updateOne(
+      { student: student.user, course: course._id },
+      { $setOnInsert: { student: student.user, course: course._id, status: 'active' } },
+      { upsert: true }
+    )));
+    const planId = `program-${program._id}-${student.user}`;
+    if (!(await Fee.exists({ student: student.user, institution: institution._id, 'installment.planId': planId }))) {
+      const feeRows = [];
+      if (program.admissionFee > 0) feeRows.push({ student: student.user, institution: institution._id, title: `${program.name} Admission Fee`, feeType: 'admission', amount: program.admissionFee, currency: program.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: program.installments }, recordedBy: req.user._id });
+      for (const type of ['exam', 'hostel', 'transport', 'library', 'activity']) {
+        const extra = program.additionalFees?.[type];
+        if (extra?.enabled && extra.amount > 0) feeRows.push({ student: student.user, institution: institution._id, title: `${program.name} ${type.charAt(0).toUpperCase() + type.slice(1)} Fee`, feeType: type, amount: extra.amount, currency: program.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: program.installments }, recordedBy: req.user._id });
+      }
+      let allocated = 0;
+      for (let number = 1; number <= program.installments; number += 1) {
+        const amount = number === program.installments ? Math.round((program.totalTuitionFee - allocated) * 100) / 100 : Math.round((program.totalTuitionFee / program.installments) * 100) / 100;
+        allocated += amount;
+        const dueDate = new Date(); dueDate.setMonth(dueDate.getMonth() + number - 1);
+        feeRows.push({ student: student.user, institution: institution._id, title: `${program.name} Tuition - Installment ${number}/${program.installments}`, feeType: 'tuition', amount, currency: program.currency, dueDate, installment: { planId, number, totalInstallments: program.installments }, recordedBy: req.user._id });
+      }
+      await Fee.insertMany(feeRows);
+    }
+  }
+  return created(res, program, `Program and fee plan created${students.length ? ` and assigned to ${students.length} existing student(s)` : ''}.`);
+});
+
+const listPrograms = asyncHandler(async (req, res) => {
+  const programs = await InstitutionProgram.find({ institution: req.params.id, active: true }).populate('classSection', 'name academicYear').sort({ name: 1 });
+  return ok(res, programs);
+});
 
 function slugify(name) {
   return name
@@ -387,14 +441,19 @@ const createFee = asyncHandler(async (req, res) => {
   }
 
   const feeStudent = await User.findById(student).select('fullName');
+  if (!feeStudent) throw new AppError('Student not found.', 404);
+  const belongsToInstitution = await StudentProfile.exists({ user: student, primaryInstitution: institution._id });
+  if (!belongsToInstitution) throw new AppError('Select an enrolled student from this institution.', 422);
 
   // Instalment plan: split `amount` into N equal parts, each its own Fee doc sharing a planId,
   // so the parent/student sees "Instalment 1 of 3" etc. and can pay them one at a time.
   const n = Number(installments) || 1;
   if (n > 1) {
     const planId = crypto.randomBytes(6).toString('hex');
-    const per = Math.round((amount / n) * 100) / 100;
+    let allocated = 0;
     const fees = await Promise.all(Array.from({ length: n }, (_, i) => {
+      const per = i === n - 1 ? Math.round((Number(amount) - allocated) * 100) / 100 : Math.round((Number(amount) / n) * 100) / 100;
+      allocated += per;
       const due = dueDate ? new Date(dueDate) : null;
       if (due) due.setMonth(due.getMonth() + i);
       return Fee.create({
@@ -590,16 +649,19 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
     throw new AppError('Class section not found for this institution.', 404);
   }
 
-  const { teacher, subject, dayOfWeek, startTime, endTime, room, meetingLink } = req.body;
-  if (!subject || !dayOfWeek || !startTime || !endTime) {
-    throw new AppError('subject, dayOfWeek, startTime and endTime are required.', 422);
+  const { teacher, course, subject, dayOfWeek, startTime, endTime, room, meetingLink } = req.body;
+  if (!course || !teacher || !dayOfWeek || !startTime || !endTime) {
+    throw new AppError('course, teacher, dayOfWeek, startTime and endTime are required.', 422);
   }
+  const courseDoc = await Course.findOne({ _id: course, institution: institution._id, classSection: section._id, teacher });
+  if (!courseDoc) throw new AppError('Select a course assigned to this section and teacher.', 422);
 
   const entry = await TimetableEntry.create({
     institution: institution._id,
     classSection: section._id,
     teacher: teacher || null,
-    subject,
+    course: courseDoc._id,
+    subject: courseDoc.title || subject,
     dayOfWeek,
     startTime,
     endTime,
@@ -621,7 +683,9 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
 
 const listTimetable = asyncHandler(async (req, res) => {
   const entries = await TimetableEntry.find({ classSection: req.params.sectionId })
-    .populate('teacher', 'fullName')
+    .populate('teacher', 'fullName email')
+    .populate('course', 'title subject')
+    .populate('classSection', 'name academicYear')
     .sort({ dayOfWeek: 1, startTime: 1 });
   return ok(res, entries);
 });
@@ -636,7 +700,16 @@ const updateTimetableEntry = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  const allowed = ['teacher', 'subject', 'dayOfWeek', 'startTime', 'endTime', 'room', 'meetingLink'];
+  if (req.body.course || req.body.teacher) {
+    const courseId = req.body.course || entry.course;
+    const teacherId = req.body.teacher || entry.teacher;
+    const courseDoc = await Course.findOne({ _id: courseId, institution: institution._id, classSection: entry.classSection, teacher: teacherId });
+    if (!courseDoc) throw new AppError('Select a course assigned to this section and teacher.', 422);
+    entry.course = courseDoc._id;
+    entry.teacher = teacherId;
+    entry.subject = courseDoc.title;
+  }
+  const allowed = ['dayOfWeek', 'startTime', 'endTime', 'room', 'meetingLink'];
   const previousTeacher = entry.teacher;
   allowed.forEach((f) => { if (req.body[f] !== undefined) entry[f] = req.body[f] || (f === 'teacher' ? null : ''); });
   await entry.save();
@@ -1030,7 +1103,9 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
   const courseMap = Object.fromEntries(courses.map((c) => [c._id.toString(), c.title]));
 
   const exams = await Exam.find({ course: { $in: courseIds } })
-    .populate('teacher', 'fullName')
+    .populate('teacher', 'fullName email')
+    .populate('course', 'title subject')
+    .populate('classSection', 'name academicYear')
     .sort({ scheduledDate: -1 });
 
   const withCourseTitle = exams.map((e) => ({ ...e.toObject(), courseTitle: courseMap[e.course.toString()] }));
@@ -1191,4 +1266,5 @@ module.exports = {
   listInstitutionExams,
   myStaffRoles,
   getRepDashboard
+  ,createProgram, listPrograms
 };
