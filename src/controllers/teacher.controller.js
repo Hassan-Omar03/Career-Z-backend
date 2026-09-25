@@ -37,6 +37,13 @@ const updateMyProfile = asyncHandler(async (req, res) => {
     if (req.body[f] !== undefined) update[f] = req.body[f];
   });
 
+  // A teacher discoverable to institutions with no photo is just a name and a subject list — the
+  // frontend already disables this checkbox without a photo, but that's advisory only; this is
+  // the actual gate, since the request could otherwise be sent directly.
+  if (update.visibleToInstitutions === true && !req.user.profilePhoto) {
+    throw new AppError('Add a profile photo before making your profile discoverable to institutions.', 422);
+  }
+
   const profile = await TeacherProfile.findOneAndUpdate(
     { user: req.user._id },
     { $set: update },
