@@ -23,9 +23,12 @@ router.patch('/:id/students/:studentId/approve-completion', requirePermission('c
 router.get('/:id/face-descriptors', requirePermission('course:update:own'), ctrl.listFaceDescriptors);
 router.post('/:id/assignments', requirePermission('assignment:create:own'), ctrl.createAssignment);
 router.get('/:id/assignments', ctrl.listAssignments);
+router.delete('/assignments/:assignmentId', requirePermission('assignment:create:own'), ctrl.deleteAssignment);
 router.get('/assignments/:assignmentId/submissions', requirePermission('assignment:grade:own'), ctrl.listSubmissions);
 router.patch('/submissions/:submissionId/grade', requirePermission('assignment:grade:own'), ctrl.gradeSubmission);
+router.patch('/submissions/:submissionId/resubmit', requirePermission('assignment:grade:own'), ctrl.requestAssignmentResubmission);
 router.post('/:id/results', requirePermission('result:record:own'), ctrl.recordResult);
+router.get('/:id/results', requirePermission('result:record:own'), ctrl.listCourseResults);
 router.post('/:id/exams', requirePermission('assignment:create:own'), ctrl.createExam);
 router.patch('/exams/:examId/publish', requirePermission('assignment:grade:own'), ctrl.publishExam);
 router.get('/exams/:examId/submissions', requirePermission('assignment:grade:own'), ctrl.listExamSubmissions);
@@ -34,7 +37,9 @@ router.patch('/exam-submissions/:submissionId/grade', requirePermission('assignm
 // Student
 router.post('/:id/enroll', requirePermission('course:enroll:own'), ctrl.enroll);
 router.post('/assignments/:assignmentId/submit', requirePermission('assignment:submit:own'), ctrl.submitAssignment);
+router.post('/exams/:examId/start', requirePermission('assignment:submit:own'), ctrl.startExam);
 router.post('/exams/:examId/submit', requirePermission('assignment:submit:own'), ctrl.submitExam);
+router.get('/exam-attempts/mine', requirePermission('assignment:submit:own'), ctrl.listMyExamAttempts);
 
 // Shared (teacher sees all + answer key, student sees published + no answer key — controller decides)
 router.get('/:id/exams', ctrl.listExams);

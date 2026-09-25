@@ -41,6 +41,8 @@ router.post('/:id/campuses', ctrl.createCampus);
 router.post('/:id/class-sections', ctrl.createClassSection);
 router.patch('/:id/class-sections/:sectionId', ctrl.updateClassSection);
 router.post('/:id/programs', ctrl.createProgram);
+router.get('/:id/courses', ctrl.listInstitutionCourses);
+router.patch('/:id/courses/:courseId/academic-assignment', ctrl.assignCourseAcademics);
 
 router.post('/:id/fees', ctrl.createFee);
 router.get('/:id/fees', ctrl.listFees);
@@ -61,6 +63,7 @@ router.post('/:id/comms-credential', notificationCtrl.saveCommsCredential);
 router.delete('/:id/comms-credential', notificationCtrl.removeCommsCredential);
 
 router.post('/:id/certificates', certificateCtrl.issueCertificate);
+router.get('/:id/certificates/eligible', certificateCtrl.listEligibleCompletions);
 router.get('/:id/certificates', certificateCtrl.listInstitutionCertificates);
 
 router.get('/:id/teachers', ctrl.listInstitutionTeachers);

@@ -5,6 +5,8 @@ const User = require('../models/User');
 const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const TimetableEntry = require('../models/TimetableEntry');
+const LiveClassSession = require('../models/LiveClassSession');
+const StudyGroup = require('../models/StudyGroup');
 const { getBlockingInstitutionFee } = require('../utils/feeAccess');
 const crypto = require('crypto');
 
@@ -12,6 +14,7 @@ let io = null;
 // Live classrooms are deliberately ephemeral. The durable deck remains a Lesson/Class Resource;
 // this map only represents the currently-running teaching session and is discarded on restart.
 const liveClasses = new Map();
+const videoRoomMembers = new Map();
 
 function publicSession(session) {
   return {
@@ -78,6 +81,86 @@ function initSocket(httpServer) {
     const expiryTimer = setTimeout(() => socket.disconnect(true), Math.max(0, socket.data.expiresAt - Date.now()));
     expiryTimer.unref?.();
     socket.data.liveSessionIds = new Set();
+    socket.data.videoSessionIds = new Set();
+
+    socket.on('live-video:join', async ({ sessionId } = {}, reply = () => {}) => {
+      try {
+        const session = await LiveClassSession.findById(sessionId).populate('teacher', 'fullName');
+        if (!session || session.status !== 'live') throw new Error('This class is not live.');
+        const isTeacher = String(session.teacher._id) === socket.data.userId;
+        if (!isTeacher) {
+          const course = await Course.findById(session.course);
+          await authorizeStudent(socket.data.userId, course);
+        }
+        const user = await User.findById(socket.data.userId).select('fullName');
+        const room = `live-video:${sessionId}`;
+        const members = videoRoomMembers.get(sessionId) || new Map();
+        const existing = Array.from(members.values());
+        const member = { userId: socket.data.userId, name: user?.fullName || (isTeacher ? 'Teacher' : 'Student'), role: isTeacher ? 'teacher' : 'student' };
+        members.set(socket.data.userId, member); videoRoomMembers.set(sessionId, members);
+        socket.join(room); socket.data.videoSessionIds.add(sessionId);
+        socket.to(room).emit('live-video:participant-joined', member);
+        reply({ ok: true, participants: existing, self: member });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('live-video:signal', ({ sessionId, targetUserId, signal } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId);
+      if (!members?.has(socket.data.userId) || !members.has(String(targetUserId))) return reply({ ok: false, message: 'Classroom signaling rejected.' });
+      io.to(`user:${targetUserId}`).emit('live-video:signal', { sessionId, fromUserId: socket.data.userId, signal });
+      reply({ ok: true });
+    });
+
+    socket.on('live-video:message', async ({ sessionId, text } = {}, reply = () => {}) => {
+      try {
+        const members = videoRoomMembers.get(sessionId);
+        if (!members?.has(socket.data.userId)) throw new Error('Join the classroom first.');
+        const clean = String(text || '').trim().slice(0, 1000);
+        if (!clean) throw new Error('Message is empty.');
+        const member = members.get(socket.data.userId);
+        const message = { id: crypto.randomUUID(), userId: socket.data.userId, name: member.name, role: member.role, text: clean, at: new Date().toISOString() };
+        io.to(`live-video:${sessionId}`).emit('live-video:message', message); reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('live-video:hand', ({ sessionId, raised } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId);
+      if (!members?.has(socket.data.userId)) return reply({ ok: false, message: 'Join the classroom first.' });
+      const member = members.get(socket.data.userId);
+      io.to(`live-video:${sessionId}`).emit('live-video:hand', { ...member, raised: Boolean(raised) }); reply({ ok: true });
+    });
+
+    socket.on('live-video:leave', ({ sessionId } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId);
+      const member = members?.get(socket.data.userId);
+      members?.delete(socket.data.userId);
+      if (members?.size === 0) videoRoomMembers.delete(sessionId);
+      socket.leave(`live-video:${sessionId}`); socket.data.videoSessionIds.delete(sessionId);
+      if (member) socket.to(`live-video:${sessionId}`).emit('live-video:participant-left', member);
+      reply({ ok: true });
+    });
+
+    // Study Groups: durable discussion (persisted via StudyGroupPost, not ephemeral like a live
+    // class) — the socket room only exists to push new posts instantly to members who are online;
+    // a reload/poll of GET .../posts is still the source of truth.
+    socket.on('study-group:join', async ({ groupId } = {}, reply = () => {}) => {
+      try {
+        const group = await StudyGroup.findById(groupId).select('members');
+        if (!group || !group.members.some((m) => m.user.toString() === socket.data.userId)) {
+          throw new Error('You are not a member of this study group.');
+        }
+        socket.join(`study-group:${groupId}`);
+        socket.data.studyGroupIds = socket.data.studyGroupIds || new Set();
+        socket.data.studyGroupIds.add(groupId);
+        reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('study-group:leave', ({ groupId } = {}, reply = () => {}) => {
+      socket.leave(`study-group:${groupId}`);
+      socket.data.studyGroupIds?.delete(groupId);
+      reply({ ok: true });
+    });
 
     socket.on('class:start', async (payload = {}, reply = () => {}) => {
       try {
@@ -209,6 +292,13 @@ function initSocket(httpServer) {
         session.raisedHands.delete(socket.data.userId);
         io.to(`class:${session.id}`).emit('class:participant', { userId: socket.data.userId, joined: false });
       }
+      for (const sessionId of socket.data.videoSessionIds) {
+        const members = videoRoomMembers.get(sessionId);
+        const member = members?.get(socket.data.userId);
+        members?.delete(socket.data.userId);
+        if (members?.size === 0) videoRoomMembers.delete(sessionId);
+        if (member) socket.to(`live-video:${sessionId}`).emit('live-video:participant-left', member);
+      }
     });
   });
 
@@ -220,4 +310,13 @@ function emitToUser(userId, event, payload) {
   if (io && userId) io.to(`user:${userId}`).emit(event, payload);
 }
 
-module.exports = { initSocket, emitToUser };
+function emitToLiveVideoRoom(sessionId, event, payload) {
+  if (io && sessionId) io.to(`live-video:${sessionId}`).emit(event, payload);
+}
+
+// Push a freshly-created discussion post to every online member of a study group.
+function broadcastStudyGroupPost(groupId, post) {
+  if (io && groupId) io.to(`study-group:${groupId}`).emit('study-group:message', post);
+}
+
+module.exports = { initSocket, emitToUser, emitToLiveVideoRoom, broadcastStudyGroupPost };

@@ -21,6 +21,10 @@ const courseSchema = new mongoose.Schema(
 
     certificateEnabled: { type: Boolean, default: false },
 
+    // Institution/teacher-level kill switch for Study Groups on this course (spec: "Institute
+    // ka enable/disable control"). Defaults on; a teacher flips this off per class if unwanted.
+    studyGroupsEnabled: { type: Boolean, default: true },
+
     // Explicit marker for records created by automated tests/verification scripts, not real
     // product data. Public listings must always exclude these — never rely on matching a title
     // string, which is easy to forget to update and easy for a real course to collide with.

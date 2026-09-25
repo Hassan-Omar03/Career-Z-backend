@@ -746,6 +746,38 @@ const deleteTimetableEntry = asyncHandler(async (req, res) => {
 });
 
 // ---- Teacher / Student Management ----
+const listInstitutionCourses = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const courses = await Course.find({ institution: institution._id })
+    .populate('teacher', 'fullName email')
+    .populate('classSection', 'name academicYear')
+    .sort({ title: 1 });
+  return ok(res, courses);
+});
+
+const assignCourseAcademics = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const course = await Course.findOne({ _id: req.params.courseId, institution: institution._id });
+  if (!course) throw new AppError('Course not found for this institution.', 404);
+  const { subject, classSection, teacher } = req.body;
+  if (!String(subject || '').trim() || !classSection || !teacher) throw new AppError('Subject, class section and teacher are required.', 422);
+  const section = await ClassSection.findOne({ _id: classSection, institution: institution._id });
+  if (!section) throw new AppError('Select a class section from this institution.', 422);
+  const teacherLinked = await TeacherProfile.exists({ user: teacher, institutions: institution._id });
+  if (!teacherLinked) throw new AppError('Select a teacher linked to this institution.', 422);
+  course.subject = String(subject).trim();
+  course.classSection = section._id;
+  course.teacher = teacher;
+  await course.save();
+  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
+  await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);
+  return ok(res, course, 'Course academic assignment updated.');
+});
+
 const listInstitutionTeachers = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
@@ -1098,7 +1130,7 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const courses = await Course.find({ institution: institution._id }).select('_id title teacher');
+  const courses = await Course.find({ institution: institution._id }).select('_id title subject teacher classSection');
   const courseIds = courses.map((c) => c._id);
   const courseMap = Object.fromEntries(courses.map((c) => [c._id.toString(), c.title]));
 
@@ -1108,7 +1140,17 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
     .populate('classSection', 'name academicYear')
     .sort({ scheduledDate: -1 });
 
-  const withCourseTitle = exams.map((e) => ({ ...e.toObject(), courseTitle: courseMap[e.course.toString()] }));
+  const ExamSubmission = require('../models/ExamSubmission');
+  const examIds = exams.map((exam) => exam._id);
+  const summaries = await ExamSubmission.aggregate([
+    { $match: { exam: { $in: examIds } } },
+    { $group: { _id: '$exam', attempted: { $sum: 1 }, graded: { $sum: { $cond: [{ $eq: ['$status', 'graded'] }, 1, 0] } }, passed: { $sum: { $cond: [{ $eq: ['$status', 'graded'] }, { $cond: [{ $gte: ['$score', 0] }, 1, 0] }, 0] } } } }
+  ]);
+  const summaryMap = new Map(summaries.map((summary) => [summary._id.toString(), summary]));
+  const withCourseTitle = exams.map((e) => {
+    const summary = summaryMap.get(e._id.toString());
+    return { ...e.toObject(), courseTitle: e.course?.title || courseMap[e.course?._id?.toString() || e.course?.toString()], attemptedCount: summary?.attempted || 0, gradedCount: summary?.graded || 0 };
+  });
   return ok(res, withCourseTitle);
 });
 
@@ -1254,6 +1296,8 @@ module.exports = {
   listTimetable,
   updateTimetableEntry,
   deleteTimetableEntry,
+  listInstitutionCourses,
+  assignCourseAcademics,
   listInstitutionTeachers,
   listInstitutionStudents,
   updateStudentStatus,

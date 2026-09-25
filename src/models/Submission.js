@@ -7,6 +7,7 @@ const submissionSchema = new mongoose.Schema(
     text: { type: String, default: '' },
     attachments: [{ name: String, url: String }],
     submittedAt: { type: Date, default: Date.now },
+    late: { type: Boolean, default: false },
 
     marksObtained: { type: Number, default: null },
     feedback: { type: String, default: '' },

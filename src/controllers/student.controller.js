@@ -4,6 +4,8 @@ const env = require('../config/env');
 const StudentProfile = require('../models/StudentProfile');
 const StudentDocument = require('../models/StudentDocument');
 const StudentGoal = require('../models/StudentGoal');
+const Achievement = require('../models/Achievement');
+const Badge = require('../models/Badge');
 const Enrollment = require('../models/Enrollment');
 const Attendance = require('../models/Attendance');
 const AttendanceSession = require('../models/AttendanceSession');
@@ -24,6 +26,7 @@ const ExamSubmission = require('../models/ExamSubmission');
 const Certificate = require('../models/Certificate');
 const Sponsorship = require('../models/Sponsorship');
 const Institution = require('../models/Institution');
+const TeacherProfile = require('../models/TeacherProfile');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { getBlockingInstitutionFee, assertInstitutionFeeAccess } = require('../utils/feeAccess');
@@ -201,19 +204,25 @@ const getMyAttendance = asyncHandler(async (req, res) => {
 
 // GET /api/students/me/results
 const getMyResults = asyncHandler(async (req, res) => {
-  const results = await Result.find({ student: req.user._id }).sort({ createdAt: -1 });
+  const results = await Result.find({ student: req.user._id })
+    .populate('teacher', 'fullName email')
+    .populate('institution', 'name')
+    .populate('classSection', 'name academicYear')
+    .populate({ path: 'exam', select: 'title type subject academicSession term scheduledDate passingPercent teacher institution classSection', populate: [{ path: 'teacher', select: 'fullName email' }, { path: 'institution', select: 'name' }, { path: 'classSection', select: 'name academicYear' }] })
+    .populate({ path: 'course', select: 'title subject level institution classSection', populate: [{ path: 'institution', select: 'name' }, { path: 'classSection', select: 'name academicYear' }] })
+    .sort({ createdAt: -1 });
   return ok(res, results);
 });
 
 // GET /api/students/me/enrollments
 const getMyEnrollments = asyncHandler(async (req, res) => {
-  const enrollments = await Enrollment.find({ student: req.user._id }).populate('course', 'title subject teacher published');
+  const enrollments = await Enrollment.find({ student: req.user._id }).populate({ path: 'course', select: 'title subject level teacher institution classSection published', populate: [{ path: 'teacher', select: 'fullName email' }, { path: 'institution', select: 'name' }, { path: 'classSection', select: 'name academicYear' }] });
   return ok(res, enrollments);
 });
 
 // GET /api/students/me/submissions
 const getMySubmissions = asyncHandler(async (req, res) => {
-  const submissions = await Submission.find({ student: req.user._id }).populate('assignment', 'title dueDate maxMarks');
+  const submissions = await Submission.find({ student: req.user._id }).populate('assignment', 'title type dueDate maxMarks');
   return ok(res, submissions);
 });
 
@@ -668,8 +677,27 @@ const getMyLearningAnalytics = asyncHandler(async (req, res) => {
 });
 
 // -------------------------------------------------------------------- Goal Tracking (Part 10.22)
-// No AI here — the student sets their own goal and self-reports progress. AI-generated goal
-// suggestions are a separate, later phase that needs the student's own AI API key.
+// No AI here — the student sets their own goal and tracks progress via milestones. AI-generated
+// goal suggestions are a separate, later phase that needs the student's own AI API key.
+const VERIFIED_CATEGORIES = new Set(['academic', 'scholarship', 'job']);
+
+// Every institution this user can verify records for: they own it, are non-teaching staff there,
+// or are a teacher linked there via TeacherProfile — same pattern as poll/anonymousQuestion.
+async function reviewerInstitutionIds(userId) {
+  const [owned, staffOf, teacherProfile] = await Promise.all([
+    Institution.find({ owner: userId }).distinct('_id'),
+    Institution.find({ 'staff.user': userId }).distinct('_id'),
+    TeacherProfile.findOne({ user: userId })
+  ]);
+  const ids = new Set([...owned, ...staffOf].map((id) => id.toString()));
+  (teacherProfile?.institutions || []).forEach((id) => ids.add(id.toString()));
+  return Array.from(ids);
+}
+
+async function assertReviewerForInstitution(institutionId, userId) {
+  const ids = await reviewerInstitutionIds(userId);
+  if (!ids.includes(institutionId.toString())) throw new AppError('You are not part of this institution.', 403);
+}
 
 // GET /api/students/me/goals
 const listMyGoals = asyncHandler(async (req, res) => {
@@ -679,18 +707,51 @@ const listMyGoals = asyncHandler(async (req, res) => {
 
 // POST /api/students/me/goals
 const addMyGoal = asyncHandler(async (req, res) => {
-  const { title, category, targetDate, notes } = req.body;
+  const { title, category, targetDate, notes, milestones } = req.body;
   if (!title) throw new AppError('title is required.', 422);
-  const goal = await StudentGoal.create({ student: req.user._id, title, category: category || 'other', targetDate: targetDate || null, notes: notes || '' });
+  const cat = category || 'other';
+  const goal = await StudentGoal.create({
+    student: req.user._id, title, category: cat, targetDate: targetDate || null, notes: notes || '',
+    milestones: Array.isArray(milestones) ? milestones.filter((m) => m?.title).map((m) => ({ title: m.title, done: false })) : [],
+    requiresVerification: VERIFIED_CATEGORIES.has(cat)
+  });
   return created(res, goal, 'Goal added.');
 });
 
-// PATCH /api/students/me/goals/:id
+// PATCH /api/students/me/goals/:id — an academic/scholarship/job goal reaching 100% needs
+// evidence and a teacher/institution sign-off (reviewGoal) before it becomes 'completed'; it
+// self-reports straight to 'completed' for a skill/other goal, matching the master-file note
+// that not every personal goal needs a certificate/verification behind it.
 const updateMyGoal = asyncHandler(async (req, res) => {
   const goal = await StudentGoal.findOne({ _id: req.params.id, student: req.user._id });
   if (!goal) throw new AppError('Goal not found.', 404);
-  const allowed = ['title', 'category', 'targetDate', 'progressPercent', 'status', 'notes'];
+  const allowed = ['title', 'category', 'targetDate', 'progressPercent', 'notes', 'evidenceUrl'];
   allowed.forEach((f) => { if (req.body[f] !== undefined) goal[f] = req.body[f]; });
+  if (req.body.category !== undefined) goal.requiresVerification = VERIFIED_CATEGORIES.has(goal.category);
+
+  if (req.body.status !== undefined && req.body.status !== 'completed') goal.status = req.body.status;
+  if (Number(goal.progressPercent) >= 100 && goal.status !== 'completed' && goal.status !== 'pending_verification') {
+    if (goal.requiresVerification) {
+      if (!goal.evidenceUrl) throw new AppError('Reaching 100% on this goal needs evidence uploaded first (e.g. IELTS score report, offer letter, scholarship award letter).', 422);
+      goal.status = 'pending_verification';
+    } else {
+      goal.status = 'completed';
+    }
+  }
+  await goal.save();
+  return ok(res, goal);
+});
+
+// PATCH /api/students/me/goals/:id/milestones/:milestoneId
+const toggleGoalMilestone = asyncHandler(async (req, res) => {
+  const goal = await StudentGoal.findOne({ _id: req.params.id, student: req.user._id });
+  if (!goal) throw new AppError('Goal not found.', 404);
+  const milestone = goal.milestones.id(req.params.milestoneId);
+  if (!milestone) throw new AppError('Milestone not found.', 404);
+  milestone.done = req.body.done !== undefined ? Boolean(req.body.done) : !milestone.done;
+  if (goal.milestones.length) {
+    goal.progressPercent = Math.round((goal.milestones.filter((m) => m.done).length / goal.milestones.length) * 100);
+  }
   await goal.save();
   return ok(res, goal);
 });
@@ -703,6 +764,45 @@ const removeMyGoal = asyncHandler(async (req, res) => {
   return ok(res, null, 'Goal removed.');
 });
 
+// GET /api/students/goals/review-queue (teacher/institution staff) — every student goal awaiting
+// verification at institutions this reviewer actually has access to.
+const goalReviewQueue = asyncHandler(async (req, res) => {
+  const institutionIds = await reviewerInstitutionIds(req.user._id);
+  if (!institutionIds.length) return ok(res, []);
+  const students = await StudentProfile.find({ primaryInstitution: { $in: institutionIds } }).distinct('user');
+  const goals = await StudentGoal.find({ student: { $in: students }, status: 'pending_verification' })
+    .populate('student', 'fullName profilePhoto')
+    .sort({ updatedAt: 1 });
+  return ok(res, goals);
+});
+
+// PATCH /api/students/goals/:id/review (teacher/institution staff) — body: { approve, notes }
+const reviewGoal = asyncHandler(async (req, res) => {
+  const { approve, notes } = req.body;
+  const goal = await StudentGoal.findById(req.params.id);
+  if (!goal) throw new AppError('Goal not found.', 404);
+  if (goal.status !== 'pending_verification') throw new AppError('This goal is not awaiting verification.', 400);
+
+  const profile = await StudentProfile.findOne({ user: goal.student });
+  if (!profile?.primaryInstitution) throw new AppError('This student has no institution to verify against.', 422);
+  await assertReviewerForInstitution(profile.primaryInstitution, req.user._id);
+
+  goal.status = approve ? 'completed' : 'active';
+  goal.verifiedBy = req.user._id;
+  goal.verifiedAt = new Date();
+  goal.verifierNotes = notes || '';
+  if (!approve) goal.progressPercent = Math.min(goal.progressPercent, 99);
+  await goal.save();
+
+  await notify(goal.student, {
+    title: approve ? 'A goal you completed was verified' : 'A goal needs more evidence',
+    body: notes || goal.title,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, goal);
+});
+
 // ---------------------------------------------------------- Achievement Timeline (Part 10.23)
 // Every real milestone (completed courses, certificates earned, high test scores, scholarships
 // won, jobs landed, goals achieved) in one chronological feed. Unlike the dashboard's
@@ -711,16 +811,21 @@ const removeMyGoal = asyncHandler(async (req, res) => {
 const getMyAchievementTimeline = asyncHandler(async (req, res) => {
   const userId = req.user._id;
 
-  const [enrollments, certificates, results, scholarshipApps, jobApps, goals] = await Promise.all([
+  const [enrollments, certificates, results, scholarshipApps, jobApps, goals, manual] = await Promise.all([
     Enrollment.find({ student: userId, status: 'completed' }).populate('course', 'title subject'),
     Certificate.find({ student: userId }).populate('institution', 'name'),
     Result.find({ student: userId }),
     ScholarshipApplication.find({ applicant: userId, status: 'approved' }).populate('scholarship', 'title'),
     JobApplication.find({ applicant: userId, status: 'hired' }).populate('job', 'title company'),
-    StudentGoal.find({ student: userId, status: 'completed' })
+    StudentGoal.find({ student: userId, status: 'completed' }),
+    // Only VERIFIED manual entries join the real achievement timeline — a pending/rejected claim
+    // is visible on the student's own "My Achievements" list (getMyManualAchievements) but never
+    // shown here or counted toward badges, since this feed is meant to be trustworthy evidence.
+    Achievement.find({ student: userId, verificationStatus: 'verified' })
   ]);
 
   const highScores = results.filter((r) => r.totalMarks > 0 && (r.marksObtained / r.totalMarks) >= 0.9);
+  const MANUAL_LABEL = { award: 'Award Won', medal: 'Medal Won', competition: 'Competition', project: 'Project', internship: 'Internship', research: 'Research', volunteer: 'Volunteer Work', other: 'Achievement' };
 
   const timeline = [
     ...enrollments.map((e) => ({ type: 'Course Completed', title: e.course?.title || 'A course', date: e.completedAt || e.updatedAt })),
@@ -728,10 +833,81 @@ const getMyAchievementTimeline = asyncHandler(async (req, res) => {
     ...highScores.map((r) => ({ type: 'High Score', title: `${r.subject || r.term || 'Test'} — ${r.marksObtained}/${r.totalMarks}`, date: r.createdAt })),
     ...scholarshipApps.map((a) => ({ type: 'Scholarship Won', title: a.scholarship?.title || 'Scholarship', date: a.updatedAt })),
     ...jobApps.map((a) => ({ type: 'Job Offer Accepted', title: `${a.job?.title || 'Job'}${a.job?.company ? ` at ${a.job.company}` : ''}`, date: a.updatedAt })),
-    ...goals.map((g) => ({ type: 'Goal Achieved', title: g.title, date: g.updatedAt }))
+    ...goals.map((g) => ({ type: 'Goal Achieved', title: g.title, date: g.updatedAt })),
+    ...manual.map((m) => ({ type: MANUAL_LABEL[m.type] || 'Achievement', title: m.title, desc: m.description, date: m.date, visibility: m.visibility }))
   ].sort((a, b) => new Date(a.date) - new Date(b.date));
 
   return ok(res, timeline);
+});
+
+// POST /api/students/me/achievements (student) — manual add with optional evidence; starts
+// 'pending' until an institution/teacher verifies it (see reviewAchievement).
+const addMyAchievement = asyncHandler(async (req, res) => {
+  const { type, title, description, date, evidenceUrl, visibility } = req.body;
+  if (!type || !title) throw new AppError('type and title are required.', 422);
+  const profile = await StudentProfile.findOne({ user: req.user._id });
+  const achievement = await Achievement.create({
+    student: req.user._id, type, title, description: description || '', date: date || new Date(),
+    evidenceUrl: evidenceUrl || '', visibility: visibility === 'public' ? 'public' : 'private',
+    institution: profile?.primaryInstitution || null
+  });
+  return created(res, achievement, 'Achievement submitted — awaiting verification.');
+});
+
+// GET /api/students/me/achievements (student) — own manual entries, any verification status.
+const getMyManualAchievements = asyncHandler(async (req, res) => {
+  const list = await Achievement.find({ student: req.user._id }).sort({ createdAt: -1 });
+  return ok(res, list);
+});
+
+// PATCH /api/students/me/achievements/:id (student, pending only)
+const updateMyAchievement = asyncHandler(async (req, res) => {
+  const achievement = await Achievement.findOne({ _id: req.params.id, student: req.user._id });
+  if (!achievement) throw new AppError('Achievement not found.', 404);
+  if (achievement.verificationStatus !== 'pending') throw new AppError('Only a pending entry can be edited.', 400);
+  ['title', 'description', 'date', 'evidenceUrl', 'visibility', 'type'].forEach((f) => { if (req.body[f] !== undefined) achievement[f] = req.body[f]; });
+  await achievement.save();
+  return ok(res, achievement);
+});
+
+// DELETE /api/students/me/achievements/:id (student)
+const removeMyAchievement = asyncHandler(async (req, res) => {
+  const achievement = await Achievement.findOneAndDelete({ _id: req.params.id, student: req.user._id });
+  if (!achievement) throw new AppError('Achievement not found.', 404);
+  return ok(res, null, 'Achievement removed.');
+});
+
+// GET /api/students/achievements/review-queue (teacher/institution staff)
+const achievementReviewQueue = asyncHandler(async (req, res) => {
+  const institutionIds = await reviewerInstitutionIds(req.user._id);
+  if (!institutionIds.length) return ok(res, []);
+  const list = await Achievement.find({ institution: { $in: institutionIds }, verificationStatus: 'pending' })
+    .populate('student', 'fullName profilePhoto')
+    .sort({ createdAt: 1 });
+  return ok(res, list);
+});
+
+// PATCH /api/students/achievements/:id/review (teacher/institution staff) — body: { approve, notes }
+const reviewAchievement = asyncHandler(async (req, res) => {
+  const { approve, notes } = req.body;
+  const achievement = await Achievement.findById(req.params.id);
+  if (!achievement) throw new AppError('Achievement not found.', 404);
+  if (!achievement.institution) throw new AppError('This achievement has no institution to verify against.', 422);
+  await assertReviewerForInstitution(achievement.institution, req.user._id);
+
+  achievement.verificationStatus = approve ? 'verified' : 'rejected';
+  achievement.verifiedBy = req.user._id;
+  achievement.verifiedAt = new Date();
+  achievement.verifierNotes = notes || '';
+  await achievement.save();
+
+  await notify(achievement.student, {
+    title: approve ? 'Your achievement was verified' : 'Your achievement needs more evidence',
+    body: notes || achievement.title,
+    sentBy: req.user._id
+  }).catch(() => {});
+
+  return ok(res, achievement);
 });
 
 // ------------------------------------------------------------- Reputation / Badges (Part 10.19)
@@ -758,16 +934,29 @@ const getMyBadges = asyncHandler(async (req, res) => {
   const highScoreCount = results.filter((r) => r.totalMarks > 0 && (r.marksObtained / r.totalMarks) >= 0.9).length;
   const completedCourses = enrollments.filter((e) => e.status === 'completed').length;
 
-  const badges = [
+  const verifiedAchievements = await Achievement.countDocuments({ student: userId, verificationStatus: 'verified' });
+
+  const rules = [
     { code: 'active_learner', label: 'Active Learner', desc: 'Enrolled in 3 or more courses', earned: enrollments.length >= 3 },
     { code: 'course_completer', label: 'Course Completer', desc: 'Completed at least one course', earned: completedCourses >= 1 },
     { code: 'perfect_attendance', label: 'Perfect Attendance', desc: '100% attendance record', earned: attendanceRate === 100 },
     { code: 'high_achiever', label: 'High Achiever', desc: 'Scored 90% or higher on a test', earned: highScoreCount >= 1 },
     { code: 'certified', label: 'Certified', desc: 'Earned at least one certificate', earned: certificates >= 1 },
     { code: 'goal_setter', label: 'Goal Setter', desc: 'Set at least one personal goal', earned: goals >= 1 },
-    { code: 'goal_achiever', label: 'Goal Achiever', desc: 'Completed at least one personal goal', earned: completedGoals >= 1 }
+    { code: 'goal_achiever', label: 'Goal Achiever', desc: 'Completed at least one personal goal', earned: completedGoals >= 1 },
+    { code: 'competitor', label: 'Competitor', desc: 'A verified award, medal or competition on record', earned: verifiedAchievements >= 1 }
   ];
 
+  // A rule becoming true for the first time is persisted with a real earnedAt date; once earned,
+  // a badge is never revoked even if the underlying counts later change.
+  const existing = await Badge.find({ student: userId });
+  const existingCodes = new Set(existing.map((b) => b.code));
+  const toInsert = rules.filter((r) => r.earned && !existingCodes.has(r.code)).map((r) => ({ student: userId, code: r.code, label: r.label, desc: r.desc }));
+  if (toInsert.length) await Badge.insertMany(toInsert, { ordered: false }).catch(() => {});
+  const earnedDates = new Map(existing.map((b) => [b.code, b.earnedAt]));
+  toInsert.forEach((b) => earnedDates.set(b.code, new Date()));
+
+  const badges = rules.map((r) => ({ ...r, earnedAt: earnedDates.get(r.code) || null }));
   return ok(res, { badges, earnedCount: badges.filter((b) => b.earned).length, totalCount: badges.length });
 });
 
@@ -799,7 +988,16 @@ module.exports = {
   listMyGoals,
   addMyGoal,
   updateMyGoal,
+  toggleGoalMilestone,
   removeMyGoal,
+  goalReviewQueue,
+  reviewGoal,
   getMyAchievementTimeline,
+  addMyAchievement,
+  getMyManualAchievements,
+  updateMyAchievement,
+  removeMyAchievement,
+  achievementReviewQueue,
+  reviewAchievement,
   getMyBadges
 };

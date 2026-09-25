@@ -2,10 +2,18 @@ const router = require('express').Router();
 const ctrl = require('../controllers/student.controller');
 const certificateCtrl = require('../controllers/certificate.controller');
 const { protect } = require('../middleware/auth');
-const { requirePermission } = require('../middleware/rbac');
+const { requirePermission, requireRole } = require('../middleware/rbac');
 
 // Public — anyone scanning a Digital Student ID QR code can verify it, no login required.
 router.get('/verify-id/:code', ctrl.verifyStudentId);
+
+// Teacher/institution review queues for goal + achievement verification — not a student's own
+// profile, so kept outside the requirePermission('student:profile:read:own') gate below.
+const REVIEWER = requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner');
+router.get('/goals/review-queue', protect, REVIEWER, ctrl.goalReviewQueue);
+router.patch('/goals/:id/review', protect, REVIEWER, ctrl.reviewGoal);
+router.get('/achievements/review-queue', protect, REVIEWER, ctrl.achievementReviewQueue);
+router.patch('/achievements/:id/review', protect, REVIEWER, ctrl.reviewAchievement);
 
 router.use(protect, requirePermission('student:profile:read:own'));
 
@@ -36,8 +44,13 @@ router.get('/me/learning-analytics', ctrl.getMyLearningAnalytics);
 router.get('/me/goals', ctrl.listMyGoals);
 router.post('/me/goals', ctrl.addMyGoal);
 router.patch('/me/goals/:id', ctrl.updateMyGoal);
+router.patch('/me/goals/:id/milestones/:milestoneId', ctrl.toggleGoalMilestone);
 router.delete('/me/goals/:id', ctrl.removeMyGoal);
 router.get('/me/achievement-timeline', ctrl.getMyAchievementTimeline);
+router.get('/me/achievements', ctrl.getMyManualAchievements);
+router.post('/me/achievements', ctrl.addMyAchievement);
+router.patch('/me/achievements/:id', ctrl.updateMyAchievement);
+router.delete('/me/achievements/:id', ctrl.removeMyAchievement);
 router.get('/me/badges', ctrl.getMyBadges);
 
 module.exports = router;

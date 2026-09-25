@@ -6,6 +6,7 @@ const Fee = require('../models/Fee');
 const StudentProfile = require('../models/StudentProfile');
 const TimetableEntry = require('../models/TimetableEntry');
 const Submission = require('../models/Submission');
+const Assignment = require('../models/Assignment');
 const Enrollment = require('../models/Enrollment');
 const Exam = require('../models/Exam');
 const Message = require('../models/Message');
@@ -205,10 +206,14 @@ const childHomework = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
-  const submissions = await Submission.find({ student: req.params.studentId })
-    .populate('assignment', 'title dueDate maxMarks')
-    .sort({ createdAt: -1 });
-  return ok(res, submissions);
+  const courseIds = await Enrollment.find({ student: req.params.studentId, status: { $ne: 'dropped' } }).distinct('course');
+  const [assignments, submissions] = await Promise.all([
+    Assignment.find({ course: { $in: courseIds }, published: { $ne: false } }).select('title dueDate maxMarks course type').sort({ dueDate: 1 }),
+    Submission.find({ student: req.params.studentId }).populate('assignment', 'title dueDate maxMarks course type').sort({ createdAt: -1 })
+  ]);
+  const byAssignment = new Map(submissions.map((submission) => [String(submission.assignment?._id), submission]));
+  const rows = assignments.map((assignment) => byAssignment.get(String(assignment._id)) || { assignment, student: req.params.studentId, status: assignment.dueDate && assignment.dueDate < new Date() ? 'overdue' : 'pending', marksObtained: null, submittedAt: null });
+  return ok(res, rows);
 });
 
 // GET /api/parents/children/:studentId/exams — Exam Schedule page (every published exam,

@@ -117,6 +117,11 @@ async function recalculateEnrollmentProgress(studentId, courseId) {
 
   await enrollment.save();
 
+  if (enrollment.completionStatus === 'completed' && course.certificateEnabled && course.institution) {
+    const { ensureCourseCompletionCertificate } = require('../services/certificate.service');
+    await ensureCourseCompletionCertificate(enrollment.student, course._id, course.teacher).catch(() => {});
+  }
+
   if (previousStatus !== enrollment.completionStatus) {
     await fireTransitionNotification(course, enrollment, previousStatus).catch(() => {});
   }
