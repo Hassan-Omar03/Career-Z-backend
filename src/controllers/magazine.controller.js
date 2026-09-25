@@ -57,10 +57,15 @@ const institutionSubmissions = asyncHandler(async (req, res) => {
   return ok(res, list);
 });
 
-// PATCH /api/magazine/:id/review (teacher) — select or reject.
+// PATCH /api/magazine/:id/review (teacher) — select, reject, or ask for changes.
 const review = asyncHandler(async (req, res) => {
   const { status, editorNotes } = req.body;
-  if (!['selected', 'rejected'].includes(status)) throw new AppError('status must be selected or rejected.', 422);
+  if (!['selected', 'rejected', 'changes_requested'].includes(status)) {
+    throw new AppError('status must be selected, rejected or changes_requested.', 422);
+  }
+  if (status === 'changes_requested' && !editorNotes?.trim()) {
+    throw new AppError('Explain what needs to change so the student knows what to fix.', 422);
+  }
 
   const submission = await MagazineSubmission.findById(req.params.id);
   if (!submission) throw new AppError('Submission not found.', 404);
@@ -71,13 +76,38 @@ const review = asyncHandler(async (req, res) => {
   submission.reviewedBy = req.user._id;
   await submission.save();
 
+  const titleByStatus = {
+    selected: 'Your magazine submission was selected',
+    rejected: 'Your magazine submission was reviewed',
+    changes_requested: 'Changes requested on your magazine submission'
+  };
   await notify(submission.student, {
-    title: status === 'selected' ? 'Your magazine submission was selected' : 'Your magazine submission was reviewed',
+    title: titleByStatus[status],
     body: editorNotes || submission.title,
     sentBy: req.user._id
   }).catch(() => {});
 
   return ok(res, submission, `Submission ${status}.`);
+});
+
+// PATCH /api/magazine/:id/resubmit (student, own submission, only while changes were requested)
+const resubmit = asyncHandler(async (req, res) => {
+  const { title, type, content, imageUrl } = req.body;
+  if (!title || !content) throw new AppError('title and content are required.', 422);
+
+  const submission = await MagazineSubmission.findById(req.params.id);
+  if (!submission) throw new AppError('Submission not found.', 404);
+  if (submission.student.toString() !== req.user._id.toString()) throw new AppError('This is not your submission.', 403);
+  if (submission.status !== 'changes_requested') throw new AppError('This submission is not awaiting changes.', 400);
+
+  submission.title = title;
+  submission.type = type || submission.type;
+  submission.content = content;
+  submission.imageUrl = imageUrl || '';
+  submission.status = 'submitted';
+  await submission.save();
+
+  return ok(res, submission, 'Resubmitted for review.');
 });
 
 // PATCH /api/magazine/:id/publish (institution owner/staff only — final publish step)
@@ -123,4 +153,4 @@ const published = asyncHandler(async (req, res) => {
   return ok(res, list);
 });
 
-module.exports = { submit, mySubmissions, institutionSubmissions, review, publish, published };
+module.exports = { submit, mySubmissions, institutionSubmissions, review, resubmit, publish, published };

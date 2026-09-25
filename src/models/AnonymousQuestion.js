@@ -8,6 +8,10 @@ const anonymousQuestionSchema = new mongoose.Schema(
   {
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // Which class/course this question is for — without this a teacher could only ever see every
+    // question institution-wide, with no way to tell which of their own classes (if any) it was
+    // actually about.
+    course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
     subject: { type: String, default: '' },
     question: { type: String, required: true },
     answer: { type: String, default: '' },

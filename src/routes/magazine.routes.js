@@ -7,6 +7,7 @@ router.use(protect);
 
 router.post('/', requireRole('student'), ctrl.submit);
 router.get('/mine', requireRole('student'), ctrl.mySubmissions);
+router.patch('/:id/resubmit', requireRole('student'), ctrl.resubmit);
 
 router.get('/institution', requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner'), ctrl.institutionSubmissions);
 router.patch('/:id/review', requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner'), ctrl.review);

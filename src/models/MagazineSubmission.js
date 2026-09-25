@@ -10,7 +10,7 @@ const magazineSubmissionSchema = new mongoose.Schema(
     type: { type: String, enum: ['article', 'poetry', 'artwork', 'story', 'other'], default: 'other' },
     content: { type: String, required: true },
     imageUrl: { type: String, default: '' },
-    status: { type: String, enum: ['submitted', 'selected', 'rejected', 'published'], default: 'submitted' },
+    status: { type: String, enum: ['submitted', 'changes_requested', 'selected', 'rejected', 'published'], default: 'submitted' },
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     editorNotes: { type: String, default: '' }
   },

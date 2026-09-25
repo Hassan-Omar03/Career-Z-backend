@@ -5,6 +5,9 @@ const pollSchema = new mongoose.Schema(
   {
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
+    // A course-scoped poll only reaches/accepts votes from students actively enrolled in that
+    // course (see poll.controller.js). null = institution-wide poll (institution owner/staff only).
+    course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
     question: { type: String, required: true },
     options: [
