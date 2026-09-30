@@ -1,4 +1,5 @@
 const QRCode = require('qrcode');
+const crypto = require('crypto');
 const TeacherProfile = require('../models/TeacherProfile');
 const Course = require('../models/Course');
 const Attendance = require('../models/Attendance');
@@ -12,6 +13,10 @@ const Submission = require('../models/Submission');
 const Enrollment = require('../models/Enrollment');
 const StudentProfile = require('../models/StudentProfile');
 const Exam = require('../models/Exam');
+const Result = require('../models/Result');
+const ClassEngagementRecord = require('../models/ClassEngagementRecord');
+const Certificate = require('../models/Certificate');
+const StudentGoal = require('../models/StudentGoal');
 const Notification = require('../models/Notification');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
@@ -19,6 +24,8 @@ const { ok } = require('../utils/apiResponse');
 const { notify, notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
 const { getBlockingInstitutionFee, assertInstitutionFeeAccess } = require('../utils/feeAccess');
 const { recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
+const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
+const env = require('../config/env');
 
 const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -345,6 +352,29 @@ const getMyPayslips = asyncHandler(async (req, res) => {
   return ok(res, payslips);
 });
 
+// PATCH /api/teachers/me/payslips/:id/verify-payment
+// A manual salary report becomes paid only after the teacher (the receiver) confirms receipt.
+const verifyMyPayslipPayment = asyncHandler(async (req, res) => {
+  const payslip = await Payslip.findOne({ _id: req.params.id, staff: req.user._id });
+  if (!payslip) throw new AppError('Payslip not found.', 404);
+  if (payslip.status !== 'processing') throw new AppError('No manual salary payment is awaiting your verification.', 409);
+  const { decision, rejectionReason } = req.body;
+  if (decision === 'reject') {
+    if (!String(rejectionReason || '').trim()) throw new AppError('A rejection reason is required.', 422);
+    payslip.status = 'pending';
+    payslip.paymentRejectedAt = new Date();
+    payslip.paymentRejectionReason = String(rejectionReason).trim();
+    await payslip.save();
+    return ok(res, payslip, 'Salary payment report rejected.');
+  }
+  if (decision !== 'verify') throw new AppError('decision must be verify or reject.', 422);
+  payslip.status = 'paid'; payslip.paidAt = new Date();
+  payslip.paymentVerifiedAt = new Date(); payslip.paymentVerifiedBy = req.user._id;
+  payslip.transactionId = payslip.paymentReference || `SAL-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  await payslip.save();
+  return ok(res, payslip, 'Salary receipt verified.');
+});
+
 // GET /api/teachers/me/dashboard — the Teacher home page's single aggregation call: today's
 // classes, today's attendance summary, pending-vs-submitted assignments, upcoming exams,
 // salary summary (this teacher's own payslips only) and a recent-notifications preview.
@@ -419,9 +449,103 @@ const getMyDashboard = asyncHandler(async (req, res) => {
   });
 });
 
+// GET /api/teachers/students/:studentId/timeline — one consolidated academic view of a student,
+// scoped strictly to the courses THIS teacher actually teaches that student in (never another
+// teacher's course, never the student's private personal goals from other institutions).
+const getStudentTimeline = asyncHandler(async (req, res) => {
+  const { studentId } = req.params;
+  const myCourseIds = await Course.find({ teacher: req.user._id }).distinct('_id');
+  const enrollments = await Enrollment.find({ student: studentId, course: { $in: myCourseIds } }).populate('course', 'title subject');
+  if (enrollments.length === 0) throw new AppError('This student is not enrolled in any course you teach.', 403);
+  const courseIds = enrollments.map((e) => e.course._id);
+
+  const student = await User.findById(studentId).select('fullName profilePhoto email');
+  if (!student) throw new AppError('Student not found.', 404);
+
+  const [results, submissions, attendanceRecords, certificates, completedGoals] = await Promise.all([
+    Result.find({ student: studentId, course: { $in: courseIds } }).sort({ createdAt: -1 }),
+    Submission.find({ student: studentId }).populate({ path: 'assignment', match: { course: { $in: courseIds } }, select: 'title course' }).sort({ createdAt: -1 }),
+    Attendance.find({ course: { $in: courseIds }, 'records.student': studentId }).select('course date records'),
+    Certificate.find({ student: studentId, course: { $in: courseIds } }).sort({ issueDate: -1 }),
+    // Only goals the student has already chosen to make visible on their achievement timeline —
+    // a teacher never sees a student's still-private/abandoned personal goals.
+    StudentGoal.find({ student: studentId, status: 'completed' }).select('title category updatedAt')
+  ]);
+
+  const mySubmissions = submissions.filter((s) => s.assignment);
+
+  let present = 0, total = 0;
+  attendanceRecords.forEach((a) => a.records.forEach((r) => {
+    if (r.student.toString() === studentId) { total += 1; if (r.status === 'present') present += 1; }
+  }));
+
+  const timeline = [
+    ...results.map((r) => ({ type: 'Result', title: `${r.subject || r.term || 'Test'} — ${r.marksObtained}/${r.totalMarks}`, date: r.createdAt })),
+    ...mySubmissions.map((s) => ({ type: s.status === 'graded' ? 'Assignment Graded' : 'Assignment Submitted', title: s.assignment.title, desc: s.marksObtained != null ? `${s.marksObtained} marks` : '', date: s.submittedAt })),
+    ...certificates.map((c) => ({ type: 'Certificate Earned', title: c.title, date: c.issueDate })),
+    ...completedGoals.map((g) => ({ type: 'Goal Achieved', title: g.title, date: g.updatedAt }))
+  ].sort((a, b) => new Date(b.date) - new Date(a.date));
+
+  return ok(res, {
+    student,
+    courses: enrollments.map((e) => ({ course: e.course, progressPercent: e.progressPercent, overallScore: e.overallScore, completionStatus: e.completionStatus })),
+    attendance: { present, total, percent: total > 0 ? Math.round((present / total) * 100) : null },
+    timeline
+  });
+});
+
+// GET /api/teachers/me/payout-status — refreshes payoutsEnabled/detailsSubmitted straight from
+// Stripe (a teacher can finish/redo onboarding outside our app, e.g. re-verifying a bank account).
+const getMyPayoutStatus = asyncHandler(async (req, res) => {
+  const profile = await TeacherProfile.findOne({ user: req.user._id });
+  if (!profile?.payout?.stripeAccountId) return ok(res, { connected: false, payoutsEnabled: false });
+  if (isStripeConfigured()) {
+    try {
+      const account = await getStripeClient().accounts.retrieve(profile.payout.stripeAccountId);
+      profile.payout.payoutsEnabled = Boolean(account.payouts_enabled);
+      profile.payout.detailsSubmitted = Boolean(account.details_submitted);
+      await profile.save();
+    } catch { /* stale/local account id — surface whatever we have on file */ }
+  }
+  return ok(res, { connected: true, payoutsEnabled: profile.payout.payoutsEnabled, detailsSubmitted: profile.payout.detailsSubmitted });
+});
+
+// POST /api/teachers/me/payout-onboarding — creates (if needed) a Stripe Connect Express account
+// for this teacher and returns a Stripe-hosted onboarding link. Bank details are entered directly
+// on Stripe's own page and never touch our server.
+const startPayoutOnboarding = asyncHandler(async (req, res) => {
+  if (!isStripeConfigured()) throw new AppError('Real bank transfer is not available — Stripe is not configured on this platform yet.', 503);
+  const stripe = getStripeClient();
+  let profile = await TeacherProfile.findOne({ user: req.user._id });
+  if (!profile) profile = await TeacherProfile.create({ user: req.user._id });
+
+  if (!profile.payout?.stripeAccountId) {
+    const account = await stripe.accounts.create({ type: 'express', email: req.user.email, capabilities: { transfers: { requested: true } } });
+    profile.payout = { stripeAccountId: account.id, payoutsEnabled: false, detailsSubmitted: false };
+    await profile.save();
+  }
+
+  const base = env.clientUrl.split(',')[0].trim().replace(/\/+$/, '');
+  const link = await stripe.accountLinks.create({
+    account: profile.payout.stripeAccountId,
+    refresh_url: `${base}/dashboard?payoutRefresh=1`,
+    return_url: `${base}/dashboard?payoutComplete=1`,
+    type: 'account_onboarding'
+  });
+  return ok(res, { url: link.url });
+});
+
+// GET /api/teachers/me/engagement-history — real, persisted Class Energy Meter + poll outcomes
+// from this teacher's own past live classes (spec: "historical engagement analytics").
+const getMyEngagementHistory = asyncHandler(async (req, res) => {
+  const records = await ClassEngagementRecord.find({ teacher: req.user._id }).populate('course', 'title').sort({ createdAt: -1 }).limit(100);
+  return ok(res, records);
+});
+
 module.exports = {
   getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByFace, listAttendance, getMyTimetable,
   createQrSession, getQrSession, setAttendanceLocation,
   listFaceCheckInRequests, reviewFaceCheckInRequest,
-  checkInMyAttendance, getMySelfAttendance, getMyPayslips, getMyDashboard
+  checkInMyAttendance, getMySelfAttendance, getMyPayslips, verifyMyPayslipPayment, getMyDashboard,
+  getStudentTimeline, getMyPayoutStatus, startPayoutOnboarding, getMyEngagementHistory
 };

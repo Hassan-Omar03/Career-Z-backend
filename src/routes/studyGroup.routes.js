@@ -33,6 +33,7 @@ router.post('/:id/tasks', ctrl.addTask);
 router.patch('/:id/tasks/:taskId', ctrl.updateTask);
 router.post('/:id/resources', ctrl.addResource);
 router.patch('/:id/submission', ctrl.submitAssignment);
+router.patch('/:id/submission/review', TEACHER, ctrl.reviewSubmission);
 router.patch('/:id/contribution', ctrl.setContribution);
 router.patch('/:id/marks', TEACHER, ctrl.setMarks);
 

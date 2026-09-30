@@ -90,6 +90,22 @@ const review = asyncHandler(async (req, res) => {
   return ok(res, submission, `Submission ${status}.`);
 });
 
+const editByReviewer = asyncHandler(async (req, res) => {
+  const submission = await MagazineSubmission.findById(req.params.id);
+  if (!submission) throw new AppError('Submission not found.', 404);
+  await assertInstitutionStaffOrOwner(submission.institution, req.user._id);
+  if (submission.status === 'published') throw new AppError('Published content is locked.', 409);
+  const { title, content, type } = req.body;
+  if (!title?.trim() || !content?.trim()) throw new AppError('title and content are required.', 422);
+  submission.title = title.trim(); submission.content = content.trim();
+  if (type) submission.type = type;
+  submission.editorNotes = `Edited by reviewer${req.body.editorNotes ? `: ${req.body.editorNotes}` : ''}`;
+  submission.reviewedBy = req.user._id;
+  await submission.save();
+  await notify(submission.student, { title: 'An editor updated your magazine submission', body: submission.title, sentBy: req.user._id }).catch(() => {});
+  return ok(res, submission, 'Magazine submission updated.');
+});
+
 // PATCH /api/magazine/:id/resubmit (student, own submission, only while changes were requested)
 const resubmit = asyncHandler(async (req, res) => {
   const { title, type, content, imageUrl } = req.body;
@@ -153,4 +169,4 @@ const published = asyncHandler(async (req, res) => {
   return ok(res, list);
 });
 
-module.exports = { submit, mySubmissions, institutionSubmissions, review, resubmit, publish, published };
+module.exports = { submit, mySubmissions, institutionSubmissions, review, editByReviewer, resubmit, publish, published };

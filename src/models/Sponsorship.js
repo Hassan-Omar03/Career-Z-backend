@@ -10,6 +10,13 @@ const sponsorshipSchema = new mongoose.Schema(
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     amount: { type: Number, default: 0 }, // total committed amount
     paidAmount: { type: Number, default: 0 }, // donor-confirmed payments made so far (no real payment processor)
+    paymentHistory: [{
+      amount: { type: Number, required: true },
+      paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'cash', 'other'], required: true },
+      reference: { type: String, required: true }, proofUrl: { type: String, default: '' }, provider: { type: String, default: '' },
+      status: { type: String, enum: ['pending', 'verified', 'rejected'], default: 'pending' },
+      reportedAt: { type: Date, default: Date.now }, verifiedAt: Date, rejectedAt: Date, rejectionReason: String
+    }],
     nextPaymentDate: { type: Date, default: null },
     currency: { type: String, default: 'USD' },
     // pending: approved, funds not yet disbursed -> active: disbursed, ongoing -> paused: temporarily

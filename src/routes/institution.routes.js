@@ -68,6 +68,8 @@ router.get('/:id/certificates', certificateCtrl.listInstitutionCertificates);
 
 router.get('/:id/teachers', ctrl.listInstitutionTeachers);
 router.get('/:id/students', ctrl.listInstitutionStudents);
+router.get('/:id/membership-requests', ctrl.listMembershipRequests);
+router.patch('/:id/membership-requests/:membershipId', ctrl.reviewMembershipRequest);
 router.patch('/students/:profileId/status', ctrl.updateStudentStatus);
 router.get('/:id/attendance', ctrl.listInstitutionAttendance);
 
@@ -78,6 +80,8 @@ router.get('/:id/feedback/summary', ctrl.getInstitutionFeedbackSummary);
 
 router.post('/:id/payroll', ctrl.createPayslip);
 router.get('/:id/payroll', ctrl.listInstitutionPayroll);
+router.post('/:id/payroll/generate-monthly', ctrl.generateMonthlyPayroll);
+router.get('/:id/payroll-tax-report', ctrl.getPayrollTaxReport);
 router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);
 
 router.get('/:id/reports', ctrl.getInstitutionReports);

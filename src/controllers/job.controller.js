@@ -712,11 +712,13 @@ async function loadFeaturableJob(jobId, userId) {
 // createFeaturedJobCheckout) — a self-service "trust me I paid" button was exactly the gap that
 // let anyone activate a paid placement without a verified charge.
 const featureJob = asyncHandler(async (req, res) => {
-  const { paymentMethod } = req.body;
+  const { paymentMethod, reference, proofUrl } = req.body;
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
     throw new AppError('A valid paymentMethod is required (bank_transfer, mobile_wallet, cash or other).', 422);
   }
   if (paymentMethod === 'paddle') throw new AppError('Use the Paddle checkout endpoint for card payments.', 422);
+  if (!String(reference || '').trim()) throw new AppError('External payment reference or cash receipt number is required.', 422);
+  if (paymentMethod !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required.', 422);
 
   const { job, fee, days } = await loadFeaturableJob(req.params.id, req.user._id);
   const expiresAt = new Date(Date.now() + days * 24 * 60 * 60 * 1000);
@@ -725,7 +727,8 @@ const featureJob = asyncHandler(async (req, res) => {
   const FeaturedListing = require('../models/FeaturedListing');
   await FeaturedListing.create({
     listingType: 'job', job: job._id, purchasedBy: job.postedBy, amount: fee, currency: 'USD',
-    paymentMethod, transactionId, status: 'paid', expiresAt
+    paymentMethod, transactionId, paymentReference: String(reference).trim(), paymentProofUrl: String(proofUrl || '').trim(),
+    verifiedBy: req.user._id, verifiedAt: new Date(), status: 'paid', expiresAt
   });
 
   job.featured = true;

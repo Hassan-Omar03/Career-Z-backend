@@ -95,7 +95,7 @@ test('a student with a blocking due fee cannot join', async () => {
   const blockedSocket = await connect(feeBlockedStudent);
   const join = await emitAck(blockedSocket, 'class:join', { sessionId: started.session.id });
   assert.equal(join.ok, false);
-  assert.match(join.message, /fee/i);
+  assert.match(join.message, /unpaid|access is locked|due payment/i);
 
   teacherSocket.close(); blockedSocket.close();
 });

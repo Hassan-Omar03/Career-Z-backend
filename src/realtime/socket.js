@@ -7,7 +7,8 @@ const Enrollment = require('../models/Enrollment');
 const TimetableEntry = require('../models/TimetableEntry');
 const LiveClassSession = require('../models/LiveClassSession');
 const StudyGroup = require('../models/StudyGroup');
-const { getBlockingInstitutionFee } = require('../utils/feeAccess');
+const ClassEngagementRecord = require('../models/ClassEngagementRecord');
+const { assertFeeAccessForCapability } = require('../utils/feeAccess');
 const crypto = require('crypto');
 
 let io = null;
@@ -15,6 +16,8 @@ let io = null;
 // this map only represents the currently-running teaching session and is discarded on restart.
 const liveClasses = new Map();
 const videoRoomMembers = new Map();
+const liveVideoPolls = new Map();
+const liveVideoEnergy = new Map();
 
 function publicSession(session) {
   return {
@@ -25,6 +28,29 @@ function publicSession(session) {
   };
 }
 
+// Persists this session's Class Energy Meter + poll outcome once it ends — the live in-memory
+// session stays ephemeral (see module comment), but its engagement summary becomes real history
+// a teacher/institution can review later (spec: "historical engagement analytics").
+async function persistEngagementRecord(session) {
+  if (!session.participants || session.participants.size <= 1) return; // teacher-only, nothing happened
+  try {
+    const course = await Course.findById(session.courseId).select('institution');
+    const rows = Array.from(session.energy.values());
+    await ClassEngagementRecord.create({
+      institution: course?.institution || null,
+      course: session.courseId,
+      teacher: session.teacherId,
+      startedAt: session.startedAt,
+      endedAt: new Date(),
+      participantCount: session.participants.size - 1,
+      averageEnergy: rows.length ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length) : null,
+      attentiveCount: rows.filter((r) => r.attentive).length,
+      roster: rows.map((r) => ({ student: r.userId, name: r.name, attentive: r.attentive, score: r.score })),
+      poll: session.poll ? { question: session.poll.question, options: session.poll.options.map((o) => ({ text: o.text, votes: o.votes })) } : undefined
+    });
+  } catch { /* best-effort — never blocks the class from actually ending */ }
+}
+
 // Same rule as the notification fix in course.controller.js: a student whose enrollment already
 // flipped to 'completed' (via the weighted completion engine) is still a real, current member of
 // the course — e.g. attending a live revision session after finishing — and must not be treated
@@ -32,7 +58,10 @@ function publicSession(session) {
 async function authorizeStudent(userId, course) {
   const enrollment = await Enrollment.findOne({ student: userId, course: course._id, status: { $ne: 'dropped' } });
   if (!enrollment) throw new Error('You are not enrolled in this course.');
-  if (course.institution && await getBlockingInstitutionFee(userId, course.institution)) throw new Error('A due fee is blocking live-class access.');
+  if (course.institution) {
+    try { await assertFeeAccessForCapability(userId, course.institution, 'live_classes'); }
+    catch (err) { throw new Error(err.message || 'A due fee is blocking live-class access.'); }
+  }
 }
 
 // Simple fixed-window rate limit — a live class is a handful of humans typing, not a firehose;
@@ -83,6 +112,19 @@ function initSocket(httpServer) {
     socket.data.liveSessionIds = new Set();
     socket.data.videoSessionIds = new Set();
 
+    // A message sent while this user was offline gets its "delivered" mark now, the moment they
+    // actually come online — and the original sender is told live, without needing to reload.
+    (async () => {
+      const Message = require('../models/Message');
+      const now = new Date();
+      const undelivered = await Message.find({ to: socket.data.userId, deliveredAt: null }).select('_id from');
+      if (undelivered.length === 0) return;
+      await Message.updateMany({ _id: { $in: undelivered.map((m) => m._id) } }, { $set: { deliveredAt: now } });
+      const bySender = new Map();
+      undelivered.forEach((m) => bySender.set(m.from.toString(), (bySender.get(m.from.toString()) || 0) + 1));
+      bySender.forEach((count, senderId) => io.to(`user:${senderId}`).emit('message:delivered', { to: socket.data.userId, at: now, count }));
+    })().catch(() => {});
+
     socket.on('live-video:join', async ({ sessionId } = {}, reply = () => {}) => {
       try {
         const session = await LiveClassSession.findById(sessionId).populate('teacher', 'fullName');
@@ -100,7 +142,7 @@ function initSocket(httpServer) {
         members.set(socket.data.userId, member); videoRoomMembers.set(sessionId, members);
         socket.join(room); socket.data.videoSessionIds.add(sessionId);
         socket.to(room).emit('live-video:participant-joined', member);
-        reply({ ok: true, participants: existing, self: member });
+        reply({ ok: true, participants: existing, self: member, poll: liveVideoPolls.get(sessionId) || null });
       } catch (error) { reply({ ok: false, message: error.message }); }
     });
 
@@ -130,11 +172,50 @@ function initSocket(httpServer) {
       io.to(`live-video:${sessionId}`).emit('live-video:hand', { ...member, raised: Boolean(raised) }); reply({ ok: true });
     });
 
+    socket.on('live-video:energy-report', ({ sessionId, attentive, score } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId); const member = members?.get(socket.data.userId);
+      if (!member || member.role === 'teacher') return reply({ ok: false, message: 'Student energy report rejected.' });
+      const readings = liveVideoEnergy.get(sessionId) || new Map();
+      readings.set(socket.data.userId, { userId: socket.data.userId, name: member.name, attentive: Boolean(attentive), score: Math.max(0, Math.min(100, Number(score) || 0)), at: new Date().toISOString() });
+      liveVideoEnergy.set(sessionId, readings);
+      const roster = Array.from(readings.values()); const average = roster.length ? Math.round(roster.reduce((sum, row) => sum + row.score, 0) / roster.length) : 0;
+      io.to(`live-video:${sessionId}`).emit('live-video:energy', { sessionId, average, attentiveCount: roster.filter((row) => row.attentive).length, total: roster.length });
+      const teacher = Array.from(members.values()).find((row) => row.role === 'teacher');
+      if (teacher) io.to(`user:${teacher.userId}`).emit('live-video:energy-detail', { sessionId, average, attentiveCount: roster.filter((row) => row.attentive).length, total: roster.length, roster });
+      reply({ ok: true });
+    });
+
+    socket.on('live-video:poll-create', ({ sessionId, question, options } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId); const member = members?.get(socket.data.userId);
+      if (!member || member.role !== 'teacher') return reply({ ok: false, message: 'Only the class teacher can create a poll.' });
+      const cleanQuestion = String(question || '').trim().slice(0, 300);
+      const cleanOptions = Array.isArray(options) ? options.map((option) => String(option || '').trim().slice(0, 120)).filter(Boolean).slice(0, 6) : [];
+      if (!cleanQuestion || cleanOptions.length < 2) return reply({ ok: false, message: 'A question and at least two options are required.' });
+      const poll = { id: crypto.randomUUID(), question: cleanQuestion, options: cleanOptions.map((text, index) => ({ index, text, votes: 0 })), voters: {}, status: 'open' };
+      liveVideoPolls.set(sessionId, poll); io.to(`live-video:${sessionId}`).emit('live-video:poll', poll); reply({ ok: true, poll });
+    });
+
+    socket.on('live-video:poll-vote', ({ sessionId, optionIndex } = {}, reply = () => {}) => {
+      const members = videoRoomMembers.get(sessionId); const poll = liveVideoPolls.get(sessionId);
+      if (!members?.has(socket.data.userId) || !poll || poll.status !== 'open') return reply({ ok: false, message: 'No open poll is available.' });
+      const index = Number(optionIndex); if (!poll.options[index]) return reply({ ok: false, message: 'Invalid poll option.' });
+      const previous = poll.voters[socket.data.userId]; if (previous !== undefined) poll.options[previous].votes -= 1;
+      poll.voters[socket.data.userId] = index; poll.options[index].votes += 1;
+      io.to(`live-video:${sessionId}`).emit('live-video:poll', poll); reply({ ok: true });
+    });
+
+    socket.on('live-video:poll-close', ({ sessionId } = {}, reply = () => {}) => {
+      const member = videoRoomMembers.get(sessionId)?.get(socket.data.userId); const poll = liveVideoPolls.get(sessionId);
+      if (!member || member.role !== 'teacher' || !poll) return reply({ ok: false, message: 'Only the class teacher can close this poll.' });
+      poll.status = 'closed'; io.to(`live-video:${sessionId}`).emit('live-video:poll', poll); reply({ ok: true });
+    });
+
     socket.on('live-video:leave', ({ sessionId } = {}, reply = () => {}) => {
       const members = videoRoomMembers.get(sessionId);
       const member = members?.get(socket.data.userId);
       members?.delete(socket.data.userId);
-      if (members?.size === 0) videoRoomMembers.delete(sessionId);
+      liveVideoEnergy.get(sessionId)?.delete(socket.data.userId);
+      if (members?.size === 0) { videoRoomMembers.delete(sessionId); liveVideoPolls.delete(sessionId); liveVideoEnergy.delete(sessionId); }
       socket.leave(`live-video:${sessionId}`); socket.data.videoSessionIds.delete(sessionId);
       if (member) socket.to(`live-video:${sessionId}`).emit('live-video:participant-left', member);
       reply({ ok: true });
@@ -162,6 +243,25 @@ function initSocket(httpServer) {
       reply({ ok: true });
     });
 
+    // Group conversations (messaging spec) — same durable-message-plus-live-push pattern as
+    // Study Groups above.
+    socket.on('group:join', async ({ groupId } = {}, reply = () => {}) => {
+      try {
+        const GroupConversation = require('../models/GroupConversation');
+        const group = await GroupConversation.findById(groupId).select('participants');
+        if (!group || !group.participants.some((p) => p.toString() === socket.data.userId)) {
+          throw new Error('You are not a member of this group.');
+        }
+        socket.join(`group:${groupId}`);
+        reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    socket.on('group:leave', ({ groupId } = {}, reply = () => {}) => {
+      socket.leave(`group:${groupId}`);
+      reply({ ok: true });
+    });
+
     socket.on('class:start', async (payload = {}, reply = () => {}) => {
       try {
         const course = await Course.findById(payload.courseId).populate('teacher', 'fullName');
@@ -170,6 +270,7 @@ function initSocket(httpServer) {
         for (const existing of liveClasses.values()) {
           if (existing.teacherId === socket.data.userId) {
             io.to(`class:${existing.id}`).emit('class:ended', { sessionId: existing.id });
+            persistEngagementRecord(existing);
             liveClasses.delete(existing.id);
           }
         }
@@ -184,7 +285,11 @@ function initSocket(httpServer) {
             imageUrl: /^https:\/\//i.test(slide.imageUrl || slide.image || '') ? (slide.imageUrl || slide.image) : ''
           })),
           currentSlide: 0, meetingLink: timetable?.meetingLink || '', startedAt: new Date(), messages: [],
-          participants: new Map(), raisedHands: new Map()
+          participants: new Map(), raisedHands: new Map(),
+          // Class Energy Meter (spec #17) — each online student's own locally-computed attention
+          // reading (never another student's, only the teacher/institution see the roster).
+          energy: new Map(),
+          poll: null
         };
         liveClasses.set(session.id, session);
         socket.join(`class:${session.id}`); socket.data.liveSessionIds.add(session.id);
@@ -232,6 +337,7 @@ function initSocket(httpServer) {
       if (session && socket.data.liveSessionIds.has(sessionId)) {
         session.participants.delete(socket.data.userId);
         session.raisedHands.delete(socket.data.userId);
+        session.energy.delete(socket.data.userId);
         io.to(`class:${session.id}`).emit('class:participant', { userId: socket.data.userId, joined: false });
       }
       socket.leave(`class:${sessionId}`);
@@ -275,10 +381,98 @@ function initSocket(httpServer) {
       } catch (error) { reply({ ok: false, message: error.message }); }
     });
 
+    // Class Energy Meter (spec #17) — a student's browser runs its own lightweight face-presence
+    // check and reports only a boolean "attentive" reading + score; the server never receives
+    // video/images, just the derived reading. Aggregate goes to the whole room (so a student's own
+    // tile updates), but the per-student roster is only ever pushed to the teacher (and, via
+    // institution:energy:subscribe, an institution owner/staff member watching that class) —
+    // never broadcast to other students, matching the spec's visibility rule.
+    socket.on('class:energy:report', async ({ sessionId, attentive, score } = {}, reply = () => {}) => {
+      try {
+        const session = liveClasses.get(sessionId);
+        if (!session || !socket.data.liveSessionIds.has(sessionId) || session.teacherId === socket.data.userId) throw new Error('Student energy report rejected.');
+        const user = await User.findById(socket.data.userId).select('fullName');
+        session.energy.set(socket.data.userId, { userId: socket.data.userId, name: user?.fullName || 'Student', attentive: Boolean(attentive), score: Math.max(0, Math.min(100, Number(score) || 0)), at: new Date().toISOString() });
+        const rows = Array.from(session.energy.values());
+        const avg = rows.length ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length) : 0;
+        const attentiveCount = rows.filter((r) => r.attentive).length;
+        io.to(`class:${session.id}`).emit('class:energy', { sessionId, average: avg, attentiveCount, total: rows.length });
+        io.to(`user:${session.teacherId}`).emit('class:energy:detail', { sessionId, average: avg, attentiveCount, total: rows.length, roster: rows });
+        reply({ ok: true });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
+    // The concrete "action a teacher can take" on a distracted reading from the Energy Meter — a
+    // gentle, visible nudge straight to that one student (never broadcast to the room, so it
+    // doesn't call the student out in front of the class).
+    socket.on('class:energy:nudge', ({ sessionId, studentId } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || session.teacherId !== socket.data.userId) return reply({ ok: false, message: 'Only the teacher can nudge a student.' });
+      if (!session.participants.has(studentId)) return reply({ ok: false, message: 'That student is not currently in the class.' });
+      io.to(`user:${studentId}`).emit('class:energy:nudged', { sessionId, teacherName: session.teacherName });
+      reply({ ok: true });
+    });
+
+    // Live in-class poll — ephemeral like the class session itself (mirrors live-video:poll),
+    // separate from the async /polls module which is for take-home/between-class questions.
+    socket.on('class:poll:start', ({ sessionId, question, options } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || session.teacherId !== socket.data.userId) return reply({ ok: false, message: 'Only the teacher can start a poll.' });
+      const cleanQuestion = String(question || '').trim().slice(0, 300);
+      const cleanOptions = (Array.isArray(options) ? options : []).map((o) => String(o || '').trim().slice(0, 120)).filter(Boolean).slice(0, 6);
+      if (!cleanQuestion || cleanOptions.length < 2) return reply({ ok: false, message: 'A poll needs a question and at least 2 options.' });
+      session.poll = { id: crypto.randomUUID(), question: cleanQuestion, options: cleanOptions.map((text, index) => ({ index, text, votes: 0 })), voters: {}, status: 'open' };
+      io.to(`class:${session.id}`).emit('class:poll', session.poll);
+      reply({ ok: true, poll: session.poll });
+    });
+
+    socket.on('class:poll:vote', ({ sessionId, optionIndex } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || !socket.data.liveSessionIds.has(sessionId) || !session.poll || session.poll.status !== 'open') return reply({ ok: false, message: 'No open poll right now.' });
+      const index = Number(optionIndex);
+      if (!session.poll.options[index]) return reply({ ok: false, message: 'Invalid poll option.' });
+      const previous = session.poll.voters[socket.data.userId];
+      if (previous !== undefined) session.poll.options[previous].votes -= 1;
+      session.poll.voters[socket.data.userId] = index;
+      session.poll.options[index].votes += 1;
+      io.to(`class:${session.id}`).emit('class:poll', session.poll);
+      reply({ ok: true });
+    });
+
+    socket.on('class:poll:close', ({ sessionId } = {}, reply = () => {}) => {
+      const session = liveClasses.get(sessionId);
+      if (!session || session.teacherId !== socket.data.userId || !session.poll) return reply({ ok: false, message: 'Only the teacher can close this poll.' });
+      session.poll.status = 'closed';
+      io.to(`class:${session.id}`).emit('class:poll', session.poll);
+      reply({ ok: true });
+    });
+
+    // Institution owner/staff watching a class live (spec #17 allows institution visibility) —
+    // read-only: joins the room to receive class:energy/class:poll/class:slide broadcasts, but
+    // is never added to `participants` and can never call class:control/class:message.
+    socket.on('institution:class:watch', async ({ sessionId } = {}, reply = () => {}) => {
+      try {
+        const session = liveClasses.get(sessionId);
+        if (!session) throw new Error('This live class has ended.');
+        const course = await Course.findById(session.courseId);
+        if (!course?.institution) throw new Error('This class is not linked to an institution.');
+        const Institution = require('../models/Institution');
+        const institution = await Institution.findById(course.institution);
+        const isOwner = institution?.owner?.toString() === socket.data.userId;
+        const isStaff = institution?.staff?.some((s) => s.user.toString() === socket.data.userId);
+        if (!isOwner && !isStaff) throw new Error('You are not part of this institution.');
+        socket.join(`class:${session.id}`);
+        reply({ ok: true, session: { ...publicSession(session), slides: session.slides } });
+      } catch (error) { reply({ ok: false, message: error.message }); }
+    });
+
     socket.on('class:end', ({ sessionId } = {}, reply = () => {}) => {
       const session = liveClasses.get(sessionId);
       if (!session || session.teacherId !== socket.data.userId) return reply({ ok: false, message: 'Only the teacher can end this class.' });
-      io.to(`class:${session.id}`).emit('class:ended', { sessionId }); liveClasses.delete(session.id); reply({ ok: true });
+      io.to(`class:${session.id}`).emit('class:ended', { sessionId });
+      persistEngagementRecord(session);
+      liveClasses.delete(session.id);
+      reply({ ok: true });
     });
 
     socket.on('disconnect', () => {
@@ -290,13 +484,14 @@ function initSocket(httpServer) {
         if (!session) continue;
         session.participants.delete(socket.data.userId);
         session.raisedHands.delete(socket.data.userId);
+        session.energy.delete(socket.data.userId);
         io.to(`class:${session.id}`).emit('class:participant', { userId: socket.data.userId, joined: false });
       }
       for (const sessionId of socket.data.videoSessionIds) {
         const members = videoRoomMembers.get(sessionId);
         const member = members?.get(socket.data.userId);
         members?.delete(socket.data.userId);
-        if (members?.size === 0) videoRoomMembers.delete(sessionId);
+        if (members?.size === 0) { videoRoomMembers.delete(sessionId); liveVideoPolls.delete(sessionId); liveVideoEnergy.delete(sessionId); }
         if (member) socket.to(`live-video:${sessionId}`).emit('live-video:participant-left', member);
       }
     });
@@ -319,4 +514,17 @@ function broadcastStudyGroupPost(groupId, post) {
   if (io && groupId) io.to(`study-group:${groupId}`).emit('study-group:message', post);
 }
 
-module.exports = { initSocket, emitToUser, emitToLiveVideoRoom, broadcastStudyGroupPost };
+// Push a freshly-sent group message to every online participant.
+function broadcastGroupMessage(groupId, message) {
+  if (io && groupId) io.to(`group:${groupId}`).emit('group:message', message);
+}
+
+// Whether a user currently has at least one open tab connected — used as the "delivered" signal
+// for a message sent to them (they had a live connection the instant it was sent).
+function isUserOnline(userId) {
+  if (!io || !userId) return false;
+  const room = io.sockets.adapter.rooms.get(`user:${userId}`);
+  return Boolean(room && room.size > 0);
+}
+
+module.exports = { initSocket, emitToUser, emitToLiveVideoRoom, broadcastStudyGroupPost, isUserOnline, broadcastGroupMessage };

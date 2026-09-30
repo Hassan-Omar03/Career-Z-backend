@@ -17,7 +17,7 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { maintenanceGate } = require('./middleware/maintenance');
 const { metricsMiddleware } = require('./services/platformMetrics');
 const { emergencyControls } = require('./middleware/emergencyControls');
-const { handleStripeWebhook, handlePaddleWebhook } = require('./controllers/webhook.controller');
+const { handleStripeWebhook, handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
 
@@ -64,6 +64,18 @@ app.post('/api/webhooks/paddle', express.raw({ type: 'application/json' }), asyn
 // and profile photos now arrive as base64 data URIs in this same JSON body (no S3/Cloudinary is
 // connected), which inflates a file's raw size by ~33% — raised to comfortably fit a few-MB PDF.
 app.use(express.json({ limit: '6mb' }));
+
+// NOWPayments' IPN signature is computed over the PARSED body's keys re-sorted alphabetically
+// (their own documented rule), not the raw bytes — so unlike Stripe/Paddle above, this can safely
+// sit after express.json() instead of needing express.raw().
+app.post('/api/webhooks/nowpayments', async (req, res, next) => {
+  try {
+    await connectDB();
+    await handleNowPaymentsWebhook(req, res);
+  } catch (err) {
+    next(err);
+  }
+});
 app.use(express.urlencoded({ extended: true }));
 app.use(cookieParser());
 app.use(morgan(env.nodeEnv === 'development' ? 'dev' : 'combined'));

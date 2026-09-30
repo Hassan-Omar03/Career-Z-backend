@@ -12,6 +12,7 @@ const walletTransactionSchema = new mongoose.Schema(
     counterparty: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // for transfers
     note: { type: String, default: '' },
     paddleTransactionId: { type: String, default: null },
+    nowPaymentsId: { type: String, default: null },
     payoutMethod: { type: String, default: '' },
     payoutDetails: { type: String, default: '' },
     processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
@@ -24,6 +25,10 @@ const walletTransactionSchema = new mongoose.Schema(
 walletTransactionSchema.index({ paddleTransactionId: 1 }, {
   unique: true,
   partialFilterExpression: { paddleTransactionId: { $type: 'string' } }
+});
+walletTransactionSchema.index({ nowPaymentsId: 1 }, {
+  unique: true,
+  partialFilterExpression: { nowPaymentsId: { $type: 'string' } }
 });
 
 module.exports = mongoose.model('WalletTransaction', walletTransactionSchema);

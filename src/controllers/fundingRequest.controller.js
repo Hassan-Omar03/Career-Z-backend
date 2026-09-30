@@ -143,12 +143,15 @@ const donate = asyncHandler(async (req, res) => {
     throw new AppError('Only Super Admin-verified requests can receive donations.', 403);
   }
 
-  const { amount, type, paymentMethod } = req.body;
+  const { amount, type, paymentMethod, reference, proofUrl, provider, paidOn } = req.body;
   if (!amount || amount <= 0) throw new AppError('amount must be a positive number.', 422);
   if (type && !['donation', 'sponsorship'].includes(type)) throw new AppError('Invalid donation type.', 422);
   if (paymentMethod && !['bank_transfer', 'card', 'mobile_wallet', 'cash', 'other'].includes(paymentMethod)) {
     throw new AppError('Invalid paymentMethod.', 422);
   }
+  if (paymentMethod === 'card') throw new AppError('Card donations must use a verified payment gateway checkout.', 422);
+  if (!String(reference || '').trim()) throw new AppError('Payment reference or cash receipt number is required.', 422);
+  if (paymentMethod !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required for manual donations.', 422);
 
   const receipt = await computeReceiptAmounts(amount, DONATION_COMMISSION_KEY);
 
@@ -160,40 +163,55 @@ const donate = asyncHandler(async (req, res) => {
     currency: request.currency,
     type: type || 'donation',
     paymentMethod: paymentMethod || 'other',
+    paymentReference: String(reference).trim(), paymentProofUrl: String(proofUrl || '').trim(),
+    paymentProvider: String(provider || '').trim(), paidOn: paidOn || new Date(), status: 'pending',
     transactionId: `TXN-${Date.now().toString(36).toUpperCase()}-${Math.random().toString(36).slice(2, 8).toUpperCase()}`,
     grossAmount: receipt.grossAmount,
     platformCommission: receipt.platformCommission,
     gatewayCharges: receipt.gatewayCharges,
     taxAmount: receipt.taxAmount,
     netAmount: receipt.netAmount,
-    escrowStatus: 'held'
+    escrowStatus: 'none'
   });
 
-  request.collectedAmount += amount;
-  const justFulfilled = request.collectedAmount >= request.requiredAmount && request.status !== 'fulfilled';
-  if (request.collectedAmount >= request.requiredAmount) {
-    request.status = 'fulfilled';
-    request.applicationStatus = 'funded';
-  } else {
-    request.applicationStatus = 'partially_funded';
-  }
-  await request.save();
-
   await notify(request.requestedBy._id, {
-    title: `${type === 'sponsorship' ? 'New sponsor' : 'New donation'}: ${request.currency} ${amount} — ${request.title}`,
+    title: `${type === 'sponsorship' ? 'Sponsorship' : 'Donation'} payment awaiting verification: ${request.currency} ${amount} — ${request.title}`,
     sentBy: req.user._id
   }).catch(() => {});
 
   await notify(req.user._id, {
-    title: `Donation successful: ${request.currency} ${amount} — ${request.title}`,
+    title: `Donation submitted for receiver verification: ${request.currency} ${amount} — ${request.title}`,
     sentBy: req.user._id
   }).catch(() => {});
 
-  if (justFulfilled) {
-    await notifyPastDonors(request._id, { title: `Request fully funded: ${request.title}`, sentBy: req.user._id });
-  }
+  return created(res, donation, 'Donation payment submitted for receiver verification.');
+});
 
-  return created(res, donation, 'Donation recorded.');
+const verifyReceivedDonation = asyncHandler(async (req, res) => {
+  const donation = await Donation.findById(req.params.id);
+  if (!donation) throw new AppError('Donation not found.', 404);
+  if (!donation.receiver || donation.receiver.toString() !== req.user._id.toString()) throw new AppError('You are not the receiver of this donation.', 403);
+  if (donation.status !== 'pending') throw new AppError('This donation is not awaiting verification.', 409);
+  const { decision, rejectionReason } = req.body;
+  if (decision === 'reject') {
+    if (!String(rejectionReason || '').trim()) throw new AppError('A rejection reason is required.', 422);
+    donation.status = 'rejected'; donation.rejectedBy = req.user._id; donation.rejectedAt = new Date(); donation.rejectionReason = String(rejectionReason).trim();
+    await donation.save();
+    await notify(donation.donor, { title: `Donation payment rejected: ${donation.currency} ${donation.amount}`, body: donation.rejectionReason, sentBy: req.user._id }).catch(() => {});
+    return ok(res, donation, 'Donation payment rejected.');
+  }
+  if (decision !== 'verify') throw new AppError('decision must be verify or reject.', 422);
+  donation.status = 'successful'; donation.verifiedBy = req.user._id; donation.verifiedAt = new Date(); donation.escrowStatus = 'released'; donation.escrowReleasedAt = new Date(); donation.escrowReleasedBy = req.user._id;
+  const request = await FundingRequest.findById(donation.fundingRequest);
+  if (request) {
+    request.collectedAmount += donation.amount;
+    if (request.collectedAmount >= request.requiredAmount) { request.status = 'fulfilled'; request.applicationStatus = 'funded'; }
+    else request.applicationStatus = 'partially_funded';
+    await request.save();
+  }
+  await donation.save();
+  await notify(donation.donor, { title: `Donation received and verified: ${donation.currency} ${donation.amount}`, sentBy: req.user._id }).catch(() => {});
+  return ok(res, donation, 'Donation received and verified.');
 });
 
 // POST /api/funding-requests/:id/save
@@ -228,11 +246,12 @@ const myDonations = asyncHandler(async (req, res) => {
 // Reconciles the funding request's collectedAmount/status either direction.
 const updateDonationStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
-  if (!['pending', 'successful', 'failed', 'refunded'].includes(status)) throw new AppError('Invalid status.', 422);
+  if (status !== 'failed') throw new AppError('A donor may only cancel a pending payment report. Success requires receiver verification; refunds require an authorized refund workflow.', 403);
 
   const donation = await Donation.findById(req.params.id);
   if (!donation) throw new AppError('Donation not found.', 404);
   if (donation.donor.toString() !== req.user._id.toString()) throw new AppError('You did not make this donation.', 403);
+  if (donation.status !== 'pending') throw new AppError('Only a pending donation report can be cancelled.', 409);
 
   const wasCounted = donation.status === 'successful';
   const willBeCounted = status === 'successful';
@@ -350,6 +369,6 @@ const verifyRequest = asyncHandler(async (req, res) => {
 
 module.exports = {
   createFundingRequest, listFundingRequests, listApplications, listRecommended, getFundingRequest, myFundingRequests,
-  donate, saveRequest, unsaveRequest, listSaved, myDonations, myReceivedDonations, updateDonationStatus, releaseDonationEscrow,
+  donate, saveRequest, unsaveRequest, listSaved, myDonations, myReceivedDonations, updateDonationStatus, verifyReceivedDonation, releaseDonationEscrow,
   updateApplicationStatus, verifyRequest, getDonationsEnabled, setDonationsEnabled
 };

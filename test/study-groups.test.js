@@ -111,7 +111,8 @@ test('teacher-managed group: members cannot self-join, and the AI Group Maker ba
   assert.equal(ai.status, 201);
   assert.ok(ai.body.data.length >= 1);
   const highAndLow = ai.body.data[0].members.map((m) => m.user.toString());
-  assert.ok(highAndLow.includes(teacher.id));
+  assert.ok(!highAndLow.includes(teacher.id));
+  assert.ok(highAndLow.includes(ai.body.data[0].owner.toString()));
 });
 
 test('a teacher can only manage groups in their own course; grading writes group + individual marks', async () => {
@@ -121,10 +122,17 @@ test('a teacher can only manage groups in their own course; grading writes group
 
   const created = await invoke(ctrl.createGroup, { user: studentA, body: { name: 'G3', courseId: course._id.toString() } });
   const groupId = created.body.data._id;
+  const submitted = await invoke(ctrl.submitAssignment, { user: studentA, params: { id: groupId }, body: { text: 'Final group work' } });
+  assert.equal(submitted.status, 200);
+  const approved = await invoke(ctrl.reviewSubmission, { user: teacher, params: { id: groupId }, body: { action: 'approve' } });
+  assert.equal(approved.status, 200);
   const marks = await invoke(ctrl.setMarks, { user: teacher, params: { id: groupId }, body: { groupMarks: 85, individualMarks: [{ userId: studentA._id.toString(), marks: 90 }] } });
   assert.equal(marks.status, 200);
   assert.equal(marks.body.data.groupMarks, 85);
   assert.equal(marks.body.data.individualMarks[0].marks, 90);
+
+  const locked = await invoke(ctrl.setMarks, { user: teacher, params: { id: groupId }, body: { groupMarks: 70, individualMarks: [{ userId: studentA._id.toString(), marks: 70 }] } });
+  assert.equal(locked.status, 409);
 
   const badGrader = await invoke(ctrl.setMarks, { user: other, params: { id: groupId }, body: { groupMarks: 50 } });
   assert.equal(badGrader.status, 403);

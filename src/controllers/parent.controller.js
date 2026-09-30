@@ -183,7 +183,7 @@ const childFees = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
-  const fees = await Fee.find({ student: req.params.studentId }).sort({ createdAt: -1 });
+  const fees = await Fee.find({ student: req.params.studentId }).populate('institution', 'name').populate('schedule', 'billingFrequency').sort({ createdAt: -1 });
   return ok(res, fees);
 });
 

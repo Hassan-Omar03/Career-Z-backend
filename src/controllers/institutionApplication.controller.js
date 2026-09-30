@@ -8,11 +8,13 @@ const InstitutionProgram = require('../models/InstitutionProgram');
 const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const Fee = require('../models/Fee');
+const FeeSchedule = require('../models/FeeSchedule');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
 const { recordJoin } = require('../utils/institutionMembership');
+const { generateCurrentCycle } = require('../utils/feeSchedule');
 
 const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, waitlisted: 70, accepted: 100, rejected: 100 };
 function withProgress(app) {
@@ -407,26 +409,42 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   const programCourses = await Course.find({ institution: application.institution._id, classSection: programPlan.classSection, published: true });
   await Promise.all(programCourses.map((course) => Enrollment.updateOne({ student: application.applicant, course: course._id }, { $setOnInsert: { student: application.applicant, course: course._id, status: 'active' } }, { upsert: true })));
 
-  const existingFees = await Fee.exists({ student: application.applicant, institution: application.institution._id, 'installment.planId': `program-${application._id}` });
-  if (!existingFees) {
-    const planId = `program-${application._id}`;
-    const fees = [];
+  // Professional fee plan (spec 15D.7): a FeeSchedule SNAPSHOT is created once, from the program
+  // config agreed at acceptance — a later change to the live InstitutionProgram never rewrites
+  // what this student already agreed to. Only the CURRENT billing period is invoiced now; future
+  // periods are generated later via Generate Current/Next Billing Cycle (never the whole degree
+  // dumped as monthly invoices up front, per spec item 4).
+  let schedule = await FeeSchedule.findOne({ student: application.applicant, institution: application.institution._id, program: programPlan._id });
+  if (!schedule) {
     const agreed = application.feePlanSnapshot?.totalTuitionFee != null ? application.feePlanSnapshot : programPlan;
-    if (agreed.admissionFee > 0) fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} Admission Fee`, feeType: 'admission', amount: agreed.admissionFee, currency: agreed.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: agreed.installments }, recordedBy: req.user._id });
-    for (const type of ['exam', 'hostel', 'transport', 'library', 'activity']) {
-      const extra = agreed.additionalFees?.[type];
-      if (extra?.enabled && extra.amount > 0) fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} ${type.charAt(0).toUpperCase() + type.slice(1)} Fee`, feeType: type, amount: extra.amount, currency: agreed.currency, dueDate: new Date(), installment: { planId, number: 0, totalInstallments: agreed.installments }, recordedBy: req.user._id });
-    }
-    let allocated = 0;
-    for (let number = 1; number <= agreed.installments; number += 1) {
-      const amount = number === agreed.installments
-        ? Math.round((agreed.totalTuitionFee - allocated) * 100) / 100
-        : Math.round((agreed.totalTuitionFee / agreed.installments) * 100) / 100;
-      allocated += amount;
-      const dueDate = new Date(); dueDate.setMonth(dueDate.getMonth() + number - 1);
-      fees.push({ student: application.applicant, institution: application.institution._id, title: `${programPlan.name} Tuition - Installment ${number}/${agreed.installments}`, feeType: 'tuition', amount, currency: agreed.currency, dueDate, installment: { planId, number, totalInstallments: agreed.installments }, recordedBy: req.user._id });
-    }
-    if (fees.length) await Fee.insertMany(fees);
+    schedule = await FeeSchedule.create({
+      institution: application.institution._id, student: application.applicant, program: programPlan._id,
+      programName: programPlan.name, classSection: programPlan.classSection,
+      currency: agreed.currency, totalProgramFee: agreed.totalTuitionFee,
+      billingFrequency: programPlan.billingFrequency || 'monthly', billingIntervalCount: programPlan.billingIntervalCount || 1,
+      numberOfTerms: programPlan.numberOfTerms || 1, installmentsPerBillingCycle: programPlan.installmentsPerBillingCycle || 1,
+      academicYearStart: programPlan.academicYearStart, academicYearEnd: programPlan.academicYearEnd,
+      firstDueDate: programPlan.firstDueDate || new Date(), invoiceGenerationDay: programPlan.invoiceGenerationDay || 1,
+      dueDay: programPlan.dueDay || 10, gracePeriodDays: programPlan.gracePeriodDays || 0,
+      autoGenerateInvoices: programPlan.autoGenerateInvoices !== false, autoSendReminders: programPlan.autoSendReminders !== false,
+      lateFeeEnabled: programPlan.lateFeeEnabled || false, lateFeeType: programPlan.lateFeeType || 'fixed',
+      lateFeeValue: programPlan.lateFeeValue || 0, maximumLateFee: programPlan.maximumLateFee ?? null,
+      minimumPartialPayment: programPlan.minimumPartialPayment || 0,
+      accessRestrictionPolicy: programPlan.accessRestrictionPolicy || 'block_all',
+      reminderRules: programPlan.reminderRules || { daysBeforeDue: [3], onDueDate: true, afterGracePeriod: true },
+      additionalFees: {
+        admission: { enabled: agreed.admissionFee > 0, amount: agreed.admissionFee || 0 },
+        exam: agreed.additionalFees?.exam || { enabled: false, amount: 0 },
+        hostel: agreed.additionalFees?.hostel || { enabled: false, amount: 0 },
+        transport: agreed.additionalFees?.transport || { enabled: false, amount: 0 },
+        library: agreed.additionalFees?.library || { enabled: false, amount: 0 },
+        activity: agreed.additionalFees?.activity || { enabled: false, amount: 0 }
+      },
+      createdBy: req.user._id
+    });
+  }
+  if ((await Fee.countDocuments({ schedule: schedule._id })) === 0) {
+    await generateCurrentCycle(schedule, req.user._id);
   }
 
   await notify(application.applicant, {

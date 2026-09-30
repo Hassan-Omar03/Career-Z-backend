@@ -8,7 +8,7 @@ const Exam = require('../models/Exam');
 const ExamSubmission = require('../models/ExamSubmission');
 const TeacherProfile = require('../models/TeacherProfile');
 const StudentProfile = require('../models/StudentProfile');
-const { assertInstitutionFeeAccess, getBlockingInstitutionFee } = require('../utils/feeAccess');
+const { assertInstitutionFeeAccess, getBlockingInstitutionFee, assertFeeAccessForCapability } = require('../utils/feeAccess');
 const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const { isRoleVerified } = require('../utils/roleVerification');
@@ -131,7 +131,7 @@ const getCourse = asyncHandler(async (req, res) => {
   if (!canSeeLessons && req.user) {
     const enrollment = await Enrollment.findOne({ student: req.user._id, course: course._id });
     canSeeLessons = Boolean(enrollment);
-    if (canSeeLessons && course.institution) await assertInstitutionFeeAccess(req.user._id, course.institution._id || course.institution);
+    if (canSeeLessons && course.institution) await assertFeeAccessForCapability(req.user._id, course.institution._id || course.institution, 'materials');
   }
 
   const lessonFilter = { course: course._id };
@@ -287,7 +287,7 @@ const completeLesson = asyncHandler(async (req, res) => {
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: lesson.course });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
   const course = await Course.findById(lesson.course);
-  await assertInstitutionFeeAccess(req.user._id, course?.institution);
+  await assertFeeAccessForCapability(req.user._id, course?.institution, 'materials');
 
   enrollment.completedLessons.addToSet(lesson._id);
   await enrollment.save();
@@ -464,7 +464,7 @@ const submitAssignment = asyncHandler(async (req, res) => {
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
   if (assignment.published === false) throw new AppError('This assignment is not published.', 404);
   const course = await Course.findById(assignment.course);
-  await assertInstitutionFeeAccess(req.user._id, course?.institution);
+  await assertFeeAccessForCapability(req.user._id, course?.institution, 'assignments');
   const late = Boolean(assignment.dueDate && new Date() > assignment.dueDate);
   if (late && !assignment.allowLate) throw new AppError('The submission deadline has passed.', 409);
 
@@ -670,7 +670,7 @@ const listExams = asyncHandler(async (req, res) => {
   const isOwner = course.teacher.toString() === req.user._id.toString();
   if (!isOwner) {
     if (!await Enrollment.exists({ student: req.user._id, course: course._id, status: { $ne: 'dropped' } })) throw new AppError('You are not enrolled in this course.', 403);
-    await assertInstitutionFeeAccess(req.user._id, course.institution);
+    await assertFeeAccessForCapability(req.user._id, course.institution, 'exams');
   }
   const filter = { course: course._id };
   if (!isOwner) filter.published = true;
@@ -699,7 +699,7 @@ const startExam = asyncHandler(async (req, res) => {
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: exam.course, status: { $ne: 'dropped' } });
   if (!enrollment) throw new AppError('You are not actively enrolled in this course.', 403);
   const course = await Course.findById(exam.course);
-  await assertInstitutionFeeAccess(req.user._id, course?.institution);
+  await assertFeeAccessForCapability(req.user._id, course?.institution, 'exams');
   const now = new Date();
   if (exam.scheduledDate && now < exam.scheduledDate) throw new AppError(`This exam opens at ${exam.scheduledDate.toISOString()}.`, 409);
   if (exam.closesAt && now > exam.closesAt) throw new AppError('This exam has closed.', 409);
@@ -759,7 +759,7 @@ const submitExam = asyncHandler(async (req, res) => {
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: exam.course, status: { $ne: 'dropped' } });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
   const course = await Course.findById(exam.course);
-  await assertInstitutionFeeAccess(req.user._id, course?.institution);
+  await assertFeeAccessForCapability(req.user._id, course?.institution, 'exams');
 
   const existing = await ExamSubmission.findOne({ exam: exam._id, student: req.user._id });
   if (!existing) throw new AppError('Start the exam before submitting it.', 409);

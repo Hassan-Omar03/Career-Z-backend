@@ -23,7 +23,17 @@ const teacherProfileSchema = new mongoose.Schema(
     // actually discoverable.
     visibleToInstitutions: { type: Boolean, default: true },
 
-    status: { type: String, enum: ['active', 'suspended'], default: 'active' }
+    status: { type: String, enum: ['active', 'suspended'], default: 'active' },
+
+    // Stripe Connect Express account — lets an institution actually WIRE payroll to this
+    // teacher's real bank account (not just mark a payslip "paid" on an internal ledger).
+    // The teacher's bank details never touch our server — Stripe's own hosted onboarding
+    // collects them directly.
+    payout: {
+      stripeAccountId: { type: String, default: null },
+      payoutsEnabled: { type: Boolean, default: false },
+      detailsSubmitted: { type: Boolean, default: false }
+    }
   },
   { timestamps: true }
 );

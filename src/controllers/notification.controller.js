@@ -16,6 +16,14 @@ const listMine = asyncHandler(async (req, res) => {
   return ok(res, notifications);
 });
 
+// GET /api/notifications/mine/unread-count
+// Count in MongoDB so the header remains exact even when there are more than
+// the 100 notifications returned by the paginated feed.
+const getUnreadCount = asyncHandler(async (req, res) => {
+  const count = await Notification.countDocuments({ user: req.user._id, read: false });
+  return ok(res, { count });
+});
+
 // PATCH /api/notifications/:id/read
 const markRead = asyncHandler(async (req, res) => {
   const notification = await Notification.findOne({ _id: req.params.id, user: req.user._id });
@@ -135,4 +143,4 @@ const platformAnnouncement = asyncHandler(async (req, res) => {
   return ok(res, { sentTo: users.length }, `Announcement sent to ${users.length} user(s).`);
 });
 
-module.exports = { listMine, markRead, markAllRead, broadcast, platformAnnouncement, getCommsStatus, saveCommsCredential, removeCommsCredential };
+module.exports = { listMine, getUnreadCount, markRead, markAllRead, broadcast, platformAnnouncement, getCommsStatus, saveCommsCredential, removeCommsCredential };

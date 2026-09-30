@@ -8,8 +8,11 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
+const nowPaymentsService = require('../services/nowpayments.service');
+const WalletTransaction = require('../models/WalletTransaction');
 const env = require('../config/env');
 const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
+const crypto = require('crypto');
 
 // Same authorization as the self-report fee-payment endpoints (student themselves, or any
 // approved parent/guardian/sponsor link) — paying a fee doesn't require being a legal guardian.
@@ -220,6 +223,78 @@ const syncWalletTopup = asyncHandler(async (req, res) => {
   return ok(res, { status: transaction.status });
 });
 
+// GET /api/payments/nowpayments/config — which crypto currencies are actually available.
+const getNowPaymentsConfig = asyncHandler(async (req, res) => {
+  return ok(res, { configured: nowPaymentsService.isNowPaymentsConfigured(), currencies: nowPaymentsService.SUPPORTED_CURRENCIES });
+});
+
+// POST /api/payments/nowpayments/wallet/topup — creates a real NOWPayments crypto payment
+// (USDT TRC20 / BTC / ETH). Like the Paddle top-up, the wallet is NOT credited here — only the
+// IPN webhook (or the sync fallback below), after the crypto network actually confirms, credits
+// it. A pending WalletTransaction is created up front so the webhook has something to verify the
+// amount/currency/owner against instead of trusting the provider payload blindly.
+const createCryptoWalletTopup = asyncHandler(async (req, res) => {
+  if (!nowPaymentsService.isNowPaymentsConfigured()) {
+    throw new AppError('Crypto payments are not set up yet — ask the Super Admin to configure NOWPAYMENTS_API_KEY and NOWPAYMENTS_IPN_SECRET.', 503);
+  }
+  const { amount, currency, payCurrency } = req.body;
+  validateAmount(amount);
+  const cur = normalizeCurrency(currency);
+  if (!nowPaymentsService.SUPPORTED_CURRENCIES[payCurrency]) {
+    throw new AppError(`payCurrency must be one of: ${Object.keys(nowPaymentsService.SUPPORTED_CURRENCIES).join(', ')}.`, 422);
+  }
+
+    // NOWPayments only recognizes a handful of major fiat codes as price_currency (usd, eur, gbp,
+  // ...) — PKR/INR/AED/SAR/etc. are rejected outright. It's only used to work out how much crypto
+  // to charge, so converting to USD here (via the platform's own Currency exchange rates) keeps
+  // every wallet currency choice working, while the wallet itself still credits in `cur`.
+  const orderId = crypto.randomUUID();
+  let priceAmount = amount;
+  let priceCurrency = cur;
+  if (cur !== 'USD') {
+    const Currency = require('../models/Currency');
+    const rate = await Currency.findOne({ code: cur }).select('exchangeRateToUSD');
+    if (!rate?.exchangeRateToUSD) throw new AppError(`No USD exchange rate configured for ${cur} — ask the Super Admin to set one, or top up in USD.`, 422);
+    priceAmount = Number((amount * rate.exchangeRateToUSD).toFixed(2));
+    priceCurrency = 'usd';
+  }
+
+  const payment = await nowPaymentsService.createPayment({
+    priceAmount,
+    priceCurrency,
+    payCurrency,
+    orderId,
+    orderDescription: `Wallet top-up — ${cur} ${amount}`,
+    ipnCallbackUrl: env.serverUrl ? `${env.serverUrl.replace(/\/+$/, '')}/api/webhooks/nowpayments` : undefined
+  });
+
+  await WalletTransaction.create({
+    user: req.user._id, type: 'topup', amount, currency: cur, status: 'pending',
+    nowPaymentsId: String(payment.payment_id), note: `Crypto top-up via ${nowPaymentsService.SUPPORTED_CURRENCIES[payCurrency]}`
+  });
+
+  return ok(res, {
+    paymentId: payment.payment_id, payAddress: payment.pay_address, payAmount: payment.pay_amount,
+    payCurrency: payment.pay_currency, status: payment.payment_status
+  });
+});
+
+// GET /api/payments/nowpayments/wallet/topup/:paymentId/sync — local-dev fallback (NOWPayments'
+// IPN can't reach localhost) — polls NOWPayments directly and credits if actually finished.
+const syncCryptoWalletTopup = asyncHandler(async (req, res) => {
+  const pending = await WalletTransaction.findOne({ user: req.user._id, nowPaymentsId: req.params.paymentId });
+  if (!pending) throw new AppError('Crypto top-up not found.', 404);
+  if (pending.status === 'pending') {
+    const payment = await nowPaymentsService.getPaymentStatus(req.params.paymentId);
+    if (['finished', 'confirmed'].includes(payment.payment_status)) {
+      const { handleNowPaymentsCompleted } = require('./webhook.controller');
+      await handleNowPaymentsCompleted(payment);
+    }
+  }
+  const refreshed = await WalletTransaction.findById(pending._id);
+  return ok(res, { status: refreshed.status });
+});
+
 // POST /api/payments/paddle/jobs/:jobId/feature-checkout — the poster's own real, verified
 // Paddle payment (replaces the old self-report "trust me I paid" endpoint). Creates a 'pending'
 // FeaturedListing so the webhook/sync path has something to match the confirmed transaction
@@ -264,5 +339,6 @@ const syncPaddleFeaturedJobStatus = asyncHandler(async (req, res) => {
 module.exports = {
   createFeeCheckoutSession, getStripeConfig, getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus,
   createWalletTopup, syncWalletTopup, createStripeCourseCheckout, createPaddleCourseCheckout, syncPaddleCourseStatus,
-  createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus
+  createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus,
+  getNowPaymentsConfig, createCryptoWalletTopup, syncCryptoWalletTopup
 };

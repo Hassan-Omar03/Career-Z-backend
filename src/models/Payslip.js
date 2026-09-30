@@ -1,4 +1,4 @@
-const mongoose = require('mongoose');
+﻿const mongoose = require('mongoose');
 
 const payslipSchema = new mongoose.Schema(
   {
@@ -10,13 +10,27 @@ const payslipSchema = new mongoose.Schema(
     bonuses: { type: Number, default: 0 },
     overtimeAmount: { type: Number, default: 0 },
     allowances: { type: Number, default: 0 },
+    commissionAmount: { type: Number, default: 0 },
     deductions: { type: Number, default: 0 },
+    taxAmount: { type: Number, default: 0 },
     netAmount: { type: Number, required: true },
     currency: { type: String, default: 'USD' },
-    status: { type: String, enum: ['pending', 'paid'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'processing', 'paid', 'rejected'], default: 'pending' },
     paidAt: { type: Date },
-    paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'cash', 'other', ''], default: '' },
+    paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'cash', 'other', 'platform_wallet', 'stripe_transfer', ''], default: '' },
     transactionId: { type: String, default: null },
+    paymentReference: { type: String, default: '' },
+    paymentProofUrl: { type: String, default: '' },
+    paymentProvider: { type: String, default: '' },
+    paymentReportedAt: { type: Date, default: null },
+    paymentVerifiedAt: { type: Date, default: null },
+    paymentVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    paymentRejectedAt: { type: Date, default: null },
+    paymentRejectionReason: { type: String, default: '' },
+    // Real Stripe Connect transfer state — only set when paymentMethod is 'stripe_transfer'.
+    stripeTransferId: { type: String, default: null },
+    stripeTransferStatus: { type: String, enum: ['none', 'sent', 'failed'], default: 'none' },
+    stripeTransferError: { type: String, default: '' },
     generatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
   },
   { timestamps: true }

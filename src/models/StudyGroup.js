@@ -49,7 +49,13 @@ const studyGroupSchema = new mongoose.Schema(
       {
         title: { type: String, required: true },
         assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-        status: { type: String, enum: ['pending', 'in_progress', 'done'], default: 'pending' },
+        // A member submits completed work for the group owner to verify. Only verified tasks
+        // become `done` and count towards group progress.
+        status: { type: String, enum: ['pending', 'in_progress', 'awaiting_verification', 'done'], default: 'pending' },
+        reviewNote: { type: String, default: '' },
+        submittedForReviewAt: { type: Date, default: null },
+        verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+        verifiedAt: { type: Date, default: null },
         dueDate: { type: Date, default: null },
         createdAt: { type: Date, default: Date.now }
       }
@@ -69,7 +75,11 @@ const studyGroupSchema = new mongoose.Schema(
       text: { type: String, default: '' },
       files: [{ type: String }],
       submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-      submittedAt: { type: Date, default: null }
+      submittedAt: { type: Date, default: null },
+      status: { type: String, enum: ['submitted', 'changes_requested', 'approved'], default: 'submitted' },
+      teacherFeedback: { type: String, default: '' },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      reviewedAt: { type: Date, default: null }
     },
     contributions: [
       {
@@ -79,6 +89,8 @@ const studyGroupSchema = new mongoose.Schema(
       }
     ],
     groupMarks: { type: Number, default: null, min: 0, max: 100 },
+    gradingPublishedAt: { type: Date, default: null },
+    gradingPublishedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     individualMarks: [
       {
         user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },

@@ -6,6 +6,7 @@ const { requireRole } = require('../middleware/rbac');
 router.use(protect);
 
 router.get('/mine', ctrl.listMine);
+router.get('/mine/unread-count', ctrl.getUnreadCount);
 router.patch('/mine/read-all', ctrl.markAllRead);
 router.patch('/:id/read', ctrl.markRead);
 router.post('/platform-announcement', requireRole('super_admin'), ctrl.platformAnnouncement);

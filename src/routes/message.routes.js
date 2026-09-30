@@ -1,12 +1,16 @@
-const router = require('express').Router();
+﻿const router = require('express').Router();
 const ctrl = require('../controllers/message.controller');
 const { protect } = require('../middleware/auth');
 
 router.use(protect);
 
 router.post('/', ctrl.sendMessage);
+router.get('/contacts', ctrl.listContacts);
 router.get('/conversations', ctrl.listConversations);
 router.get('/with/:userId', ctrl.getThread);
 router.patch('/with/:userId/read', ctrl.markThreadRead);
+router.get('/blocked', ctrl.listBlocked);
+router.post('/block/:userId', ctrl.blockUser);
+router.delete('/block/:userId', ctrl.unblockUser);
 
 module.exports = router;

@@ -16,6 +16,10 @@ const featuredListingSchema = new mongoose.Schema(
     currency: { type: String, default: 'USD' },
     paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'mobile_wallet', 'cash', 'other', 'paddle'], required: true },
     transactionId: { type: String, default: null },
+    paymentReference: { type: String, default: '' },
+    paymentProofUrl: { type: String, default: '' },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    verifiedAt: { type: Date, default: null },
     paddleTransactionId: { type: String, default: null, unique: true, sparse: true },
     status: { type: String, enum: ['pending', 'paid'], default: 'paid' }, // paddle purchases start 'pending'; manual entries are 'paid' immediately
     startedAt: { type: Date, default: Date.now },

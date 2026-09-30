@@ -9,6 +9,9 @@ router.get('/:id', optionalAuth, ctrl.getScholarship);
 
 router.use(protect);
 
+router.get('/received/sponsorship-payments', ctrl.receivedSponsorshipPayments);
+router.patch('/received/sponsorships/:id/payments/:paymentId', ctrl.verifySponsorshipPayment);
+
 // Admin — oversight across every donor's scholarships.
 router.get('/admin/all', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.adminListAll);
 
@@ -27,6 +30,7 @@ router.patch('/applications/:appId/status', requireRole('donor'), ctrl.updateApp
 
 // Admin — confirms/rejects a donor's deposit request.
 router.patch('/deposits/:id/status', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.updateDepositStatus);
+router.get('/admin/deposits', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.adminListDeposits);
 
 // Any authenticated user — applying.
 router.post('/:id/apply', ctrl.applyToScholarship);

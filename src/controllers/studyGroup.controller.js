@@ -121,6 +121,12 @@ const getGroup = asyncHandler(async (req, res) => {
     .populate('members.user', 'fullName profilePhoto')
     .populate('pendingRequests.user', 'fullName profilePhoto')
     .populate('course', 'title subject')
+    .populate('resources.uploadedBy', 'fullName profilePhoto')
+    .populate('contributions.user', 'fullName profilePhoto')
+    .populate('tasks.verifiedBy', 'fullName profilePhoto')
+    .populate('submission.submittedBy', 'fullName profilePhoto')
+    .populate('submission.reviewedBy', 'fullName profilePhoto')
+    .populate('gradingPublishedBy', 'fullName profilePhoto')
     .populate('individualMarks.user', 'fullName');
   if (!group) throw new AppError('Study group not found.', 404);
 
@@ -175,7 +181,7 @@ const decideJoinRequest = asyncHandler(async (req, res) => {
     title: action === 'approve' ? 'Your study group join request was approved' : 'Your study group join request was declined',
     body: group.name,
     sentBy: req.user._id
-  }).catch(() => {});
+  }, { email: true }).catch(() => {});
   return ok(res, withCounts(group), action === 'approve' ? 'Request approved.' : 'Request declined.');
 });
 
@@ -338,22 +344,57 @@ const addTask = asyncHandler(async (req, res) => {
 
 // PATCH /api/study-groups/:id/tasks/:taskId (any member — updates status of their own task; owner/teacher can update any)
 const updateTask = asyncHandler(async (req, res) => {
-  const { status } = req.body;
-  if (!['pending', 'in_progress', 'done'].includes(status)) throw new AppError('Invalid status.', 422);
+  const { status, reviewNote } = req.body;
+  if (!['pending', 'in_progress', 'awaiting_verification', 'done'].includes(status)) throw new AppError('Invalid status.', 422);
   const group = await StudyGroup.findById(req.params.id);
   if (!group) throw new AppError('Study group not found.', 404);
   assertMember(group, req.user._id);
 
   const task = group.tasks.id(req.params.taskId);
   if (!task) throw new AppError('Task not found.', 404);
+  const previousStatus = task.status;
+  const wasAwaitingReview = previousStatus === 'awaiting_verification' || (previousStatus === 'done' && !task.verifiedAt);
   const teaches = await isCourseTeacher(group, req.user._id);
   const canEditAny = isOwner(group, req.user._id) || teaches;
-  if (!canEditAny && task.assignedTo && task.assignedTo.toString() !== req.user._id.toString()) {
+  if (!canEditAny && (!task.assignedTo || task.assignedTo.toString() !== req.user._id.toString())) {
     throw new AppError('You can only update tasks assigned to you.', 403);
   }
-  task.status = status;
+
+  if (!canEditAny) {
+    // Members can work on their own task, but completion is always verified by the owner/teacher.
+    task.status = status === 'done' || status === 'awaiting_verification' ? 'awaiting_verification' : status;
+    if (task.status === 'awaiting_verification') task.submittedForReviewAt = new Date();
+    task.reviewNote = '';
+    task.verifiedBy = null;
+    task.verifiedAt = null;
+  } else {
+    task.status = status;
+    if (status === 'done') {
+      task.verifiedBy = req.user._id;
+      task.verifiedAt = new Date();
+      task.reviewNote = '';
+    } else {
+      task.verifiedBy = null;
+      task.verifiedAt = null;
+      task.reviewNote = typeof reviewNote === 'string' ? reviewNote.trim() : '';
+    }
+  }
   await group.save();
-  return ok(res, withCounts(group), 'Task updated.');
+  if (!canEditAny && task.status === 'awaiting_verification') {
+    await notify(group.owner, {
+      title: `Task ready for verification: ${task.title}`,
+      body: `${req.user.fullName || 'A group member'} submitted work in ${group.name}.`,
+      sentBy: req.user._id
+    }).catch(() => {});
+  } else if (canEditAny && wasAwaitingReview && task.assignedTo && idOf(task.assignedTo) !== idOf(req.user._id)) {
+    await notify(task.assignedTo, {
+      title: task.status === 'done' ? `Task verified: ${task.title}` : `Task sent back: ${task.title}`,
+      body: task.status === 'done' ? 'The group owner approved your completed task.' : (task.reviewNote || 'Please update your work and submit it again.'),
+      sentBy: req.user._id
+    }).catch(() => {});
+  }
+  const message = task.status === 'awaiting_verification' ? 'Task submitted to the group owner for verification.' : task.status === 'done' ? 'Task verified.' : 'Task updated.';
+  return ok(res, withCounts(group), message);
 });
 
 // POST /api/study-groups/:id/resources (any member) — a Cloudinary URL from
@@ -376,15 +417,49 @@ const submitAssignment = asyncHandler(async (req, res) => {
   const group = await StudyGroup.findById(req.params.id);
   if (!group) throw new AppError('Study group not found.', 404);
   assertMember(group, req.user._id);
+  if (!isOwner(group, req.user._id)) throw new AppError('Only the group owner can submit the final group assignment.', 403);
+  if (!text?.trim() && !(Array.isArray(files) && files.length)) throw new AppError('Final submission text or a file is required.', 422);
+  if (group.submission?.submittedAt && group.submission.status !== 'changes_requested') {
+    throw new AppError('This submission is locked while the teacher reviews it.', 409);
+  }
 
   group.submission = {
-    text: text || '',
+    text: text?.trim() || '',
     files: Array.isArray(files) ? files : [],
     submittedBy: req.user._id,
-    submittedAt: new Date()
+    submittedAt: new Date(),
+    status: 'submitted',
+    teacherFeedback: '',
+    reviewedBy: null,
+    reviewedAt: null
   };
   await group.save();
+  const course = await Course.findById(group.course);
+  if (course?.teacher) await notify(course.teacher, { title: `Group submission ready: ${group.name}`, body: group.project?.title || 'A study group submitted final work for review.', sentBy: req.user._id }).catch(() => {});
   return ok(res, withCounts(group), 'Assignment submitted.');
+});
+
+const reviewSubmission = asyncHandler(async (req, res) => {
+  const { action, feedback } = req.body;
+  if (!['approve', 'request_changes'].includes(action)) throw new AppError('Invalid review action.', 422);
+  const group = await StudyGroup.findById(req.params.id);
+  if (!group) throw new AppError('Study group not found.', 404);
+  if (!(await isCourseTeacher(group, req.user._id))) throw new AppError('Only the course teacher can review this submission.', 403);
+  if (!group.submission?.submittedAt) throw new AppError('This group has not submitted final work yet.', 409);
+  if (group.submission.status === 'approved') throw new AppError('This submission is already approved.', 409);
+  if (action === 'request_changes' && !feedback?.trim()) throw new AppError('Feedback is required when requesting changes.', 422);
+
+  group.submission.status = action === 'approve' ? 'approved' : 'changes_requested';
+  group.submission.teacherFeedback = feedback?.trim() || '';
+  group.submission.reviewedBy = req.user._id;
+  group.submission.reviewedAt = new Date();
+  await group.save();
+  await notify(group.owner, {
+    title: action === 'approve' ? `Group submission approved: ${group.name}` : `Changes requested: ${group.name}`,
+    body: action === 'approve' ? 'Your teacher approved the final group work.' : group.submission.teacherFeedback,
+    sentBy: req.user._id
+  }).catch(() => {});
+  return ok(res, withCounts(group), action === 'approve' ? 'Submission approved.' : 'Changes requested from the group owner.');
 });
 
 // PATCH /api/study-groups/:id/contribution (any member) — self-reported note on what they did;
@@ -413,11 +488,23 @@ const setMarks = asyncHandler(async (req, res) => {
   if (!group) throw new AppError('Study group not found.', 404);
   const teaches = await isCourseTeacher(group, req.user._id);
   if (!teaches) throw new AppError('Only the course teacher can grade this group.', 403);
-
-  if (groupMarks !== undefined) {
-    if (groupMarks < 0 || groupMarks > 100) throw new AppError('groupMarks must be 0-100.', 422);
-    group.groupMarks = groupMarks;
+  if (!group.submission?.submittedAt || group.submission.status !== 'approved') {
+    throw new AppError('Approve the final group submission before publishing marks.', 409);
   }
+  if (group.gradingPublishedAt || group.groupMarks !== null || group.individualMarks.length) {
+    throw new AppError('Marks have already been published and cannot be changed.', 409);
+  }
+  if (!Number.isFinite(Number(groupMarks)) || Number(groupMarks) < 0 || Number(groupMarks) > 100) {
+    throw new AppError('Group marks are required and must be 0-100.', 422);
+  }
+  const submittedIndividual = new Map((individualMarks || []).map((entry) => [String(entry.userId), Number(entry.marks)]));
+  const invalidMember = group.members.find((member) => {
+    const mark = submittedIndividual.get(idOf(member.user));
+    return !Number.isFinite(mark) || mark < 0 || mark > 100;
+  });
+  if (invalidMember) throw new AppError('Enter valid individual marks (0-100) for every group member.', 422);
+
+  group.groupMarks = Number(groupMarks);
   if (Array.isArray(individualMarks)) {
     for (const entry of individualMarks) {
       if (!isMember(group, entry.userId) || entry.marks < 0 || entry.marks > 100) continue;
@@ -431,8 +518,13 @@ const setMarks = asyncHandler(async (req, res) => {
       }
     }
   }
+  group.gradingPublishedAt = new Date();
+  group.gradingPublishedBy = req.user._id;
   await group.save();
-  return ok(res, withCounts(group), 'Marks recorded.');
+  for (const member of group.members) {
+    await notify(member.user, { title: `Study group marks published: ${group.name}`, body: `Group marks: ${group.groupMarks}/100 · Your marks: ${submittedIndividual.get(idOf(member.user))}/100`, sentBy: req.user._id }).catch(() => {});
+  }
+  return ok(res, withCounts(group), 'Marks published.');
 });
 
 // ---- AI Group Maker (rule-based balanced grouping) ----
@@ -474,10 +566,10 @@ const aiGenerateGroups = asyncHandler(async (req, res) => {
       createdBy: req.user._id,
       createdByRole: 'teacher',
       aiGenerated: true,
-      owner: req.user._id,
-      members: [{ user: req.user._id }, ...members.map((m) => ({ user: m._id }))],
+      owner: members[0]._id,
+      members: members.map((m) => ({ user: m._id })),
       joinPolicy: 'managed',
-      maxMembers: Math.max(members.length + 1, size + 1)
+      maxMembers: Math.max(members.length, size)
     }))
   );
   return created(res, groups.map(withCounts), `${groups.length} balanced groups created.`);
@@ -522,6 +614,6 @@ module.exports = {
   listGroups, myGroups, createGroup, getGroup, joinGroup, decideJoinRequest, leaveGroup,
   transferOwnership, deleteGroup, removeMember, addMember,
   teacherCourseGroups, teacherCourseRoster, teacherCreateGroup, setStudyGroupsEnabled,
-  setProject, addTask, updateTask, addResource, submitAssignment, setContribution, setMarks,
+  setProject, addTask, updateTask, addResource, submitAssignment, reviewSubmission, setContribution, setMarks,
   aiGenerateGroups, listPosts, addPost
 };

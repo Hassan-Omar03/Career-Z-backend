@@ -7,6 +7,7 @@ const WalletTransaction = require('../models/WalletTransaction');
 const WebhookEvent = require('../models/WebhookEvent');
 const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
+const nowPaymentsService = require('../services/nowpayments.service');
 const { transactionWithDuplicateRetry, sendSettlementNotifications, settle } = require('../services/settlement.service');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
@@ -199,6 +200,42 @@ async function handleWalletTopupCompleted(transaction, session) {
   }, session);
 }
 
+// NOWPayments statuses: waiting -> confirming -> confirmed/finished (success), or
+// failed/expired/refunded. Only confirmed/finished ever credits the wallet.
+async function handleNowPaymentsCompleted(payment, session) {
+  return settle(async (dbSession) => {
+    if (!['finished', 'confirmed'].includes(payment.payment_status) || !payment.payment_id) {
+      throw new AppError('Expected a finished/confirmed crypto payment.', 422);
+    }
+    const pending = await WalletTransaction.findOne({ nowPaymentsId: String(payment.payment_id) }).session(dbSession);
+    if (!pending) throw new AppError('Crypto top-up record not found.', 404);
+    if (pending.status === 'completed') return [];
+
+    pending.status = 'completed';
+    await pending.save({ session: dbSession });
+    await Wallet.findOneAndUpdate(
+      { user: pending.user, currency: pending.currency }, { $inc: { available: pending.amount } },
+      { upsert: true, session: dbSession }
+    );
+    return [{ userId: pending.user, payload: { title: `Wallet topped up: ${pending.currency} ${pending.amount.toFixed(2)}`, body: `Crypto receipt ${payment.payment_id}`, sentBy: null } }];
+  }, session);
+}
+
+async function handleNowPaymentsWebhook(req, res) {
+  if (!nowPaymentsService.isNowPaymentsConfigured()) return res.status(503).json({ success: false, message: 'Crypto payments are not configured.' });
+  if (!nowPaymentsService.verifyIpnSignature(req.body, req.headers['x-nowpayments-sig'])) {
+    return res.status(400).json({ success: false, message: 'IPN signature verification failed.' });
+  }
+  const payment = req.body;
+  // NOWPayments re-sends an IPN for every status transition of the same payment_id (waiting ->
+  // confirming -> finished) — keying the dedupe receipt on id+status alone (not just id) so the
+  // eventual "finished" call is never swallowed as a duplicate of an earlier "waiting" one.
+  return processWebhook('nowpayments', `${payment.payment_id}:${payment.payment_status}`, payment.payment_status, async (session) => {
+    if (['finished', 'confirmed'].includes(payment.payment_status)) return handleNowPaymentsCompleted(payment, session);
+    return [];
+  }, res);
+}
+
 async function handleFeaturedJobPaddleCompleted(transaction, session) {
   return settle(async (dbSession) => {
     if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'featured_job') {
@@ -314,5 +351,5 @@ async function handleTutoringFeePaddleCompleted(transaction, session) {
 module.exports = {
   handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
   handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted,
-  handleTutoringFeePaddleCompleted
+  handleTutoringFeePaddleCompleted, handleNowPaymentsWebhook, handleNowPaymentsCompleted
 };

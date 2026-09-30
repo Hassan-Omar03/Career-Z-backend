@@ -8,7 +8,7 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notifyMany } = require('../services/notification.service');
-const { assertInstitutionFeeAccess } = require('../utils/feeAccess');
+const { assertFeeAccessForCapability } = require('../utils/feeAccess');
 const { emitToLiveVideoRoom } = require('../realtime/socket');
 
 function assertInstitutionManager(institution, userId) {
@@ -104,7 +104,7 @@ const join = asyncHandler(async (req, res) => {
   if (!session || session.status !== 'live') throw new AppError('This live class has not started or has ended.', 409);
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: session.course, status: { $ne: 'dropped' } });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
-  await assertInstitutionFeeAccess(req.user._id, session.institution);
+  await assertFeeAccessForCapability(req.user._id, session.institution, 'live_classes');
   const now = new Date();
   const existing = session.participants.find((item) => String(item.student) === String(req.user._id));
   if (existing) {

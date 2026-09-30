@@ -36,6 +36,7 @@ const { notify, notifyMany } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { recordJoin } = require('../utils/institutionMembership');
+const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
 
 const PAYMENT_METHOD_LABEL = {
   bank_transfer: 'Bank Transfer', card: 'Card', mobile_wallet: 'Mobile Wallet', cash: 'Cash', other: 'Other'
@@ -83,31 +84,38 @@ const updateMyProfile = asyncHandler(async (req, res) => {
 // POST /api/students/me/connect-institution — self-service join; a student can now be a real
 // member of more than one institution at once (spec: "multiple simultaneous institutions").
 const connectToInstitution = asyncHandler(async (req, res) => {
-  const { institutionId, classSectionId, rollNumber } = req.body;
+  const { institutionId } = req.body;
   if (!institutionId) throw new AppError('institutionId is required.', 422);
+  const institution = await Institution.findById(institutionId);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  const existing = await StudentInstitutionMembership.findOne({ student: req.user._id, institution: institutionId });
+  if (existing && ['pending', 'active', 'withdrawal_requested', 'transfer_requested'].includes(existing.status)) throw new AppError('A current membership or request already exists for this institution.', 409);
+  const membership = existing || new StudentInstitutionMembership({ student: req.user._id, institution: institutionId });
+  Object.assign(membership, { status: 'pending', requestedAction: 'join', reason: '', targetInstitution: null, reviewedBy: null, reviewedAt: null });
+  await membership.save();
+  await notify(institution.owner, { title: `New institution join request from ${req.user.fullName}`, sentBy: req.user._id }).catch(() => {});
+  return created(res, membership, 'Connection request sent for institution approval.');
+});
 
-  let profile = await StudentProfile.findOne({ user: req.user._id });
-  if (!profile) profile = await StudentProfile.create({ user: req.user._id, admissionDate: new Date() });
-
-  const membership = await recordJoin(req.user._id, institutionId);
-  if (membership.isPrimary) {
-    profile.classSection = classSectionId || null;
-    profile.rollNumber = rollNumber || '';
-    profile.admissionDate = profile.admissionDate || new Date();
-    await profile.save();
-  }
-
-  await notifySponsorsOfProgress(req.user._id, req.user.fullName);
-  const refreshed = await StudentProfile.findOne({ user: req.user._id }).populate('primaryInstitution', 'name type country');
-  return ok(res, refreshed, 'Connected to institution.');
+const requestMembershipExit = asyncHandler(async (req, res) => {
+  const { action, reason, targetInstitutionId } = req.body;
+  if (!['withdraw', 'transfer'].includes(action)) throw new AppError('action must be withdraw or transfer.', 422);
+  const membership = await StudentInstitutionMembership.findOne({ _id: req.params.membershipId, student: req.user._id, status: 'active' }).populate('institution', 'owner name');
+  if (!membership) throw new AppError('Active institution membership not found.', 404);
+  if (action === 'transfer' && !targetInstitutionId) throw new AppError('Select the destination institution for a transfer.', 422);
+  membership.status = action === 'withdraw' ? 'withdrawal_requested' : 'transfer_requested';
+  membership.requestedAction = action; membership.reason = reason || ''; membership.targetInstitution = targetInstitutionId || null;
+  await membership.save();
+  await notify(membership.institution.owner, { title: `${req.user.fullName} requested ${action}`, body: reason || '', sentBy: req.user._id }).catch(() => {});
+  return ok(res, membership, `${action} request sent.`);
 });
 
 // GET /api/students/me/institutions — every institution this student has ever joined, current
 // and past (spec: "multiple simultaneous institutions", "transfer/history", "alumni transition").
 const myInstitutionMemberships = asyncHandler(async (req, res) => {
-  const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
   const memberships = await StudentInstitutionMembership.find({ student: req.user._id })
     .populate('institution', 'name type country logo')
+    .populate('targetInstitution', 'name type country logo')
     .sort({ isPrimary: -1, joinedAt: -1 });
   return ok(res, memberships);
 });
@@ -228,7 +236,15 @@ const getMySubmissions = asyncHandler(async (req, res) => {
 
 // GET /api/students/me/fees
 const getMyFees = asyncHandler(async (req, res) => {
-  const fees = await Fee.find({ student: req.user._id }).sort({ createdAt: -1 });
+  // Lazy overdue/late-fee/reminder sweep (spec 15D.7) — same "no cron in this app" pattern used
+  // everywhere else; runs at most meaningfully once per real page load, per institution.
+  const institutionIds = await Fee.find({ student: req.user._id }).distinct('institution');
+  const { sweepOverdueAndLateFees, sweepReminders, autoGenerateDueInvoices } = require('../utils/feeSchedule');
+  await Promise.all(institutionIds.map((id) => autoGenerateDueInvoices(id).then(() => sweepOverdueAndLateFees(id)).then(() => sweepReminders(id)).catch(() => {})));
+
+  // Populated so student/parent dashboards can group fees by billing frequency per institution
+  // (spec: "clearly group fees as monthly, semester, annual and one-time for each institution").
+  const fees = await Fee.find({ student: req.user._id }).populate('institution', 'name').populate('schedule', 'billingFrequency').sort({ createdAt: -1 });
   return ok(res, fees);
 });
 
@@ -798,7 +814,7 @@ const reviewGoal = asyncHandler(async (req, res) => {
     title: approve ? 'A goal you completed was verified' : 'A goal needs more evidence',
     body: notes || goal.title,
     sentBy: req.user._id
-  }).catch(() => {});
+  }, { email: true }).catch(() => {});
 
   return ok(res, goal);
 });
@@ -905,7 +921,7 @@ const reviewAchievement = asyncHandler(async (req, res) => {
     title: approve ? 'Your achievement was verified' : 'Your achievement needs more evidence',
     body: notes || achievement.title,
     sentBy: req.user._id
-  }).catch(() => {});
+  }, { email: true }).catch(() => {});
 
   return ok(res, achievement);
 });
@@ -964,6 +980,7 @@ module.exports = {
   getMyProfile,
   updateMyProfile,
   connectToInstitution,
+  requestMembershipExit,
   myInstitutionMemberships,
   qrCheckIn,
   gpsCheckIn,

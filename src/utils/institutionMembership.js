@@ -8,10 +8,14 @@ async function recordJoin(studentUserId, institutionId, program) {
   const existing = await StudentInstitutionMembership.findOne({ student: studentUserId, institution: institutionId });
   if (existing) {
     if (existing.status !== 'active') {
+      const hasAnyActive = await StudentInstitutionMembership.exists({ student: studentUserId, status: 'active' });
       existing.status = 'active';
       existing.leftAt = null;
       existing.joinedAt = new Date();
+      existing.requestedAction = '';
+      existing.isPrimary = !hasAnyActive;
       await existing.save();
+      if (existing.isPrimary) await StudentProfile.findOneAndUpdate({ user: studentUserId }, { $set: { primaryInstitution: institutionId, admissionDate: new Date() } }, { upsert: true });
     }
     return existing;
   }

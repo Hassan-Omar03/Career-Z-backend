@@ -11,6 +11,7 @@ router.patch('/:id/resubmit', requireRole('student'), ctrl.resubmit);
 
 router.get('/institution', requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner'), ctrl.institutionSubmissions);
 router.patch('/:id/review', requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner'), ctrl.review);
+router.patch('/:id/edit', requireRole('teacher', 'institution_owner', 'institution_staff', 'academy_owner'), ctrl.editByReviewer);
 router.patch('/:id/publish', requireRole('institution_owner', 'institution_staff', 'academy_owner'), ctrl.publish);
 
 router.get('/published', ctrl.published);

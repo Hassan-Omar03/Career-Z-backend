@@ -4,10 +4,17 @@ module.exports = {
   port: process.env.PORT || 5000,
   nodeEnv: process.env.NODE_ENV || 'development',
   clientUrl: process.env.CLIENT_URL || 'http://localhost:5500',
+  // This backend's own public URL — needed to tell NOWPayments where to send its IPN webhook.
+  // Left blank in local dev (NOWPayments can't reach localhost anyway); set it in production, or
+  // configure a default IPN URL directly in the NOWPayments dashboard instead.
+  serverUrl: process.env.SERVER_URL || '',
   mongoUri: process.env.MONGO_URI || 'mongodb://127.0.0.1:27017/careerz',
   // DEV-ONLY: spins up an in-memory MongoDB so the app runs without installing MongoDB locally.
   // Must be false/unset in production - the client's real MongoDB (MONGO_URI) is used instead.
   useMemoryDb: process.env.USE_MEMORY_DB === 'true',
+  // Local QA can exercise complete institution flows without paid-plan gates.
+  // Keep false/unset in production.
+  disableSubscriptionLimits: process.env.DISABLE_SUBSCRIPTION_LIMITS === 'true',
   jwt: {
     accessSecret: process.env.JWT_ACCESS_SECRET || 'dev_access_secret',
     refreshSecret: process.env.JWT_REFRESH_SECRET || 'dev_refresh_secret',
@@ -38,6 +45,12 @@ module.exports = {
     clientToken: process.env.PADDLE_CLIENT_TOKEN || '',
     webhookSecret: process.env.PADDLE_WEBHOOK_SECRET || '',
     environment: process.env.PADDLE_ENVIRONMENT || 'sandbox' // 'sandbox' | 'production'
+  },
+  // Real crypto wallet top-ups (USDT TRC20 / BTC / ETH) via NOWPayments — client-provided keys,
+  // same "empty = not configured" rule as Stripe/Paddle above.
+  nowPayments: {
+    apiKey: process.env.NOWPAYMENTS_API_KEY || '',
+    ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET || ''
   },
   // Real machine translation (spec Part 16F "Smart Language Engine" — Dynamic Translation).
   // provider: 'mymemory' (default — free, no key needed, ~5-10k words/day) or 'libretranslate'

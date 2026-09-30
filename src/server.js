@@ -4,6 +4,7 @@ const connectDB = require('./config/db');
 const env = require('./config/env');
 const { runSeedData } = require('./seed/seed');
 const { initSocket } = require('./realtime/socket');
+const { startFeeAutomation } = require('./services/feeAutomation.service');
 
 (async () => {
   await connectDB();
@@ -16,6 +17,7 @@ const { initSocket } = require('./realtime/socket');
 
   const httpServer = http.createServer(app);
   initSocket(httpServer);
+  startFeeAutomation();
 
   httpServer.listen(env.port, () => {
     console.log(`[SERVER] CareerZ API listening on http://localhost:${env.port}`);

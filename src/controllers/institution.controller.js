@@ -1,4 +1,4 @@
-const crypto = require('crypto');
+﻿const crypto = require('crypto');
 const mongoose = require('mongoose');
 const Institution = require('../models/Institution');
 const Campus = require('../models/Campus');
@@ -12,7 +12,11 @@ const Attendance = require('../models/Attendance');
 const StaffAttendance = require('../models/StaffAttendance');
 const CampusBuilding = require('../models/CampusBuilding');
 const Payslip = require('../models/Payslip');
+const TeacherEmployment = require('../models/TeacherEmployment');
+const Wallet = require('../models/Wallet');
+const WalletTransaction = require('../models/WalletTransaction');
 const Course = require('../models/Course');
+const CoursePurchase = require('../models/CoursePurchase');
 const Enrollment = require('../models/Enrollment');
 const Exam = require('../models/Exam');
 const User = require('../models/User');
@@ -31,7 +35,8 @@ const { generateTransactionId } = require('../utils/transactionId');
 const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { assertStaffCapAllows } = require('../utils/subscriptionGate');
-const { recordLeave } = require('../utils/institutionMembership');
+const { recordJoin, recordLeave } = require('../utils/institutionMembership');
+const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
 const { onboardStaff, offboardStaff } = require('../utils/staffOnboarding');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
@@ -142,7 +147,7 @@ const listInstitutions = asyncHandler(async (req, res) => {
   return ok(res, institutions);
 });
 
-// GET /api/institutions/admin/all (admin/platform_staff — every status, for verification review)
+// GET /api/institutions/admin/all (admin/platform_staff â€” every status, for verification review)
 const adminListAll = asyncHandler(async (req, res) => {
   const institutions = await Institution.find({}).select('-verificationDocuments -staff').sort({ createdAt: -1 });
   return ok(res, institutions);
@@ -170,7 +175,7 @@ function assertOwnerOrStaff(institution, userId) {
   return isOwner;
 }
 
-// No account type can act on the platform until Super Admin has approved it — an unverified
+// No account type can act on the platform until Super Admin has approved it â€” an unverified
 // (potentially fake) institution must not be able to hire staff, charge fees, issue certificates,
 // broadcast notifications, etc. Setup/editing basic details and submitting verification documents
 // stay allowed (updateInstitution, submitVerificationDocuments) since those are how an owner
@@ -233,7 +238,7 @@ const reviewVerification = asyncHandler(async (req, res) => {
   await institution.save();
 
   // The owner's own "institution_owner"/"academy_owner" role request (from signup or /roles/
-  // request) is a separate, older approval trail that duplicates this one — an owner should only
+  // request) is a separate, older approval trail that duplicates this one â€” an owner should only
   // ever have to clear ONE approval, not two out-of-sync ones. Verifying the institution here is
   // the real vetting, so mirror the same decision onto that role request instead of leaving it
   // permanently pending (which would otherwise still show a stale "dashboard unlocked but posting
@@ -288,7 +293,7 @@ const removeStaff = asyncHandler(async (req, res) => {
   return ok(res, institution, 'Staff member removed.');
 });
 
-// PATCH /api/institutions/:id/staff/:userId/ai-permissions — owner-only toggle for whether a
+// PATCH /api/institutions/:id/staff/:userId/ai-permissions â€” owner-only toggle for whether a
 // staff member may use ('ai:use') and/or connect/manage ('ai:manage') the institution's own
 // AI keys. Matches the frontend's Staff Management panel, which already calls this endpoint.
 const updateStaffAiPermissions = asyncHandler(async (req, res) => {
@@ -314,7 +319,7 @@ const updateStaffAiPermissions = asyncHandler(async (req, res) => {
   return ok(res, institution, 'Staff AI permissions updated.');
 });
 
-// GET /api/institutions/:id/staff-attendance — owner/staff view of everyone's real self-check-ins
+// GET /api/institutions/:id/staff-attendance â€” owner/staff view of everyone's real self-check-ins
 // (spec 15D.9). Populated from the same StaffAttendance records teachers create themselves.
 const listStaffAttendance = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -330,7 +335,7 @@ const listStaffAttendance = asyncHandler(async (req, res) => {
 
 // ---- Virtual Campus Tour (real 3D map, built from the institution's own building data) ----
 
-// GET /api/institutions/:id/campus-buildings — public: anyone (student, parent, prospective
+// GET /api/institutions/:id/campus-buildings â€” public: anyone (student, parent, prospective
 // applicant) can view the tour without being staff, same as browsing the institution's profile.
 const listCampusBuildings = asyncHandler(async (req, res) => {
   const buildings = await CampusBuilding.find({ institution: req.params.id }).sort({ order: 1, createdAt: 1 });
@@ -407,7 +412,7 @@ const listClassSections = asyncHandler(async (req, res) => {
   return ok(res, sections);
 });
 
-// PATCH /api/institutions/:id/class-sections/:sectionId — mainly for assigning/changing the class teacher
+// PATCH /api/institutions/:id/class-sections/:sectionId â€” mainly for assigning/changing the class teacher
 const updateClassSection = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
@@ -483,17 +488,17 @@ const createFee = asyncHandler(async (req, res) => {
 
   await notifyParentsOfStudent(student, {
     title: `New fee due for ${feeStudent?.fullName || 'your child'}`,
-    body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` — due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
+    body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` â€” due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
     sentBy: req.user._id
   }).catch(() => {});
 
   return created(res, fee, 'Fee recorded.');
 });
 
-// POST /api/institutions/fees/:feeId/remind — manual trigger for the "Automatic Reminder"
+// POST /api/institutions/fees/:feeId/remind â€” manual trigger for the "Automatic Reminder"
 // (spec 15D.7). No cron/scheduler exists in this codebase (same honest pattern as meeting
 // reminders elsewhere), so reminders are sent on-demand by the institution, or lazily whenever
-// listFees runs past the due date — see the auto-reminder check below.
+// listFees runs past the due date â€” see the auto-reminder check below.
 const remindFee = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId).populate('student', 'fullName');
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -513,7 +518,7 @@ const remindFee = asyncHandler(async (req, res) => {
   return ok(res, fee, 'Reminder sent.');
 });
 
-// POST /api/institutions/fees/:feeId/refund/request — student/parent requests a refund.
+// POST /api/institutions/fees/:feeId/refund/request â€” student/parent requests a refund.
 const requestFeeRefund = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -542,7 +547,7 @@ const requestFeeRefund = asyncHandler(async (req, res) => {
   return ok(res, fee, 'Refund requested.');
 });
 
-// PATCH /api/institutions/fees/:feeId/refund/decide — institution approves/rejects/processes a refund.
+// PATCH /api/institutions/fees/:feeId/refund/decide â€” institution approves/rejects/processes a refund.
 const decideFeeRefund = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -576,6 +581,9 @@ const listFees = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
+  const { sweepOverdueAndLateFees, sweepReminders, autoGenerateDueInvoices } = require('../utils/feeSchedule');
+  await autoGenerateDueInvoices(institution._id).then(() => sweepOverdueAndLateFees(institution._id)).then(() => sweepReminders(institution._id)).catch(() => {});
+
   const fees = await Fee.find({ institution: institution._id }).populate('student', 'fullName email').sort({ createdAt: -1 });
   return ok(res, fees);
 });
@@ -593,10 +601,11 @@ const listFees = asyncHandler(async (req, res) => {
     assertInstitutionVerified(institution);
     if (fee.status === 'paid') throw new AppError('Fee is already paid.', 409);
 
-    const { paidVia } = req.body;
+    const { paidVia, reference } = req.body;
     if (!paidVia || /card|stripe|paddle/i.test(paidVia)) {
       throw new AppError('Specify a verified manual payment method; online payments require gateway confirmation.', 422);
     }
+    if (!String(reference || '').trim()) throw new AppError('Cash receipt/reference number is required.', 422);
   const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
   fee.status = 'paid';
   fee.paidAt = new Date();
@@ -608,14 +617,21 @@ const listFees = asyncHandler(async (req, res) => {
   fee.netAmount = receipt.netAmount;
   fee.escrowStatus = 'held';
   fee.receiptNumber = `RCPT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
+  if (!fee.verifyCode) fee.verifyCode = crypto.randomBytes(10).toString('hex');
+  // Offline/cash collection still creates a real, immutable payment-history entry and audit trail
+  // — it never just overwrites the invoice total with no record of who recorded it or how.
+  fee.paymentHistory.push({ amount: fee.outstandingAmount ?? fee.amount, method: paidVia, transactionId: String(reference).trim(), reference: String(reference).trim(), verificationStatus: 'verified', recordedBy: req.user._id, verifiedBy: req.user._id, verifiedAt: new Date() });
+  fee.paidAmount = fee.amount;
+  fee.outstandingAmount = 0;
+  fee.restrictionActive = false;
   await fee.save();
 
   return ok(res, fee, 'Fee marked as paid.');
 });
 
-// PATCH /api/institutions/fees/:feeId/release — escrow release (spec 3A.3): the institution
+// PATCH /api/institutions/fees/:feeId/release â€” escrow release (spec 3A.3): the institution
 // confirms the paid fee and moves it out of "held" into "released" (available to them). No real
-// fund custody happens anywhere in this app (no payment gateway connected) — see Fee.js's
+// fund custody happens anywhere in this app (no payment gateway connected) â€” see Fee.js's
 // escrowStatus comment for what this status machine does and does not represent.
 const releaseFeeEscrow = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
@@ -673,7 +689,7 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
   if (entry.teacher) {
     await notify(entry.teacher, {
       title: `New class scheduled: ${subject}`,
-      body: `${DOW_FULL[dayOfWeek] || dayOfWeek} ${startTime}–${endTime}${room ? ` · ${room}` : ''}`,
+      body: `${DOW_FULL[dayOfWeek] || dayOfWeek} ${startTime}â€“${endTime}${room ? ` Â· ${room}` : ''}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -690,7 +706,7 @@ const listTimetable = asyncHandler(async (req, res) => {
   return ok(res, entries);
 });
 
-// PATCH /api/institutions/:id/class-sections/:sectionId/timetable/:entryId — the actual
+// PATCH /api/institutions/:id/class-sections/:sectionId/timetable/:entryId â€” the actual
 // "Class change" event (editing an existing scheduled class, not just adding/removing one).
 const updateTimetableEntry = asyncHandler(async (req, res) => {
   const entry = await TimetableEntry.findById(req.params.entryId);
@@ -718,7 +734,7 @@ const updateTimetableEntry = asyncHandler(async (req, res) => {
   if (notifyTeacherId) {
     await notify(notifyTeacherId, {
       title: `Class changed: ${entry.subject}`,
-      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}${entry.room ? ` · ${entry.room}` : ''}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}â€“${entry.endTime}${entry.room ? ` Â· ${entry.room}` : ''}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -736,7 +752,7 @@ const deleteTimetableEntry = asyncHandler(async (req, res) => {
   if (entry.teacher) {
     await notify(entry.teacher, {
       title: `Class cancelled: ${entry.subject}`,
-      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}â€“${entry.endTime}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -773,7 +789,7 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   course.classSection = section._id;
   course.teacher = teacher;
   await course.save();
-  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
+  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} Â· ${section.name} Â· ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
   await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);
   return ok(res, course, 'Course academic assignment updated.');
 });
@@ -794,14 +810,15 @@ const listInstitutionStudents = asyncHandler(async (req, res) => {
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
 
-  const students = await StudentProfile.find({ primaryInstitution: institution._id })
+  const memberIds = await StudentInstitutionMembership.find({ institution: institution._id, status: 'active' }).distinct('student');
+  const students = await StudentProfile.find({ user: { $in: memberIds } })
     .populate('user', 'fullName email')
     .populate('classSection', 'name')
     .sort({ createdAt: -1 });
   return ok(res, students);
 });
 
-// GET /api/institutions/:id/parents — a real parent directory (spec: Institution<->Parent
+// GET /api/institutions/:id/parents â€” a real parent directory (spec: Institution<->Parent
 // "parent directory relationship"): every parent with an approved link to one of this
 // institution's students, which of their children are here, and whether the institution has
 // separately verified that link.
@@ -832,7 +849,7 @@ const listInstitutionParents = asyncHandler(async (req, res) => {
   return ok(res, Array.from(byParent.values()));
 });
 
-// PATCH /api/institutions/:id/parents/:linkId/verify — institution's own extra confirmation on
+// PATCH /api/institutions/:id/parents/:linkId/verify â€” institution's own extra confirmation on
 // top of student consent (spec: "guardian verification").
 const verifyParentLink = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -852,7 +869,7 @@ const verifyParentLink = asyncHandler(async (req, res) => {
   return ok(res, link, link.institutionVerified ? 'Guardian link verified.' : 'Guardian verification removed.');
 });
 
-// GET /api/institutions/:id/feedback — parent satisfaction ratings received (spec:
+// GET /api/institutions/:id/feedback â€” parent satisfaction ratings received (spec:
 // Institution<->Parent "parent satisfaction/feedback", "parent engagement analytics").
 const getInstitutionFeedback = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -871,7 +888,7 @@ const getInstitutionFeedback = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/institutions/:id/feedback/summary — average + count only (no comments), visible to
+// GET /api/institutions/:id/feedback/summary â€” average + count only (no comments), visible to
 // any authenticated user (e.g. a parent deciding whether/how to rate), plus their own rating if
 // they've already left one.
 const getInstitutionFeedbackSummary = asyncHandler(async (req, res) => {
@@ -903,14 +920,14 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
       throw new AppError('Invalid status.', 422);
     }
     profile.status = status;
-    // A real transfer/history record (spec: "transfer/withdrawal/alumni lifecycle") — not just
+    // A real transfer/history record (spec: "transfer/withdrawal/alumni lifecycle") â€” not just
     // an overwritten status flag. 'suspended'/'active' aren't a departure, so only these two are.
     if (['transferred', 'graduated'].includes(status)) {
       await recordLeave(profile.user, institution._id, status, reason);
     }
   }
   // Class Section + Roll Number are normally assigned by the institution's office, not the
-  // student — this is the school-admin side of that assignment.
+  // student â€” this is the school-admin side of that assignment.
   if (classSection !== undefined) profile.classSection = classSection || null;
   if (rollNumber !== undefined) profile.rollNumber = rollNumber;
   await profile.save();
@@ -945,18 +962,81 @@ const listInstitutionAttendance = asyncHandler(async (req, res) => {
 });
 
 // ---- Payroll ----
+const listMembershipRequests = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const requests = await StudentInstitutionMembership.find({ institution: institution._id, status: { $in: ['pending', 'withdrawal_requested', 'transfer_requested'] } })
+    .populate('student', 'fullName email profilePhoto').populate('targetInstitution', 'name').sort({ updatedAt: 1 });
+  return ok(res, requests);
+});
+
+const reviewMembershipRequest = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const { decision } = req.body;
+  if (!['approve', 'reject'].includes(decision)) throw new AppError('decision must be approve or reject.', 422);
+  const membership = await StudentInstitutionMembership.findOne({ _id: req.params.membershipId, institution: institution._id }).populate('student', 'fullName');
+  if (!membership || !['pending', 'withdrawal_requested', 'transfer_requested'].includes(membership.status)) throw new AppError('Pending membership request not found.', 404);
+  const previousStatus = membership.status;
+  if (decision === 'reject') {
+    membership.status = previousStatus === 'pending' ? 'rejected' : 'active'; membership.requestedAction = ''; membership.targetInstitution = null;
+    membership.reviewedBy = req.user._id; membership.reviewedAt = new Date(); await membership.save();
+  } else if (previousStatus === 'pending') {
+    // A minor joining an institution needs an approved guardian on record first — same consent
+    // rule already enforced for independent-tutoring links (teacherStudentLink.controller.js);
+    // an unknown date of birth is treated conservatively as a minor.
+    const studentProfile = await StudentProfile.findOne({ user: membership.student._id });
+    const age = studentProfile?.dateOfBirth
+      ? Math.floor((Date.now() - new Date(studentProfile.dateOfBirth).getTime()) / (365.25 * 24 * 60 * 60 * 1000))
+      : null;
+    if (age === null || age < 18) {
+      const hasConsentingGuardian = await ParentChildLink.exists({ student: membership.student._id, status: 'approved', 'permissions.giveConsent': true });
+      if (!hasConsentingGuardian) {
+        throw new AppError('This student appears to be a minor — a parent/guardian must be linked and approved (with consent permission) before this institution join can be approved.', 422);
+      }
+    }
+    await recordJoin(membership.student._id, institution._id, membership.program);
+    membership.status = 'active'; membership.requestedAction = ''; membership.reviewedBy = req.user._id; membership.reviewedAt = new Date(); await membership.save();
+  } else {
+    const finalStatus = previousStatus === 'transfer_requested' ? 'transferred' : 'withdrawn';
+    const targetInstitution = membership.targetInstitution;
+    await recordLeave(membership.student._id, institution._id, finalStatus, membership.reason);
+    membership.reviewedBy = req.user._id; membership.reviewedAt = new Date(); await membership.save();
+    if (targetInstitution) {
+      await StudentInstitutionMembership.findOneAndUpdate(
+        { student: membership.student._id, institution: targetInstitution },
+        { $set: { status: 'pending', requestedAction: 'join', reason: `Transfer from ${institution.name}`, targetInstitution: null, reviewedBy: null, reviewedAt: null } },
+        { upsert: true, new: true, setDefaultsOnInsert: true }
+      );
+      const target = await Institution.findById(targetInstitution);
+      if (target) await notify(target.owner, { title: `Incoming transfer request: ${membership.student.fullName}`, sentBy: req.user._id }).catch(() => {});
+    }
+  }
+  await notify(membership.student._id, { title: `${institution.name} ${decision}d your ${membership.requestedAction || (previousStatus === 'pending' ? 'join' : 'exit')} request`, sentBy: req.user._id }, { email: true }).catch(() => {});
+  return ok(res, membership, `Membership request ${decision}d.`);
+});
+
 const createPayslip = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  const { staff, month, year, basicSalary, bonuses, overtimeAmount, allowances, deductions, currency } = req.body;
+  const { staff, month, year, basicSalary, bonuses, overtimeAmount, allowances, commissionAmount, deductions, taxAmount, currency } = req.body;
   if (!staff || !month || !year || basicSalary === undefined) {
     throw new AppError('staff, month, year and basicSalary are required.', 422);
   }
 
-  const netAmount = Number(basicSalary) + Number(bonuses || 0) + Number(overtimeAmount || 0) + Number(allowances || 0) - Number(deductions || 0);
+  const staffEntry = institution.staff.find((entry) => entry.user.toString() === String(staff));
+  if (!staffEntry) throw new AppError('The selected person is not active staff at this institution.', 403);
+  const amounts = [basicSalary, bonuses || 0, overtimeAmount || 0, allowances || 0, commissionAmount || 0, deductions || 0, taxAmount || 0].map(Number);
+  if (amounts.some((amount) => !Number.isFinite(amount) || amount < 0)) throw new AppError('Salary amounts must be valid non-negative numbers.', 422);
+  const existingPayslip = await Payslip.findOne({ institution: institution._id, staff, month: Number(month), year: Number(year) });
+  if (existingPayslip) throw new AppError('A payslip for this employee and month already exists.', 409);
+  const netAmount = amounts[0] + amounts[1] + amounts[2] + amounts[3] + amounts[4] - amounts[5] - amounts[6];
+  if (netAmount < 0) throw new AppError('Deductions cannot exceed gross salary.', 422);
   const payslip = await Payslip.create({
     institution: institution._id,
     staff,
@@ -966,19 +1046,100 @@ const createPayslip = asyncHandler(async (req, res) => {
     bonuses: bonuses || 0,
     overtimeAmount: overtimeAmount || 0,
     allowances: allowances || 0,
+    commissionAmount: commissionAmount || 0,
     deductions: deductions || 0,
+    taxAmount: taxAmount || 0,
     netAmount,
     currency: currency || 'USD',
     generatedBy: req.user._id
   });
 
+  await notify(staff, { title: `New salary slip: ${payslip.currency} ${payslip.netAmount}`, body: `${payslip.month}/${payslip.year} — ${institution.name}`, sentBy: req.user._id }).catch(() => {});
   return created(res, payslip, 'Payslip generated.');
+});
+
+// Real "sales" basis for commission: paid CoursePurchase revenue on courses this teacher owns,
+// inside the given calendar month. Kept separate from Fee (institution tuition, not tied to a
+// specific teacher's course) so commission is never computed from money that isn't actually this
+// teacher's to earn a cut of.
+async function computeCourseCommission(teacherId, institutionId, commissionPercent, month, year) {
+  if (!commissionPercent) return 0;
+  const monthStart = new Date(year, month - 1, 1);
+  const monthEnd = new Date(year, month, 1);
+  const teacherCourseIds = await Course.find({ teacher: teacherId, institution: institutionId }).distinct('_id');
+  if (teacherCourseIds.length === 0) return 0;
+  const purchases = await CoursePurchase.find({ course: { $in: teacherCourseIds }, status: 'paid', paidAt: { $gte: monthStart, $lt: monthEnd } });
+  const revenue = purchases.reduce((sum, p) => sum + p.amountMinor / 100, 0);
+  return Math.round(revenue * (commissionPercent / 100) * 100) / 100;
+}
+
+// Shared by the manual "Generate Monthly Payroll" button AND the lazy auto-trigger below —
+// idempotent (skips any staff member who already has a payslip for that month/year), same as
+// every other "no cron in this app" lazy-scheduled job (see job/scholarship reminder comments).
+async function runMonthlyPayrollFor(institution, month, year, generatedBy) {
+  const employments = await TeacherEmployment.find({ institution: institution._id, status: 'active', salaryType: { $in: ['monthly', 'hybrid', 'commission'] } });
+  let createdCount = 0; let skippedCount = 0;
+  for (const employment of employments) {
+    const hasMonthly = ['monthly', 'hybrid'].includes(employment.salaryType) && employment.monthlySalary > 0;
+    const hasCommission = ['commission', 'hybrid'].includes(employment.salaryType) && employment.commissionPercent > 0;
+    if (!hasMonthly && !hasCommission) { skippedCount += 1; continue; }
+    const exists = await Payslip.exists({ institution: institution._id, staff: employment.teacher, month, year });
+    if (exists) { skippedCount += 1; continue; }
+
+    const basicSalary = hasMonthly ? Number(employment.monthlySalary || 0) : 0;
+    const commissionAmount = hasCommission
+      ? await computeCourseCommission(employment.teacher, institution._id, employment.commissionPercent, month, year)
+      : 0;
+    const gross = basicSalary + commissionAmount;
+    const taxAmount = Math.round((gross * Number(employment.taxPercent || 0) / 100) * 100) / 100;
+    await Payslip.create({ institution: institution._id, staff: employment.teacher, month, year, basicSalary, commissionAmount, taxAmount, netAmount: gross - taxAmount, currency: employment.salaryCurrency || 'PKR', generatedBy });
+    await notify(employment.teacher, { title: `New salary slip: ${employment.salaryCurrency || 'PKR'} ${gross - taxAmount}`, body: `${month}/${year} — ${institution.name}`, sentBy: generatedBy }, { email: true }).catch(() => {});
+    createdCount += 1;
+  }
+  return { created: createdCount, skipped: skippedCount, eligible: employments.length };
+}
+
+const generateMonthlyPayroll = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  assertInstitutionVerified(institution);
+  const month = Number(req.body.month); const year = Number(req.body.year);
+  if (month < 1 || month > 12 || year < 2000) throw new AppError('A valid month and year are required.', 422);
+  const result = await runMonthlyPayrollFor(institution, month, year, req.user._id);
+  return created(res, result, 'Monthly payroll generated.');
+});
+
+// "Automatic" monthly payroll (spec: no cron/worker process in this codebase — see the same
+// honest lazy-check pattern used for job/scholarship reminders). Runs at most once per real
+// calendar-month rollover, the first time ANY owner/staff of this institution loads their Payroll
+// screen that month — silently generates last month's payroll for every eligible employee whose
+// salary period just closed, so nobody has to remember to click the manual button.
+async function autoRunPreviousMonthPayrollIfDue(institution, actingUserId) {
+  const now = new Date();
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const month = prevMonthDate.getMonth() + 1;
+  const year = prevMonthDate.getFullYear();
+  try {
+    await runMonthlyPayrollFor(institution, month, year, actingUserId);
+  } catch { /* best-effort — a manual "Generate Monthly Payroll" click always remains available */ }
+}
+
+const getPayrollTaxReport = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const year = Number(req.query.year || new Date().getFullYear());
+  const rows = await Payslip.find({ institution: institution._id, year }).populate('staff', 'fullName email').sort({ month: 1 });
+  const totals = rows.reduce((sum, row) => ({ gross: sum.gross + row.basicSalary + row.bonuses + row.overtimeAmount + row.allowances + (row.commissionAmount || 0), tax: sum.tax + (row.taxAmount || 0), deductions: sum.deductions + row.deductions, net: sum.net + row.netAmount }), { gross: 0, tax: 0, deductions: 0, net: 0 });
+  return ok(res, { year, totals, rows });
 });
 
 const listInstitutionPayroll = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
+  await autoRunPreviousMonthPayrollIfDue(institution, req.user._id);
 
   const payslips = await Payslip.find({ institution: institution._id })
     .populate('staff', 'fullName email')
@@ -986,10 +1147,10 @@ const listInstitutionPayroll = asyncHandler(async (req, res) => {
   return ok(res, payslips);
 });
 
-const PAYSLIP_METHOD_LABEL = { ...PAYOUT_METHOD_LABEL, cash: 'Cash' };
+const PAYSLIP_METHOD_LABEL = { ...PAYOUT_METHOD_LABEL, cash: 'Cash', platform_wallet: 'CareerZ Wallet' };
 
 const markPayslipPaid = asyncHandler(async (req, res) => {
-  const { paymentMethod } = req.body;
+  const { paymentMethod, reference, proofUrl, provider } = req.body;
   if (!paymentMethod || !PAYSLIP_METHOD_LABEL[paymentMethod]) {
     throw new AppError('A valid paymentMethod is required (bank_transfer, mobile_wallet, cash or other).', 422);
   }
@@ -1001,19 +1162,62 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  payslip.status = 'paid';
-  payslip.paidAt = new Date();
-  payslip.paymentMethod = paymentMethod;
-  payslip.transactionId = generateTransactionId();
-  await payslip.save();
-
+  if (payslip.status === 'paid') throw new AppError('This payslip has already been paid.', 409);
+  if (paymentMethod === 'stripe_transfer') {
+    const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
+    if (!isStripeConfigured()) throw new AppError('Real bank transfer is not available — Stripe is not configured on this platform yet.', 503);
+    const teacherProfile = await TeacherProfile.findOne({ user: payslip.staff });
+    if (!teacherProfile?.payout?.stripeAccountId || !teacherProfile.payout.payoutsEnabled) {
+      throw new AppError('This teacher has not finished connecting a bank account for real transfers yet.', 422);
+    }
+    const stripe = getStripeClient();
+    try {
+      const transfer = await stripe.transfers.create({
+        amount: Math.round(payslip.netAmount * 100),
+        currency: (payslip.currency || 'USD').toLowerCase(),
+        destination: teacherProfile.payout.stripeAccountId,
+        description: `Salary ${payslip.month}/${payslip.year} — ${institution.name}`
+      });
+      payslip.status = 'paid'; payslip.paidAt = new Date(); payslip.paymentMethod = paymentMethod;
+      payslip.transactionId = transfer.id; payslip.stripeTransferId = transfer.id; payslip.stripeTransferStatus = 'sent';
+      await payslip.save();
+    } catch (err) {
+      payslip.stripeTransferStatus = 'failed'; payslip.stripeTransferError = err.message; await payslip.save();
+      throw new AppError(`Real bank transfer failed: ${err.message}`, 422);
+    }
+  } else if (paymentMethod === 'platform_wallet') {
+    await mongoose.connection.transaction(async (session) => {
+      const sender = await Wallet.findOneAndUpdate(
+        { user: institution.owner, currency: payslip.currency, available: { $gte: payslip.netAmount } },
+        { $inc: { available: -payslip.netAmount } }, { new: true, session }
+      );
+      if (!sender) throw new AppError(`Institution wallet has insufficient ${payslip.currency} balance.`, 422);
+      await Wallet.findOneAndUpdate(
+        { user: payslip.staff, currency: payslip.currency }, { $inc: { available: payslip.netAmount } },
+        { upsert: true, new: true, session, setDefaultsOnInsert: true }
+      );
+      await WalletTransaction.create([
+        { user: institution.owner, type: 'transfer_out', amount: payslip.netAmount, currency: payslip.currency, status: 'completed', counterparty: payslip.staff, note: `Salary ${payslip.month}/${payslip.year} · ${institution.name}` },
+        { user: payslip.staff, type: 'transfer_in', amount: payslip.netAmount, currency: payslip.currency, status: 'completed', counterparty: institution.owner, note: `Salary ${payslip.month}/${payslip.year} · ${institution.name}` }
+      ], { session, ordered: true });
+      payslip.status = 'paid'; payslip.paidAt = new Date(); payslip.paymentMethod = paymentMethod; payslip.transactionId = generateTransactionId();
+      await payslip.save({ session });
+    });
+  } else {
+    if (!String(reference || '').trim()) throw new AppError('Payment reference or cash receipt number is required.', 422);
+    if (paymentMethod !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required for manual salary payments.', 422);
+    payslip.status = 'processing'; payslip.paymentMethod = paymentMethod;
+    payslip.paymentReference = String(reference).trim(); payslip.paymentProofUrl = String(proofUrl || '').trim();
+    payslip.paymentProvider = String(provider || '').trim(); payslip.paymentReportedAt = new Date();
+    await payslip.save();
+  }
   await notify(payslip.staff, {
-    title: `Salary paid: ${payslip.currency} ${payslip.netAmount} (receipt ${payslip.transactionId})`,
-    body: `${payslip.month}/${payslip.year} — ${institution.name}`,
+    title: payslip.status === 'processing' ? `Salary payment reported: ${payslip.currency} ${payslip.netAmount}` : `Salary paid: ${payslip.currency} ${payslip.netAmount} (receipt ${payslip.transactionId})`,
+    body: payslip.status === 'processing' ? `${institution.name} reported payment for ${payslip.month}/${payslip.year}. Confirm it after the money reaches you.` : `${payslip.month}/${payslip.year} - ${institution.name}`,
     sentBy: req.user._id
   }).catch(() => {});
 
-  return ok(res, payslip, 'Payslip marked as paid.');
+  return ok(res, payslip, payslip.status === 'processing' ? 'Salary payment submitted for teacher verification.' : 'Payslip marked as paid.');
 });
 
 // ---- Reports ----
@@ -1079,10 +1283,10 @@ const getInstitutionReports = asyncHandler(async (req, res) => {
   });
 });
 
-// POST /api/institutions/:id/ai-insights — AI Operations Assistant (spec 15D.19). Uses the
+// POST /api/institutions/:id/ai-insights â€” AI Operations Assistant (spec 15D.19). Uses the
 // institution's own BYOK AI text credential (same pattern as the AI Creative Teacher tools) to
-// analyze REAL aggregated institution data — never fabricated numbers, the AI only summarizes
-// what getInstitutionReports already computed. All decisions stay with the institution — this
+// analyze REAL aggregated institution data â€” never fabricated numbers, the AI only summarizes
+// what getInstitutionReports already computed. All decisions stay with the institution â€” this
 // only produces a written summary/alerts, it never changes any data itself.
 const getAiInsights = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -1115,7 +1319,7 @@ Open help-desk tickets: ${openComplaints}`;
   try {
     const result = await aiService.generate(
       req.user._id,
-      'You are an institution operations assistant for a school/college. Given real, structured operational data, write a short (5-8 bullet points) analysis: highlight fee-collection risk, payroll status, support/complaint load, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the institution\'s own — you are only summarizing, not deciding.',
+      'You are an institution operations assistant for a school/college. Given real, structured operational data, write a short (5-8 bullet points) analysis: highlight fee-collection risk, payroll status, support/complaint load, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the institution\'s own â€” you are only summarizing, not deciding.',
       dataSummary
     );
     return ok(res, { insights: result, dataSummary });
@@ -1154,7 +1358,7 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
   return ok(res, withCourseTitle);
 });
 
-// GET /api/institutions/mine/staff-roles — every institution the current user is staff at,
+// GET /api/institutions/mine/staff-roles â€” every institution the current user is staff at,
 // and their exact staff.role there. The frontend uses this to decide whether to show the
 // full Institution workspace or the scoped-down Representative dashboard.
 const myStaffRoles = asyncHandler(async (req, res) => {
@@ -1166,7 +1370,7 @@ const myStaffRoles = asyncHandler(async (req, res) => {
   return ok(res, roles);
 });
 
-// GET /api/institutions/mine/rep-dashboard — the Institute Representative home page.
+// GET /api/institutions/mine/rep-dashboard â€” the Institute Representative home page.
 // Scoped to the first institution where this user's staff.role is "representative".
 const getRepDashboard = asyncHandler(async (req, res) => {
   const institutions = await Institution.find({ 'staff.user': req.user._id });
@@ -1191,11 +1395,11 @@ const getRepDashboard = asyncHandler(async (req, res) => {
   const completedConsultations = meetings.filter((m) => m.status === 'completed').length;
   const pendingStatuses = ['submitted', 'under_review', 'documents_required'];
 
-  // "Meeting reminder" / "Admission deadline" notifications — this codebase has no
+  // "Meeting reminder" / "Admission deadline" notifications â€” this codebase has no
   // cron/scheduler, so both are checked lazily on real dashboard load, same pattern as the
   // job-seeker's application-deadline reminder. Deduped by title so refreshing doesn't spam.
   await Promise.all(meetingReminders.map(async (m) => {
-    const title = `Meeting reminder: ${m.student?.fullName || 'a student'} — ${new Date(m.scheduledDate).toLocaleString()}`;
+    const title = `Meeting reminder: ${m.student?.fullName || 'a student'} â€” ${new Date(m.scheduledDate).toLocaleString()}`;
     const already = await Notification.findOne({ user: req.user._id, title });
     if (!already) await notify(req.user._id, { title, body: m.program || inst.name, sentBy: null }).catch(() => {});
   }));
@@ -1210,7 +1414,7 @@ const getRepDashboard = asyncHandler(async (req, res) => {
   }
   const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(8);
 
-  // "Admission progress" — a real, computed stage indicator (not a fabricated number),
+  // "Admission progress" â€” a real, computed stage indicator (not a fabricated number),
   // derived from where the application actually sits in its own status pipeline.
   const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, accepted: 100, rejected: 100 };
   const applicationsWithProgress = applications.map((a) => ({ ...a.toObject(), admissionProgress: PROGRESS_BY_STATUS[a.status] ?? 0 }));
@@ -1302,9 +1506,13 @@ module.exports = {
   listInstitutionStudents,
   updateStudentStatus,
   listInstitutionAttendance,
+  listMembershipRequests,
+  reviewMembershipRequest,
   createPayslip,
   listInstitutionPayroll,
   markPayslipPaid,
+  generateMonthlyPayroll,
+  getPayrollTaxReport,
   getInstitutionReports,
   getAiInsights,
   listInstitutionExams,

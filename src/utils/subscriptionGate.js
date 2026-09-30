@@ -1,6 +1,7 @@
 const Setting = require('../models/Setting');
 const AppError = require('./AppError');
 const { DEFAULT_PLANS } = require('../config/subscriptionPlans');
+const env = require('../config/env');
 
 const PLAN_CONFIG_KEY = 'subscription_plan_config';
 
@@ -35,6 +36,7 @@ async function getEffectivePlanFor(institution) {
 }
 
 async function assertStaffCapAllows(institution, currentCount) {
+  if (env.nodeEnv !== 'production' || env.disableSubscriptionLimits) return;
   const plan = await getEffectivePlanFor(institution);
   if (plan.maxStaff != null && currentCount >= plan.maxStaff) {
     throw new AppError(
@@ -45,6 +47,7 @@ async function assertStaffCapAllows(institution, currentCount) {
 }
 
 async function assertAiInstitutionKeyAllowed(institution) {
+  if (env.nodeEnv !== 'production' || env.disableSubscriptionLimits) return;
   const plan = await getEffectivePlanFor(institution);
   if (!plan.aiInstitutionKey) {
     throw new AppError(`Institution-level AI keys require the Basic plan or higher. Current plan: ${plan.label}.`, 403);

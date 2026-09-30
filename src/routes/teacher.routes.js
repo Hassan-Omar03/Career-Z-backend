@@ -20,6 +20,11 @@ router.post('/me/self-attendance/check-in', ctrl.checkInMyAttendance);
 router.get('/me/self-attendance', ctrl.getMySelfAttendance);
 router.get('/me/timetable', ctrl.getMyTimetable);
 router.get('/me/payslips', ctrl.getMyPayslips);
+router.patch('/me/payslips/:id/verify-payment', ctrl.verifyMyPayslipPayment);
 router.get('/me/dashboard', ctrl.getMyDashboard);
+router.get('/students/:studentId/timeline', ctrl.getStudentTimeline);
+router.get('/me/payout-status', ctrl.getMyPayoutStatus);
+router.post('/me/payout-onboarding', ctrl.startPayoutOnboarding);
+router.get('/me/engagement-history', ctrl.getMyEngagementHistory);
 
 module.exports = router;

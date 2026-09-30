@@ -6,7 +6,7 @@ const ExamSubmission = require('../models/ExamSubmission');
 const Exam = require('../models/Exam');
 const Result = require('../models/Result');
 const User = require('../models/User');
-const { getBlockingInstitutionFee } = require('../utils/feeAccess');
+const { assertFeeAccessForCapability } = require('../utils/feeAccess');
 const { notify } = require('./notification.service');
 
 async function courseCertificateEligibility(studentId, courseId) {
@@ -20,7 +20,8 @@ async function courseCertificateEligibility(studentId, courseId) {
   if (!institution || institution.verificationStatus !== 'approved') return { eligible: false, reason: 'Institution verification is required.' };
   if (!course.certificateEnabled) return { eligible: false, reason: 'Certificates are not enabled for this course.' };
   if (enrollment.completionStatus !== 'completed' || enrollment.status !== 'completed') return { eligible: false, reason: 'Course completion is not approved yet.' };
-  if (await getBlockingInstitutionFee(studentId, course.institution)) return { eligible: false, reason: 'Outstanding institution fees must be cleared.' };
+  try { await assertFeeAccessForCapability(studentId, course.institution, 'certificates'); }
+  catch { return { eligible: false, reason: 'Outstanding institution fees must be cleared.' }; }
 
   const examIds = await Exam.find({ course: course._id, published: true }).distinct('_id');
   const gradedAttempt = await ExamSubmission.findOne({ student: studentId, exam: { $in: examIds }, status: 'graded' }).populate('exam');

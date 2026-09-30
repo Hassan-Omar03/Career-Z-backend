@@ -15,10 +15,12 @@ async function notify(userId, { title, body = '', sentBy = null }, { email = fal
     _id: notification._id, title, body, createdAt: notification.createdAt, read: false
   });
 
-  if (email && toAddress) {
+  if (email) {
     try {
+      const address = toAddress || (await User.findById(userId).select('email'))?.email;
+      if (!address) throw new Error('No email address on file.');
       await sendEmail({
-        to: toAddress,
+        to: address,
         subject: title,
         text: body,
         html: noticeEmailTemplate({ heading: title, body, ctaUrl, ctaLabel })

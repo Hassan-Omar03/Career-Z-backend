@@ -16,6 +16,15 @@ const donationSchema = new mongoose.Schema(
     // Internal ledger reference — this app has no real payment gateway, so this is a real,
     // unique, server-generated tracking id, not a fabricated external transaction number.
     transactionId: { type: String, unique: true, index: true },
+    paymentReference: { type: String, default: '' },
+    paymentProofUrl: { type: String, default: '' },
+    paymentProvider: { type: String, default: '' },
+    paidOn: { type: Date, default: null },
+    verifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    verifiedAt: { type: Date, default: null },
+    rejectedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    rejectedAt: { type: Date, default: null },
+    rejectionReason: { type: String, default: '' },
     // Full receipt breakdown (spec 3A.2) — see Fee.js for why gatewayCharges/taxAmount stay 0.
     grossAmount: { type: Number, default: null },
     platformCommission: { type: Number, default: 0 },
@@ -29,7 +38,7 @@ const donationSchema = new mongoose.Schema(
     // successful by default: recorded the moment the donor confirms it happened (no live payment
     // processor). The donor can later self-report failed/refunded if the real-world payment didn't
     // go through or was reversed — collectedAmount is reconciled accordingly.
-    status: { type: String, enum: ['pending', 'successful', 'failed', 'refunded'], default: 'successful' }
+    status: { type: String, enum: ['pending', 'successful', 'failed', 'rejected', 'refunded'], default: 'successful' }
   },
   { timestamps: true }
 );

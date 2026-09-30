@@ -292,37 +292,65 @@ const updateSponsorshipStatus = asyncHandler(async (req, res) => {
 // their commitment (no payment processor in this app, so this is a donor-confirmed record) and
 // optionally sets the next payment date.
 const recordSponsorshipPayment = asyncHandler(async (req, res) => {
-  const { paidAmount, nextPaymentDate } = req.body;
+  const { amount, paymentMethod, reference, proofUrl, provider, nextPaymentDate } = req.body;
 
   const sponsorship = await Sponsorship.findById(req.params.id).populate('scholarship', 'title');
   if (!sponsorship) throw new AppError('Sponsorship not found.', 404);
   if (sponsorship.donor.toString() !== req.user._id.toString()) throw new AppError('You did not create this sponsorship.', 403);
 
-  if (paidAmount !== undefined) {
-    if (paidAmount < 0) throw new AppError('paidAmount cannot be negative.', 422);
-    sponsorship.paidAmount = Math.min(paidAmount, sponsorship.amount);
-  }
+  const paymentAmount = Number(amount);
+  if (!(paymentAmount > 0) || paymentAmount > sponsorship.amount - sponsorship.paidAmount) throw new AppError('Enter a valid amount up to the remaining sponsorship balance.', 422);
+  if (!['bank_transfer', 'mobile_wallet', 'cash', 'other'].includes(paymentMethod)) throw new AppError('Choose a valid manual payment method.', 422);
+  if (!String(reference || '').trim()) throw new AppError('Payment reference is required.', 422);
+  if (paymentMethod !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required.', 422);
+  if (sponsorship.paymentHistory.some((p) => p.status === 'pending')) throw new AppError('A sponsorship payment is already awaiting student verification.', 409);
+  sponsorship.paymentHistory.push({ amount: paymentAmount, paymentMethod, reference: String(reference).trim(), proofUrl: String(proofUrl || '').trim(), provider: String(provider || '').trim() });
   if (nextPaymentDate !== undefined) sponsorship.nextPaymentDate = nextPaymentDate || null;
   await sponsorship.save();
 
   await notify(sponsorship.student, {
-    title: `Payment recorded — ${sponsorship.scholarship?.title}: ${sponsorship.currency} ${sponsorship.paidAmount} paid so far`,
+    title: `Sponsorship payment awaiting your verification — ${sponsorship.scholarship?.title}: ${sponsorship.currency} ${paymentAmount}`,
     sentBy: req.user._id
   }).catch(() => {});
 
-  return ok(res, sponsorship, 'Payment recorded.');
+  return ok(res, sponsorship, 'Payment submitted for student verification.');
+});
+
+const receivedSponsorshipPayments = asyncHandler(async (req, res) => {
+  const rows = await Sponsorship.find({ student: req.user._id, 'paymentHistory.status': 'pending' }).populate('donor', 'fullName email').populate('scholarship', 'title');
+  return ok(res, rows);
+});
+
+const verifySponsorshipPayment = asyncHandler(async (req, res) => {
+  const sponsorship = await Sponsorship.findOne({ _id: req.params.id, student: req.user._id });
+  if (!sponsorship) throw new AppError('Sponsorship not found.', 404);
+  const payment = sponsorship.paymentHistory.id(req.params.paymentId);
+  if (!payment || payment.status !== 'pending') throw new AppError('Pending sponsorship payment not found.', 404);
+  const { decision, rejectionReason } = req.body;
+  if (decision === 'reject') {
+    if (!String(rejectionReason || '').trim()) throw new AppError('A rejection reason is required.', 422);
+    payment.status = 'rejected'; payment.rejectedAt = new Date(); payment.rejectionReason = String(rejectionReason).trim();
+  } else if (decision === 'verify') {
+    payment.status = 'verified'; payment.verifiedAt = new Date(); sponsorship.paidAmount = Math.min(sponsorship.amount, sponsorship.paidAmount + payment.amount);
+    if (sponsorship.paidAmount >= sponsorship.amount) sponsorship.status = 'completed'; else if (sponsorship.status === 'pending') sponsorship.status = 'active';
+  } else throw new AppError('decision must be verify or reject.', 422);
+  await sponsorship.save();
+  return ok(res, sponsorship, decision === 'verify' ? 'Sponsorship payment verified.' : 'Sponsorship payment rejected.');
 });
 
 // POST /api/scholarships/donor/deposit — request to fund the wallet. No real payment
 // processor in this app — this creates a real, trackable request, not fake money.
 const requestDeposit = asyncHandler(async (req, res) => {
-  const { amount, currency, paymentMethod } = req.body;
+  const { amount, currency, paymentMethod, reference, proofUrl, provider } = req.body;
   if (!amount || amount <= 0) throw new AppError('amount must be a positive number.', 422);
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
     throw new AppError('A valid paymentMethod is required (bank_transfer, card, mobile_wallet, cash or other).', 422);
   }
+  if (paymentMethod === 'card') throw new AppError('Card deposits require a verified gateway checkout.', 422);
+  if (!String(reference || '').trim()) throw new AppError('Payment reference or cash receipt number is required.', 422);
+  if (paymentMethod !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required.', 422);
 
-  const deposit = await DonorDeposit.create({ donor: req.user._id, amount, currency: currency || 'USD', paymentMethod });
+  const deposit = await DonorDeposit.create({ donor: req.user._id, amount, currency: currency || 'USD', paymentMethod, paymentReference: String(reference).trim(), paymentProofUrl: String(proofUrl || '').trim(), paymentProvider: String(provider || '').trim() });
   return created(res, deposit, 'Deposit requested.');
 });
 
@@ -332,14 +360,24 @@ const myDeposits = asyncHandler(async (req, res) => {
   return ok(res, deposits);
 });
 
+const adminListDeposits = asyncHandler(async (req, res) => {
+  const deposits = await DonorDeposit.find({ status: 'requested' }).populate('donor', 'fullName email').sort({ createdAt: 1 });
+  return ok(res, deposits);
+});
+
 // PATCH /api/scholarships/deposits/:id/status — admin confirms/rejects a deposit request.
 const updateDepositStatus = asyncHandler(async (req, res) => {
-  const { status } = req.body;
+  const { status, rejectionReason } = req.body;
   if (!['requested', 'confirmed', 'rejected'].includes(status)) throw new AppError('Invalid status.', 422);
 
   const deposit = await DonorDeposit.findById(req.params.id);
   if (!deposit) throw new AppError('Deposit not found.', 404);
   deposit.status = status;
+  deposit.reviewedBy = req.user._id; deposit.reviewedAt = new Date();
+  if (status === 'rejected') {
+    if (!String(rejectionReason || '').trim()) throw new AppError('A rejection reason is required.', 422);
+    deposit.rejectionReason = String(rejectionReason).trim();
+  }
   if (status === 'confirmed') deposit.transactionId = generateTransactionId();
   await deposit.save();
 
@@ -368,7 +406,7 @@ module.exports = {
   mySponsorships,
   updateSponsorshipStatus,
   recordSponsorshipPayment,
-  requestDeposit,
+  requestDeposit, adminListDeposits, receivedSponsorshipPayments, verifySponsorshipPayment,
   myDeposits,
   updateDepositStatus
 };

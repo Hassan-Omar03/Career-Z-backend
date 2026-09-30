@@ -30,6 +30,8 @@ router.use('/certificates', require('./certificate.routes'));
 router.use('/marketplace', require('./marketplace.routes'));
 router.use('/scholarships', require('./scholarship.routes'));
 router.use('/study-groups', require('./studyGroup.routes'));
+router.use('/group-conversations', require('./groupConversation.routes'));
+router.use('/institution-fees', require('./institutionFee.routes'));
 router.use('/funding-requests', require('./fundingRequest.routes'));
 router.use('/complaints', require('./complaint.routes'));
 router.use('/payments', require('./payment.routes'));
