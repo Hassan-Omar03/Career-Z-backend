@@ -13,12 +13,21 @@ const vehicleSchema = new mongoose.Schema(
     driverName: { type: String, default: '' },
     driverPhone: { type: String, default: '' },
     driverLicenseNo: { type: String, default: '' },
+    // Optional real login account for the driver (spec: "dedicated Driver account/app") — when
+    // set, that user can start/end journeys, ping location, confirm boarding and send SOS for
+    // THIS vehicle only, without needing institution owner/staff permissions.
+    driverUser: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+    insuranceExpiry: { type: Date, default: null },
+    fitnessExpiry: { type: Date, default: null },
+    lastServiceDate: { type: Date, default: null },
+    nextServiceDue: { type: Date, default: null },
     routeName: { type: String, default: '' },
     // lat/lng are optional — when set, live tracking can alert "near pickup/drop point";
     // when left blank the route still works, just without that specific proximity alert.
     stopPoints: [{ name: String, time: String, lat: Number, lng: Number }],
     assignedStudents: [{ type: mongoose.Schema.Types.ObjectId, ref: 'User' }],
     monthlyFee: { type: Number, default: 0 },
+    feeChangeHistory: [{ previousAmount: Number, newAmount: Number, reason: String, changedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, changedAt: { type: Date, default: Date.now } }],
     // Optional — if set, a journey running longer than this shows a (computed-on-read, not
     // push-alerted — no background job scheduler exists) "delayed" flag.
     expectedDurationMinutes: { type: Number, default: null },

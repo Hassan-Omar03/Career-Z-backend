@@ -122,3 +122,22 @@ test('commission payroll is computed from real paid course-purchase revenue, not
   assert.equal(payslip.commissionAmount, 15, '10% of (100 + 50) paid revenue = 15, pending purchase excluded');
   assert.equal(payslip.netAmount, 15);
 });
+
+test('the background payroll automation generates last month\'s payslip on its own, with nobody ever opening the Payroll page', async () => {
+  await TeacherEmployment.create({ institution: institution._id, teacher: teacher._id, offeredBy: teacher._id, status: 'active', salaryType: 'monthly', monthlySalary: 50000, salaryCurrency: 'PKR' });
+
+  // This is the exact call the background scheduler makes (services/feeAutomation.service.js) —
+  // note it is never given a request/user context, only the bare institution id.
+  await institutionCtrl.runPayrollAutomationForInstitution(institution._id);
+
+  const now = new Date();
+  const prevMonthDate = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  const payslip = await Payslip.findOne({ institution: institution._id, staff: teacher._id, month: prevMonthDate.getMonth() + 1, year: prevMonthDate.getFullYear() });
+  assert.ok(payslip, 'previous month\'s payslip was generated automatically, without the manual button or the Payroll page ever being opened');
+  assert.equal(payslip.basicSalary, 50000);
+
+  // Running it again in the same "month" must not create a duplicate payslip.
+  await institutionCtrl.runPayrollAutomationForInstitution(institution._id);
+  const count = await Payslip.countDocuments({ institution: institution._id, staff: teacher._id, month: prevMonthDate.getMonth() + 1, year: prevMonthDate.getFullYear() });
+  assert.equal(count, 1, 'running the automation twice never double-generates the same month');
+});

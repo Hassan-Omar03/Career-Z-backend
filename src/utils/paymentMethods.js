@@ -8,7 +8,7 @@ const PAYMENT_METHOD_LABEL = {
   bank_transfer: 'Bank Transfer', card: 'Card', mobile_wallet: 'Mobile Wallet', cash: 'Cash', other: 'Other'
 };
 const PAYOUT_METHOD_LABEL = {
-  bank_transfer: 'Bank Transfer', mobile_wallet: 'Mobile Wallet', other: 'Other', stripe_transfer: 'Real Bank Transfer (Stripe)'
+  bank_transfer: 'Bank Transfer', mobile_wallet: 'Mobile Wallet', crypto: 'Crypto Wallet', other: 'Other', stripe_transfer: 'Real Bank Transfer (Stripe)'
 };
 
 module.exports = { PAYMENT_METHOD_LABEL, PAYOUT_METHOD_LABEL };

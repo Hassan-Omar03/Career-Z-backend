@@ -424,21 +424,26 @@ const myWallet = asyncHandler(async (req, res) => {
 // currency, same "no real payment processor" honesty as the Agent's withdrawal flow: this creates
 // a real, trackable request, not a fake instant payout.
 const requestSellerWithdrawal = asyncHandler(async (req, res) => {
-  const { currency, payoutMethod, payoutDetails } = req.body;
+  const { currency, payoutMethod, payoutDetails, accountTitle } = req.body;
   if (!currency) throw new AppError('currency is required.', 422);
   if (!payoutMethod || !PAYOUT_METHOD_LABEL[payoutMethod]) {
     throw new AppError('A valid payoutMethod is required (bank_transfer, mobile_wallet or other).', 422);
   }
   if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
+  if (!accountTitle || !accountTitle.trim()) throw new AppError("The account holder's name (accountTitle) is required.", 422);
 
   const { totalsByCurrency } = await computeEarnings(req.user._id);
   const available = totalsByCurrency[currency]?.availableEarnings || 0;
   if (available <= 0) throw new AppError('No available balance in that currency.', 422);
 
+  // A findable receipt exists from the moment the request is made, not only once an admin
+  // processes it — same reasoning as the main Wallet withdrawal flow.
+  const transactionId = generateTransactionId();
   const withdrawal = await SellerWithdrawal.create({
-    seller: req.user._id, amount: available, currency, payoutMethod, payoutDetails: payoutDetails.trim()
+    seller: req.user._id, amount: available, currency, payoutMethod,
+    payoutDetails: `${accountTitle.trim()} — ${payoutDetails.trim()}`, transactionId
   });
-  return created(res, withdrawal, 'Withdrawal requested.');
+  return created(res, withdrawal, `Withdrawal requested — receipt ${transactionId}.`);
 });
 
 // GET /api/marketplace/sellers/mine/withdrawals
@@ -459,7 +464,9 @@ const updateSellerWithdrawalStatus = asyncHandler(async (req, res) => {
   withdrawal.status = status;
   if (status === 'paid') {
     withdrawal.processedAt = new Date();
-    withdrawal.transactionId = generateTransactionId();
+    // The receipt was already generated at request time (shown to the seller then) — keep it,
+    // never overwrite it, so the same receipt id stays valid through the whole lifecycle.
+    if (!withdrawal.transactionId) withdrawal.transactionId = generateTransactionId();
   }
   await withdrawal.save();
 

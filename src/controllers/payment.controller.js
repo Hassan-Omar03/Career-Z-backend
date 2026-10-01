@@ -14,6 +14,21 @@ const env = require('../config/env');
 const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
 const crypto = require('crypto');
 
+// Paddle Billing only accepts a fixed set of transaction currencies — PKR/INR/AED/SAR/etc. are
+// rejected outright with a generic "invalid request" error (same limitation already hit and
+// fixed for NOWPayments' price_currency). This is the safe subset Paddle definitely supports;
+// anything outside it gets converted to USD for the Paddle side only — our own stored record
+// (Fee.currency, Wallet currency, etc.) always keeps the amount the user actually agreed to.
+const PADDLE_DIRECT_CURRENCIES = new Set(['USD', 'EUR', 'GBP', 'AUD', 'CAD']);
+async function resolvePaddleAmount(amount, currency) {
+  const cur = normalizeCurrency(currency);
+  if (PADDLE_DIRECT_CURRENCIES.has(cur)) return { amount, currencyCode: cur };
+  const Currency = require('../models/Currency');
+  const rate = await Currency.findOne({ code: cur }).select('exchangeRateToUSD');
+  if (!rate?.exchangeRateToUSD) throw new AppError(`No USD exchange rate configured for ${cur} — ask the Super Admin to set one, or pay in USD.`, 422);
+  return { amount: Number((amount * rate.exchangeRateToUSD).toFixed(2)), currencyCode: 'USD' };
+}
+
 // Same authorization as the self-report fee-payment endpoints (student themselves, or any
 // approved parent/guardian/sponsor link) — paying a fee doesn't require being a legal guardian.
 async function assertCanPayFee(fee, user) {
@@ -54,13 +69,16 @@ const createStripeCourseCheckout = asyncHandler(async (req, res) => {
 const createPaddleCourseCheckout = asyncHandler(async (req, res) => {
   if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
   const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
+  const { amount: paddleAmount, currencyCode: paddleCurrency } = await resolvePaddleAmount(amountMinor / 100, currency);
+  const gatewayAmountMinor = Math.round(paddleAmount * 100);
   const transaction = await paddleService.createTransaction({
-    title: course.title, amount: amountMinor / 100, currencyCode: currency,
+    title: course.title, amount: paddleAmount, currencyCode: paddleCurrency,
     customerEmail: req.user.email,
     metadata: { kind: 'course', courseId: course._id.toString(), studentId: req.user._id.toString() }
   });
   await CoursePurchase.create({ course: course._id, student: req.user._id, provider: 'paddle',
-    providerCheckoutId: transaction.id, amountMinor, currency });
+    providerCheckoutId: transaction.id, amountMinor, currency,
+    gatewayAmountMinor, gatewayCurrency: paddleCurrency });
   return ok(res, { transactionId: transaction.id, status: transaction.status });
 });
 
@@ -148,10 +166,11 @@ const createPaddleTransaction = asyncHandler(async (req, res) => {
   if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
   await assertCanPayFee(fee, req.user);
 
+  const { amount: paddleAmount, currencyCode: paddleCurrency } = await resolvePaddleAmount(fee.amount, fee.currency || 'USD');
   const transaction = await paddleService.createTransaction({
     title: fee.title,
-    amount: fee.amount,
-    currencyCode: (fee.currency || 'USD').toUpperCase(),
+    amount: paddleAmount,
+    currencyCode: paddleCurrency,
     customerEmail: req.user.email,
     metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee' }
   });
@@ -188,7 +207,9 @@ const syncPaddleFeeStatus = asyncHandler(async (req, res) => {
 
 // POST /api/payments/paddle/wallet/topup — creates a real Paddle transaction for a wallet
 // top-up. Like the fee flow, the wallet is NOT credited here — only the webhook (or sync
-// fallback below), after confirming the transaction actually completed, credits it.
+// fallback below), after confirming the transaction actually completed, credits it. A pending
+// WalletTransaction is created up front (same pattern as the crypto top-up) so the webhook
+// credits from OUR stored amount/currency, never by re-deriving it from Paddle's payload.
 const createWalletTopup = asyncHandler(async (req, res) => {
   if (!paddleService.isPaddleConfigured()) {
     throw new AppError('Card payments are not set up yet — ask the Super Admin to configure PADDLE_API_KEY and PADDLE_WEBHOOK_SECRET.', 503);
@@ -196,13 +217,18 @@ const createWalletTopup = asyncHandler(async (req, res) => {
   const { amount, currency } = req.body;
   validateAmount(amount);
   const cur = normalizeCurrency(currency);
+  const { amount: paddleAmount, currencyCode: paddleCurrency } = await resolvePaddleAmount(amount, cur);
 
   const transaction = await paddleService.createTransaction({
     title: `Wallet top-up — ${cur} ${amount}`,
-    amount,
-    currencyCode: cur,
+    amount: paddleAmount,
+    currencyCode: paddleCurrency,
     customerEmail: req.user.email,
-    metadata: { userId: req.user._id.toString(), currency: cur, kind: 'wallet_topup' }
+    metadata: { userId: req.user._id.toString(), currency: paddleCurrency, kind: 'wallet_topup' }
+  });
+
+  await WalletTransaction.create({
+    user: req.user._id, type: 'topup', amount, currency: cur, status: 'pending', paddleTransactionId: transaction.id
   });
 
   return ok(res, { transactionId: transaction.id, status: transaction.status });

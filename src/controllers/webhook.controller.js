@@ -111,11 +111,16 @@ async function handleCoursePaddleCompleted(transaction, session) {
     const purchase = await CoursePurchase.findOne({ provider: 'paddle', providerCheckoutId: transaction.id }).session(dbSession);
     if (!purchase) throw new AppError('Course checkout not found.', 404);
     const price = transaction.items?.[0]?.price?.unit_price;
+    // When the course's own currency isn't one Paddle accepts (e.g. PKR), checkout-creation
+    // converted it to USD for Paddle only — verify against THAT stored conversion instead of the
+    // course's real currency, which Paddle never actually saw.
+    const expectedAmount = purchase.gatewayAmountMinor ?? purchase.amountMinor;
+    const expectedCurrency = purchase.gatewayCurrency ?? purchase.currency;
     if (transaction.custom_data.courseId !== purchase.course.toString()
       || transaction.custom_data.studentId !== purchase.student.toString()
-      || transaction.currency_code !== purchase.currency
+      || transaction.currency_code !== expectedCurrency
       || transaction.items?.length !== 1 || transaction.items[0].quantity !== 1
-      || Number(price?.amount) !== purchase.amountMinor || price?.currency_code !== purchase.currency) {
+      || Number(price?.amount) !== expectedAmount || price?.currency_code !== expectedCurrency) {
       throw new AppError('Course transaction amount, currency or ownership does not match.', 422);
     }
     return settleCoursePurchase(purchase, transaction.id, dbSession);
@@ -177,26 +182,30 @@ async function handleWalletTopupCompleted(transaction, session) {
     if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'wallet_topup' || !transaction.id) {
       throw new AppError('Expected a completed wallet top-up.', 422);
     }
-    const already = await WalletTransaction.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
-    if (already) return [];
-    const { userId } = transaction.custom_data;
-    const currency = normalizeCurrency(transaction.custom_data.currency);
+    // Credits from OUR pending record (set at checkout-creation time), never re-derived from
+    // Paddle's payload — this is what actually stays correct when the Paddle-side currency was
+    // converted to USD for an unsupported wallet currency like PKR (see PADDLE_DIRECT_CURRENCIES).
+    const pending = await WalletTransaction.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
+    if (!pending) throw new AppError('Wallet top-up record not found — it may predate this fix.', 404);
+    if (pending.status === 'completed') return [];
+
     const price = transaction.items?.[0]?.price?.unit_price;
-    // Top-ups created by this API contain exactly one unit. Never credit tax as wallet funds.
     const minorAmount = Number(price?.amount);
+    // Top-ups created by this API contain exactly one unit. Never credit tax as wallet funds.
+    // The Paddle-side currency/amount may legitimately differ from the wallet's own currency
+    // (converted to USD) — only the item shape and a positive integer amount are verified here.
     if (transaction.items?.length !== 1 || transaction.items[0].quantity !== 1 ||
-        !Number.isSafeInteger(minorAmount) || minorAmount <= 0 ||
-        price.currency_code !== currency || transaction.currency_code !== currency) {
+        !Number.isSafeInteger(minorAmount) || minorAmount <= 0 || price.currency_code !== transaction.currency_code) {
       throw new AppError('Invalid wallet top-up amount or currency.', 422);
     }
-    const amount = validateAmount(minorAmount / 100);
-    await WalletTransaction.create([{
-      user: userId, type: 'topup', amount, currency, status: 'completed', paddleTransactionId: transaction.id
-    }], { session: dbSession });
+
+    pending.status = 'completed';
+    await pending.save({ session: dbSession });
     await Wallet.findOneAndUpdate(
-      { user: userId, currency }, { $inc: { available: amount } }, { upsert: true, session: dbSession }
+      { user: pending.user, currency: pending.currency }, { $inc: { available: pending.amount } },
+      { upsert: true, session: dbSession }
     );
-    return [{ userId, payload: { title: `Wallet topped up: ${currency} ${amount.toFixed(2)}`, body: `Receipt ${transaction.id}`, sentBy: null } }];
+    return [{ userId: pending.user, payload: { title: `Wallet topped up: ${pending.currency} ${pending.amount.toFixed(2)}`, body: `Receipt ${transaction.id}`, sentBy: null } }];
   }, session);
 }
 

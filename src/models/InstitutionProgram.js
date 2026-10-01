@@ -12,7 +12,7 @@ const schema = new mongoose.Schema({
   currency: { type: String, required: true, default: 'PKR' },
   additionalFees: {
     exam: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 } },
-    hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'one_time' } },
+    hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 }, securityDeposit: { type: Number, min: 0, default: 0 }, messAvailable: { type: Boolean, default: false }, messMonthlyAmount: { type: Number, min: 0, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'every_cycle' } },
     transport: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'one_time' } },
     library: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 } },
     activity: { enabled: { type: Boolean, default: false }, amount: { type: Number, min: 0, default: 0 } }

@@ -19,6 +19,9 @@ router.post('/', ctrl.registerInstitution);
 router.get('/mine/list', ctrl.myInstitutions);
 router.get('/mine/staff-roles', ctrl.myStaffRoles);
 router.get('/mine/rep-dashboard', ctrl.getRepDashboard);
+router.get('/payroll/payout-profile/me', ctrl.getMyPayoutProfile);
+router.put('/payroll/payout-profile/me', ctrl.saveMyPayoutProfile);
+router.get('/:id/staff/:userId/payout-profile', ctrl.getStaffPayoutProfile);
 router.patch('/:id', ctrl.updateInstitution);
 router.post('/:id/verification-documents', ctrl.submitVerificationDocuments);
 router.patch('/:id/verify', requireRole('admin', 'super_admin', 'platform_staff'), requireDepartment('verification'), ctrl.reviewVerification);
@@ -63,6 +66,7 @@ router.post('/:id/comms-credential', notificationCtrl.saveCommsCredential);
 router.delete('/:id/comms-credential', notificationCtrl.removeCommsCredential);
 
 router.post('/:id/certificates', certificateCtrl.issueCertificate);
+router.patch('/:id/certificates/:certificateId/revoke', certificateCtrl.revokeCertificate);
 router.get('/:id/certificates/eligible', certificateCtrl.listEligibleCompletions);
 router.get('/:id/certificates', certificateCtrl.listInstitutionCertificates);
 

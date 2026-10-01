@@ -12,11 +12,12 @@ const User = require('../src/models/User');
 const Institution = require('../src/models/Institution');
 const TeacherProfile = require('../src/models/TeacherProfile');
 const Payslip = require('../src/models/Payslip');
+const PayoutProfile = require('../src/models/PayoutProfile');
 const institutionCtrl = require('../src/controllers/institution.controller');
 const teacherCtrl = require('../src/controllers/teacher.controller');
 
 let mongo, owner, teacher, institution, payslip;
-const models = [User, Institution, TeacherProfile, Payslip];
+const models = [User, Institution, TeacherProfile, Payslip, PayoutProfile];
 
 before(async () => {
   mongo = await MongoMemoryServer.create();
@@ -91,6 +92,7 @@ test('a failed Stripe transfer never marks the payslip paid, and records the fai
 });
 
 test('a manual salary report stays processing until the receiving teacher confirms it', async () => {
+  await PayoutProfile.create({ user: teacher._id, bank: { accountTitle: 'Payroll Teacher', bankName: 'Test Bank', accountNumber: '1234567890' } });
   const report = await invoke(institutionCtrl.markPayslipPaid, { user: owner, params: { payslipId: payslip._id.toString() }, body: { paymentMethod: 'bank_transfer', reference: 'SAL-BANK-001', provider: 'Test Bank', proofUrl: 'https://example.test/salary-proof.pdf' } });
   assert.equal(report.status, 200);
   assert.equal(report.body.data.status, 'processing');

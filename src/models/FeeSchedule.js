@@ -56,7 +56,7 @@ const feeScheduleSchema = new mongoose.Schema(
     additionalFees: {
       admission: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
       exam: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
-      hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'one_time' } },
+      hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 }, securityDeposit: { type: Number, default: 0 }, messEnabled: { type: Boolean, default: false }, messMonthlyAmount: { type: Number, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'every_cycle' } },
       transport: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 }, recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'one_time' } },
       library: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
       activity: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } }
@@ -74,5 +74,4 @@ const feeScheduleSchema = new mongoose.Schema(
 );
 
 feeScheduleSchema.index({ institution: 1, student: 1, program: 1 }, { unique: true });
-
 module.exports = mongoose.model('FeeSchedule', feeScheduleSchema);

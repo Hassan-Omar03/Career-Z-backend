@@ -7,6 +7,8 @@ const ParentChildLink = require('../models/ParentChildLink');
 const TeacherEmployment = require('../models/TeacherEmployment');
 const User = require('../models/User');
 const BlockedUser = require('../models/BlockedUser');
+const HostelRoom = require('../models/HostelRoom');
+const Vehicle = require('../models/Vehicle');
 
 function idsEqual(a, b) { return String(a?._id || a || '') === String(b?._id || b || ''); }
 
@@ -21,6 +23,26 @@ async function institutionIdsFor(userId) {
   return new Set([...owned, ...staffed, ...memberships, ...(profile?.primaryInstitution ? [profile.primaryInstitution] : []), ...employments].map(String));
 }
 
+async function operationalStaffScope(userId) {
+  const employments = await TeacherEmployment.find({
+    teacher: userId,
+    status: 'active',
+    role: { $in: ['warden', 'driver'] }
+  }).select('role');
+  if (!employments.length) return null;
+
+  const roles = new Set(employments.map((entry) => entry.role));
+  const [rooms, vehicles] = await Promise.all([
+    roles.has('warden') ? HostelRoom.find({ warden: userId }).select('occupants') : [],
+    roles.has('driver') ? Vehicle.find({ driverUser: userId }).select('assignedStudents') : []
+  ]);
+  const studentIds = new Set([
+    ...rooms.flatMap((room) => room.occupants || []),
+    ...vehicles.flatMap((vehicle) => vehicle.assignedStudents || [])
+  ].map(String));
+  return { roles, studentIds };
+}
+
 async function canCommunicate(fromId, toId) {
   if (idsEqual(fromId, toId)) return false;
   const [from, to] = await Promise.all([User.findById(fromId).select('roles'), User.findById(toId).select('roles')]);
@@ -29,6 +51,10 @@ async function canCommunicate(fromId, toId) {
   // A block always wins over an otherwise-valid shared-institution/course/parent link — the
   // blocker's decision to cut contact is never silently overridden by an unrelated relationship.
   if (await BlockedUser.exists({ $or: [{ blocker: fromId, blocked: toId }, { blocker: toId, blocked: fromId }] })) return false;
+
+  const [fromScope, toScope] = await Promise.all([operationalStaffScope(fromId), operationalStaffScope(toId)]);
+  if (fromScope) return to.roles?.includes('student') && fromScope.studentIds.has(String(toId));
+  if (toScope) return from.roles?.includes('student') && toScope.studentIds.has(String(fromId));
 
   const [fromInstitutions, toInstitutions, fromTaughtIds, toTaughtIds, parentLink] = await Promise.all([
     institutionIdsFor(fromId), institutionIdsFor(toId),
@@ -44,6 +70,19 @@ async function canCommunicate(fromId, toId) {
 async function communicationContacts(userId) {
   const me = await User.findById(userId).select('roles');
   if (!me) return [];
+  const staffScope = await operationalStaffScope(userId);
+  if (staffScope) {
+    const students = await User.find({ _id: { $in: [...staffScope.studentIds] }, roles: 'student' })
+      .select('fullName email roles profilePhoto')
+      .sort({ fullName: 1 });
+    return students.map((student) => ({
+      user: student,
+      relationship: 'assigned student',
+      context: staffScope.roles.has('warden') && staffScope.roles.has('driver')
+        ? 'Assigned hostel/transport student'
+        : staffScope.roles.has('warden') ? 'Assigned hostel resident' : 'Assigned transport student'
+    }));
+  }
   const contactMap = new Map();
   const add = (user, relationship, context = '') => {
     if (!user || idsEqual(user, userId)) return;
@@ -81,4 +120,4 @@ async function communicationContacts(userId) {
   return [...contactMap.values()].sort((a, b) => String(a.user.fullName).localeCompare(String(b.user.fullName)));
 }
 
-module.exports = { canCommunicate, communicationContacts };
+module.exports = { canCommunicate, communicationContacts, operationalStaffScope };

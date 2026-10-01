@@ -132,22 +132,24 @@ test('independent tutoring: never enrolls before consent, minors need guardian a
 // ---------------- Parent Safety / Live Transport ----------------
 test('transport location is only ever visible during an in-progress journey, scoped to assigned children', async () => {
   const owner = await mkUser('Owner', 'owner3@rel.test', ['institution_owner']);
+  const driver = await mkUser('Driver', 'driver3@rel.test', ['driver']);
   const institution = await Institution.create({ owner: owner._id, name: 'Transport Inst', slug: 'tr-' + Date.now(), type: 'school', country: 'PK' });
   const student = await mkUser('TStudent', 'tstudent@rel.test', ['student']);
   const parent = await mkUser('TParent', 'tparent@rel.test', ['parent']);
   const stranger = await mkUser('Stranger', 'stranger@rel.test', ['parent']);
   await ParentChildLink.create({ parent: parent._id, student: student._id, relationship: 'father', status: 'approved', requestedBy: parent._id });
-  const vehicle = await Vehicle.create({ institution: institution._id, vehicleNumber: 'V1', addedBy: owner._id, assignedStudents: [student._id] });
+  const vehicle = await Vehicle.create({ institution: institution._id, vehicleNumber: 'V1', addedBy: owner._id, driverUser: driver._id, assignedStudents: [student._id] });
 
-  const journeyRes = await invoke(transportCtrl.startJourney, { params: { vehicleId: vehicle.id }, user: owner });
+  await assert.rejects(invoke(transportCtrl.startJourney, { params: { vehicleId: vehicle.id }, user: owner }), { statusCode: 403 });
+  const journeyRes = await invoke(transportCtrl.startJourney, { params: { vehicleId: vehicle.id }, user: driver });
   const journeyId = journeyRes.body.data._id;
 
   await assert.rejects(invoke(transportCtrl.getJourneyStatus, { params: { id: journeyId }, user: stranger }), { statusCode: 403 });
   const okRes = await invoke(transportCtrl.getJourneyStatus, { params: { id: journeyId }, user: parent });
   assert.equal(okRes.body.data.journey._id.toString(), journeyId.toString());
 
-  await invoke(transportCtrl.endJourney, { params: { id: journeyId }, user: owner });
-  await assert.rejects(invoke(transportCtrl.postPing, { params: { id: journeyId }, user: owner, body: { lat: 1, lng: 1 } }), { statusCode: 400 });
+  await invoke(transportCtrl.endJourney, { params: { id: journeyId }, user: driver });
+  await assert.rejects(invoke(transportCtrl.postPing, { params: { id: journeyId }, user: driver, body: { lat: 1, lng: 1 } }), { statusCode: 400 });
 });
 
 // ---------------- PTM: no-show escalation ----------------

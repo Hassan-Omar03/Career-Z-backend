@@ -6,6 +6,7 @@ router.use(protect);
 
 // Library
 router.get('/:id/books', ctrl.listBooks);
+router.get('/mine/library', ctrl.getMyLibrary);
 router.post('/:id/books', ctrl.createBook);
 router.patch('/books/:bookId', ctrl.updateBook);
 router.delete('/books/:bookId', ctrl.deleteBook);
@@ -15,13 +16,19 @@ router.get('/:id/loans', ctrl.listLoans);
 
 // Hostel
 router.get('/:id/hostel-rooms', ctrl.listHostelRooms);
+router.get('/:id/hostel-eligible-students', ctrl.listHostelEligibleStudents);
 router.post('/:id/hostel-rooms', ctrl.createHostelRoom);
 router.patch('/hostel-rooms/:roomId', ctrl.updateHostelRoom);
 router.post('/hostel-rooms/:roomId/allocate', ctrl.allocateHostelRoom);
+router.post('/hostel-rooms/:roomId/transfer', ctrl.transferHostelStudent);
 router.delete('/hostel-rooms/:roomId/occupants/:userId', ctrl.removeHostelOccupant);
+router.get('/hostel/me', ctrl.getMyHostelStatus);
+router.get('/hostel/warden-dashboard', ctrl.getWardenDashboard);
 router.post('/hostel-requests', ctrl.createHostelRequest);
 router.get('/:id/hostel-requests', ctrl.listHostelRequests);
 router.patch('/hostel-requests/:requestId', ctrl.decideHostelRequest);
+router.post('/hostel-rooms/:roomId/attendance', ctrl.markHostelAttendance);
+router.get('/hostel-rooms/:roomId/attendance', ctrl.listHostelAttendance);
 
 // Transport
 router.get('/:id/vehicles', ctrl.listVehicles);
@@ -29,7 +36,13 @@ router.post('/:id/vehicles', ctrl.createVehicle);
 router.patch('/vehicles/:vehicleId', ctrl.updateVehicle);
 router.delete('/vehicles/:vehicleId', ctrl.deleteVehicle);
 router.post('/vehicles/:vehicleId/assign', ctrl.assignStudentToVehicle);
+router.post('/vehicles/:vehicleId/generate-monthly-fees', ctrl.generateMonthlyTransportFees);
 router.delete('/vehicles/:vehicleId/students/:userId', ctrl.removeStudentFromVehicle);
+router.get('/transport/my-vehicles', ctrl.getMyDriverVehicles);
+router.get('/vehicles/:vehicleId/fuel-logs', ctrl.listFuelLogs);
+router.post('/vehicles/:vehicleId/fuel-logs', ctrl.createFuelLog);
+router.get('/vehicles/:vehicleId/maintenance-logs', ctrl.listMaintenanceLogs);
+router.post('/vehicles/:vehicleId/maintenance-logs', ctrl.createMaintenanceLog);
 
 // Inventory
 router.get('/:id/inventory', ctrl.listInventory);
@@ -44,6 +57,7 @@ router.get('/students/:userId/health', ctrl.getStudentHealthRecord);
 router.patch('/students/:userId/health', ctrl.updateStudentHealthRecord);
 
 // Events & Activities
+router.get('/mine/events', ctrl.getMyInstitutionEvents);
 router.get('/:id/events', ctrl.listEvents);
 router.get('/:id/events/public', ctrl.listPublicEvents);
 router.post('/:id/events', ctrl.createEvent);

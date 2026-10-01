@@ -1,4 +1,5 @@
 const User = require('../models/User');
+const crypto = require('crypto');
 const Country = require('../models/Country');
 const Language = require('../models/Language');
 const Currency = require('../models/Currency');
@@ -18,6 +19,10 @@ const WalletTransaction = require('../models/WalletTransaction');
 const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
 const InstitutionProgram = require('../models/InstitutionProgram');
 const FeeSchedule = require('../models/FeeSchedule');
+const InstitutionApplication = require('../models/InstitutionApplication');
+const HostelRoom = require('../models/HostelRoom');
+const Fee = require('../models/Fee');
+const PayoutProfile = require('../models/PayoutProfile');
 
 const countries = [
   { name: 'Pakistan', code: 'PK', dialCode: '+92', defaultCurrency: 'PKR', defaultLanguage: 'ur', timeZone: 'Asia/Karachi', dateFormat: 'DD/MM/YYYY' },
@@ -202,7 +207,7 @@ async function seedGcufAcademicDemo() {
         admissionFee: 20000, totalTuitionFee: 480000, installments: 8, currency: 'PKR',
         additionalFees: {
           exam: { enabled: true, amount: 5000 },
-          hostel: { enabled: false, amount: 0 },
+          hostel: { enabled: true, amount: 12000, securityDeposit: 15000, messAvailable: true, messMonthlyAmount: 8000, recurrence: 'every_cycle' },
           transport: { enabled: false, amount: 0 },
           library: { enabled: true, amount: 3000 },
           activity: { enabled: true, amount: 2000 }
@@ -223,6 +228,18 @@ async function seedGcufAcademicDemo() {
     },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
+  // Keep the QA program's hostel package current even when the program was created by an
+  // earlier seed run. Existing paid invoices remain untouched; the student's fee schedule
+  // below receives its own agreed snapshot.
+  feeProgram.additionalFees.hostel = {
+    enabled: true,
+    amount: 12000,
+    securityDeposit: 15000,
+    messAvailable: true,
+    messMonthlyAmount: 8000,
+    recurrence: 'every_cycle'
+  };
+  await feeProgram.save();
   for (const demoStudent of demoStudents) {
     await StudentProfile.findOneAndUpdate(
       { user: demoStudent.user._id },
@@ -263,6 +280,151 @@ async function seedGcufAcademicDemo() {
       { upsert: true, new: true, setDefaultsOnInsert: true }
     );
   }
+
+  // Mohammad is the deterministic hostel + mess applicant used by end-to-end QA. His
+  // accepted admission record makes him eligible for room allocation, while Test Student
+  // deliberately remains ineligible so the admission gate can also be tested.
+  const mohammadProfile = await StudentProfile.findOne({ user: student._id });
+  const hostelSnapshot = {
+    enabled: true,
+    amount: 12000,
+    securityDeposit: 15000,
+    messAvailable: true,
+    messEnabled: true,
+    messMonthlyAmount: 8000,
+    recurrence: 'every_cycle'
+  };
+  await InstitutionApplication.findOneAndUpdate(
+    { institution: institution._id, applicant: student._id, program: feeProgram.name },
+    {
+      $set: {
+        requestedServices: { hostel: true, mess: true, transport: false },
+        feePlanSnapshot: {
+          department: feeProgram.department,
+          durationTerms: feeProgram.durationTerms,
+          admissionFee: feeProgram.admissionFee,
+          totalTuitionFee: feeProgram.totalTuitionFee,
+          installments: feeProgram.installments,
+          currency: feeProgram.currency,
+          additionalFees: {
+            exam: feeProgram.additionalFees.exam,
+            hostel: hostelSnapshot,
+            transport: { enabled: false, amount: 0 },
+            library: feeProgram.additionalFees.library,
+            activity: feeProgram.additionalFees.activity
+          },
+          capturedAt: new Date('2026-09-01T00:00:00+05:00')
+        },
+        status: 'accepted',
+        source: 'self',
+        submittedAt: new Date('2026-09-01T00:00:00+05:00'),
+        reviewedBy: institution.owner,
+        generatedStudentProfile: mohammadProfile?._id || null,
+        notes: 'QA admission: hostel with mess requested and accepted.'
+      }
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+
+  await FeeSchedule.updateOne(
+    { institution: institution._id, student: student._id, program: feeProgram._id },
+    { $set: { 'additionalFees.hostel': hostelSnapshot } }
+  );
+  const mohammadSchedule = await FeeSchedule.findOne({ institution: institution._id, student: student._id, program: feeProgram._id });
+  if (mohammadSchedule) {
+    const now = new Date();
+    const billingPeriod = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}`;
+    const initialHostelAmount = hostelSnapshot.amount + hostelSnapshot.messMonthlyAmount + hostelSnapshot.securityDeposit;
+    const dueDate = new Date(now.getFullYear(), now.getMonth(), 10);
+    if (dueDate < now) dueDate.setMonth(dueDate.getMonth() + 1);
+    const hostelVoucher = await Fee.findOneAndUpdate(
+      { institution: institution._id, student: student._id, feeType: 'hostel', billingPeriod },
+      { $setOnInsert: { schedule: mohammadSchedule._id, title: `${feeProgram.name} Hostel Admission Package (Room + Mess + Security)`, amount: initialHostelAmount, originalAmount: initialHostelAmount, currency: feeProgram.currency, dueDate, academicYear: String(now.getFullYear()), installment: { planId: `${mohammadSchedule._id}-hostel`, number: 102, totalInstallments: null }, status: 'pending', outstandingAmount: initialHostelAmount, recordedBy: institution.owner } },
+      { upsert: true, new: true, setDefaultsOnInsert: true }
+    );
+    if (!['paid', 'refunded'].includes(hostelVoucher.status)) {
+      const transactionId = `SEED-HOSTEL-ADMISSION-${hostelVoucher._id}`;
+      hostelVoucher.status = 'paid';
+      hostelVoucher.paidAmount = initialHostelAmount;
+      hostelVoucher.outstandingAmount = 0;
+      hostelVoucher.paidAt = new Date('2026-09-01T00:00:00+05:00');
+      hostelVoucher.paidVia = 'Admission counter';
+      hostelVoucher.paymentMethod = 'cash';
+      hostelVoucher.transactionId = transactionId;
+      hostelVoucher.paidBy = student._id;
+      hostelVoucher.receiptNumber ||= `RCPT-HOSTEL-${String(hostelVoucher._id).slice(-8).toUpperCase()}`;
+      hostelVoucher.verifyCode ||= crypto.createHash('sha256').update(transactionId).digest('hex').slice(0, 20);
+      if (!hostelVoucher.paymentHistory.some((payment) => payment.transactionId === transactionId)) {
+        hostelVoucher.paymentHistory.push({ amount: initialHostelAmount, method: 'cash', transactionId, recordedBy: institution.owner, verifiedBy: institution.owner, verifiedAt: hostelVoucher.paidAt, verificationStatus: 'verified', paidOn: hostelVoucher.paidAt, paidAt: hostelVoucher.paidAt, receiptNumber: hostelVoucher.receiptNumber, verifyCode: hostelVoucher.verifyCode, notes: 'Paid with hostel admission: first month room, mess and refundable security.' });
+      }
+      await hostelVoucher.save();
+    }
+  }
+
+  // A real institutional employee is seeded as warden; external users cannot be assigned.
+  const hostelWarden = await ensureUser({
+    fullName: 'Abdul Rehman',
+    email: 'hostel.warden@careerz.local',
+    roles: ['institution_staff']
+  });
+  hostelWarden.fullName = 'Abdul Rehman';
+  hostelWarden.phone = '+923001234567';
+  hostelWarden.country = 'PK';
+  hostelWarden.language = 'en';
+  hostelWarden.currency = 'PKR';
+  hostelWarden.emailVerified = true;
+  hostelWarden.phoneVerified = true;
+  hostelWarden.status = 'active';
+  hostelWarden.companyName = 'GCUF Hostel Administration';
+  hostelWarden.passwordHash = await User.hashPassword('CareerZ@123');
+  await hostelWarden.save();
+  await PayoutProfile.findOneAndUpdate(
+    { user: hostelWarden._id },
+    { $set: { preferredMethod: 'bank_transfer', bank: { accountTitle: 'Abdul Rehman', bankName: 'Meezan Bank', iban: 'PK00MEZN0000001234567890', accountNumber: '0123456789' }, mobileWallet: { provider: 'Easypaisa', accountTitle: 'Abdul Rehman', number: '03001234567' }, crypto: { asset: 'USDT', network: 'TRC20', address: 'TQaWardenQAAddress123456789' } } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  await TeacherEmployment.findOneAndUpdate(
+    { teacher: hostelWarden._id, institution: institution._id, status: 'active' },
+    {
+      $set: {
+        role: 'warden',
+        designation: 'Senior Hostel Warden',
+        department: 'Student Affairs & Hostel Administration',
+        contractTerms: 'Full-time residential hostel warden. Responsible for resident welfare, attendance, visitor and leave approvals, room discipline, incident escalation and emergency coordination. Shift: 4 PM to 8 AM; weekly off: Friday.',
+        salaryType: 'monthly',
+        monthlySalary: 45000,
+        salaryCurrency: 'PKR',
+        offeredBy: institution.owner,
+        respondedAt: new Date('2026-09-01T00:00:00+05:00'),
+        startedAt: new Date('2026-09-01T00:00:00+05:00')
+      }
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  if (!(institution.staff || []).some((member) => member.user?.toString() === hostelWarden._id.toString())) {
+    institution.staff.push({
+      user: hostelWarden._id,
+      role: 'warden',
+      designation: 'Senior Hostel Warden',
+      department: 'Student Affairs & Hostel Administration',
+      permissions: ['institution:ops:manage', 'hostel:rooms:read', 'hostel:attendance:manage', 'hostel:requests:manage']
+    });
+  } else {
+    const staffRecord = institution.staff.find((member) => member.user?.toString() === hostelWarden._id.toString());
+    staffRecord.role = 'warden';
+    staffRecord.designation = 'Senior Hostel Warden';
+    staffRecord.department = 'Student Affairs & Hostel Administration';
+    staffRecord.permissions = ['institution:ops:manage', 'hostel:rooms:read', 'hostel:attendance:manage', 'hostel:requests:manage'];
+  }
+  await institution.save();
+  await HostelRoom.findOneAndUpdate(
+    { institution: institution._id, roomNumber: 'A-101' },
+    {
+      $set: { building: 'Hostel Block A', floor: 'Ground Floor', capacity: 2, monthlyFee: hostelSnapshot.amount + hostelSnapshot.messMonthlyAmount, warden: hostelWarden._id },
+      $setOnInsert: { occupants: [], status: 'available' }
+    },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
 
   const aiGroupName = `${courses[0].title} — AI Group 1`;
   let aiGroup = await StudyGroup.findOne({ course: courses[0]._id, name: aiGroupName });

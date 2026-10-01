@@ -23,8 +23,13 @@ const WebhookEvent = require('../src/models/WebhookEvent');
 const Fee = require('../src/models/Fee');
 const Institution = require('../src/models/Institution');
 const Setting = require('../src/models/Setting');
+const Payslip = require('../src/models/Payslip');
+const Currency = require('../src/models/Currency');
 const wallet = require('../src/controllers/wallet.controller');
 const webhook = require('../src/controllers/webhook.controller');
+const institutionCtrl = require('../src/controllers/institution.controller');
+const payment = require('../src/controllers/payment.controller');
+const paddleService = require('../src/services/paddle.service');
 const { initSocket } = require('../src/realtime/socket');
 const env = require('../src/config/env');
 const { getStripeClient } = require('../src/services/stripe.service');
@@ -33,7 +38,7 @@ let database, server, io, origin, sender, recipient;
 before(async () => {
   database = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(database.getUri());
-  await Promise.all([User, Wallet, WalletTransaction, WebhookEvent, Fee, Institution, Setting].map((model) => model.init()));
+  await Promise.all([User, Wallet, WalletTransaction, WebhookEvent, Fee, Institution, Setting, Payslip, Currency].map((model) => model.init()));
   server = http.createServer();
   io = initSocket(server);
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
@@ -45,7 +50,7 @@ after(async () => {
   if (database) await database.stop();
 });
 beforeEach(async () => {
-  await Promise.all([User, Wallet, WalletTransaction, WebhookEvent, Fee, Institution, Setting].map((model) => model.deleteMany({})));
+  await Promise.all([User, Wallet, WalletTransaction, WebhookEvent, Fee, Institution, Setting, Payslip, Currency].map((model) => model.deleteMany({})));
   [sender, recipient] = await User.create([
     { fullName: 'Sender', email: 'sender@example.test', passwordHash: 'unused' },
     { fullName: 'Recipient', email: 'recipient@example.test', passwordHash: 'unused' }
@@ -71,6 +76,12 @@ function topup(id = 'txn_topup_test') {
     custom_data: { kind: 'wallet_topup', userId: sender._id.toString(), currency: 'USD' },
     items: [{ quantity: 1, price: { unit_price: { amount: '2500', currency_code: 'USD' } } }]
   };
+}
+// The real flow (payment.controller.js's createWalletTopup) creates this pending ledger entry at
+// checkout-creation time, before Paddle is even contacted — the webhook then only ever completes
+// it, never fabricates it. Tests that drive the webhook directly must seed the same precondition.
+function seedPendingTopup(id = 'txn_topup_test', amount = 25, currency = 'USD') {
+  return WalletTransaction.create({ user: sender._id, type: 'topup', amount, currency, status: 'pending', paddleTransactionId: id });
 }
 function paddleRequest(data, id = 'evt_test') {
   const body = Buffer.from(JSON.stringify({ event_id: id, event_type: 'transaction.completed', data }));
@@ -120,6 +131,78 @@ test('concurrent transfers cannot overspend and record both sides once', async (
   assert.equal((await Wallet.findOne({ user: recipient._id })).available, 80);
   assert.equal(await WalletTransaction.countDocuments({}), 2);
 });
+test('a transfer to an email with no matching account touches zero balance, and a real transfer gets a shared, findable receipt reference on both sides', async () => {
+  await assert.rejects(invoke(wallet.transfer, { body: { recipientEmail: 'nobody-real@example.test', amount: 30 } }), { statusCode: 404 });
+  assert.equal((await Wallet.findOne({ user: sender._id })).available, 100, 'sender balance is untouched — nothing was ever deducted');
+  assert.equal(await WalletTransaction.countDocuments({}), 0, 'no ledger entry is created for a failed lookup');
+
+  const result = await invoke(wallet.transfer, { body: { recipientEmail: recipient.email, amount: 30 } });
+  assert.ok(result.body.data.reference, 'a receipt reference is returned to the sender');
+  const [outEntry, inEntry] = await Promise.all([
+    WalletTransaction.findOne({ user: sender._id, type: 'transfer_out' }),
+    WalletTransaction.findOne({ user: recipient._id, type: 'transfer_in' })
+  ]);
+  assert.equal(outEntry.reference, result.body.data.reference);
+  assert.equal(inEntry.reference, result.body.data.reference, 'both legs of the same movement share one findable receipt id');
+});
+test('paying a payslip via CareerZ Internal Wallet moves real ledger balance atomically and stamps a findable receipt reference on both sides', async () => {
+  const institution = await Institution.create({ name: 'Payroll Institution', slug: 'payroll-institution', type: 'school', country: 'PK', owner: sender._id, verificationStatus: 'approved' });
+  const payslip = await Payslip.create({ institution: institution._id, staff: recipient._id, month: 9, year: 2026, basicSalary: 40, netAmount: 40, currency: 'USD', status: 'pending', generatedBy: sender._id });
+
+  const res = await invoke(institutionCtrl.markPayslipPaid, { user: sender, params: { payslipId: payslip._id.toString() }, body: { paymentMethod: 'platform_wallet' } });
+  assert.equal(res.status, 200);
+  assert.equal(res.body.data.status, 'paid');
+  assert.ok(res.body.data.transactionId);
+
+  assert.equal((await Wallet.findOne({ user: sender._id, currency: 'USD' })).available, 60, 'institution wallet debited by the exact net amount');
+  assert.equal((await Wallet.findOne({ user: recipient._id, currency: 'USD' })).available, 40, 'employee wallet credited by the exact net amount');
+
+  const [outEntry, inEntry] = await Promise.all([
+    WalletTransaction.findOne({ user: sender._id, type: 'transfer_out' }),
+    WalletTransaction.findOne({ user: recipient._id, type: 'transfer_in' })
+  ]);
+  assert.equal(outEntry.reference, res.body.data.transactionId);
+  assert.equal(inEntry.reference, res.body.data.transactionId, 'both wallet ledger entries share the same findable receipt as the payslip');
+});
+
+test('paying a payslip via CareerZ Internal Wallet is refused, with zero balance moved, when the institution wallet is not funded enough', async () => {
+  const institution = await Institution.create({ name: 'Payroll Institution 2', slug: 'payroll-institution-2', type: 'school', country: 'PK', owner: sender._id, verificationStatus: 'approved' });
+  const payslip = await Payslip.create({ institution: institution._id, staff: recipient._id, month: 9, year: 2026, basicSalary: 500, netAmount: 500, currency: 'USD', status: 'pending', generatedBy: sender._id });
+  await assert.rejects(invoke(institutionCtrl.markPayslipPaid, { user: sender, params: { payslipId: payslip._id.toString() }, body: { paymentMethod: 'platform_wallet' } }), { statusCode: 422 });
+  assert.equal((await Wallet.findOne({ user: sender._id, currency: 'USD' })).available, 100, 'institution wallet untouched');
+  assert.equal(await Wallet.countDocuments({ user: recipient._id }), 0, 'no wallet was ever created/credited for the recipient');
+  assert.equal(await WalletTransaction.countDocuments({}), 0);
+  const stillPending = await Payslip.findById(payslip._id);
+  assert.notEqual(stillPending.status, 'paid');
+});
+
+test('a wallet top-up in a Paddle-unsupported currency (PKR) converts to USD for Paddle only — the wallet still credits in PKR', async (t) => {
+  await Currency.create({ name: 'Pakistani Rupee', code: 'PKR', symbol: 'Rs', exchangeRateToUSD: 0.0036 });
+  let capturedCurrency = null, capturedAmount = null;
+  t.mock.method(paddleService, 'createTransaction', async ({ amount, currencyCode }) => {
+    capturedAmount = amount; capturedCurrency = currencyCode;
+    return { id: 'txn_pkr_test', status: 'draft' };
+  });
+
+  const res = await invoke(payment.createWalletTopup, { body: { amount: 10000, currency: 'PKR' } });
+  assert.equal(res.status, 200, 'the request that used to fail with Paddle\'s generic "invalid request" now succeeds');
+  assert.equal(capturedCurrency, 'USD', 'Paddle itself only ever sees a currency it actually supports');
+  assert.equal(capturedAmount, Number((10000 * 0.0036).toFixed(2)), 'the USD amount sent to Paddle is correctly converted');
+
+  const pending = await WalletTransaction.findOne({ paddleTransactionId: 'txn_pkr_test' });
+  assert.equal(pending.currency, 'PKR', 'the wallet ledger entry still tracks the currency the user actually chose');
+  assert.equal(pending.amount, 10000, 'and the original PKR amount, not the converted one');
+
+  // Simulate Paddle confirming that (USD-priced) transaction — the wallet must still credit PKR.
+  const transaction = {
+    id: 'txn_pkr_test', status: 'completed', currency_code: 'USD',
+    custom_data: { kind: 'wallet_topup', userId: sender._id.toString(), currency: 'USD' },
+    items: [{ quantity: 1, price: { unit_price: { amount: '3600', currency_code: 'USD' } } }]
+  };
+  await webhook.handleWalletTopupCompleted(transaction);
+  assert.equal((await Wallet.findOne({ user: sender._id, currency: 'PKR' })).available, 10000, 'wallet credited 10000 PKR, not 3600 of anything');
+});
+
 test('ledger failure rolls back both transfer balances and the first ledger entry', async (t) => {
   const original = WalletTransaction.create.bind(WalletTransaction);
   let writes = 0;
@@ -138,17 +221,33 @@ test('invalid monetary input never changes the ledger', async () => {
   }
   assert.equal((await Wallet.findOne({ user: sender._id })).available, 100);
 });
+test('a withdrawal without the account holder\'s name is rejected, and a valid request gets a findable receipt immediately — before any admin review', async () => {
+  await assert.rejects(invoke(wallet.requestWithdrawal, {
+    body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'test account' }
+  }), { statusCode: 422 });
+  assert.equal((await Wallet.findOne({ user: sender._id })).available, 100, 'rejected request touches no balance');
+
+  const result = await invoke(wallet.requestWithdrawal, {
+    body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'ACC-123', accountTitle: 'Sender Full Name' }
+  });
+  assert.equal(result.status, 200);
+  assert.ok(result.body.data.reference, 'a receipt reference exists on the pending request, before any admin has reviewed it');
+  const record = await WalletTransaction.findById(result.body.data.id);
+  assert.equal(record.status, 'pending');
+  assert.equal(record.reference, result.body.data.reference);
+  assert.match(record.payoutDetails, /Sender Full Name/, 'the account holder\'s name is recorded alongside the account number, for Admin review');
+});
 test('withdrawal ledger failure restores the available and pending balances', async (t) => {
   t.mock.method(WalletTransaction, 'create', () => { throw new Error('Injected withdrawal ledger failure'); });
   await assert.rejects(invoke(wallet.requestWithdrawal, {
-    body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'test account' }
+    body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'test account', accountTitle: 'Test Sender' }
   }), /Injected/);
   const balance = await Wallet.findOne({ user: sender._id });
   assert.equal(balance.available, 100);
   assert.equal(balance.pending, 0);
 });
 test('concurrent withdrawal requests cannot reserve the same funds twice', async () => {
-  const request = { body: { amount: 80, payoutMethod: 'bank_transfer', payoutDetails: 'test account' } };
+  const request = { body: { amount: 80, payoutMethod: 'bank_transfer', payoutDetails: 'test account', accountTitle: 'Test Sender' } };
   const results = await Promise.allSettled([invoke(wallet.requestWithdrawal, request), invoke(wallet.requestWithdrawal, request)]);
   assert.equal(results.filter((result) => result.status === 'fulfilled').length, 1);
   const balance = await Wallet.findOne({ user: sender._id });
@@ -157,7 +256,7 @@ test('concurrent withdrawal requests cannot reserve the same funds twice', async
   assert.equal(await WalletTransaction.countDocuments({ type: 'withdrawal' }), 1);
 });
 test('concurrent withdrawal reviews release reserved funds only once', async () => {
-  const result = await invoke(wallet.requestWithdrawal, { body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'test account' } });
+  const result = await invoke(wallet.requestWithdrawal, { body: { amount: 40, payoutMethod: 'bank_transfer', payoutDetails: 'test account', accountTitle: 'Test Sender' } });
   const request = { body: { decision: 'rejected' }, params: { id: result.body.data.id } };
   const results = await Promise.allSettled([invoke(wallet.reviewWithdrawal, request), invoke(wallet.reviewWithdrawal, request)]);
   assert.equal(results.filter((item) => item.status === 'fulfilled').length, 1);
@@ -166,6 +265,7 @@ test('concurrent withdrawal reviews release reserved funds only once', async () 
   assert.equal(balance.pending, 0);
 });
 test('signed duplicate webhooks and concurrent checkout sync credit a top-up once', async () => {
+  await seedPendingTopup();
   const transaction = topup();
   const request = paddleRequest(transaction);
   const results = await Promise.all([
@@ -179,18 +279,20 @@ test('signed duplicate webhooks and concurrent checkout sync credit a top-up onc
   assert.equal(await WebhookEvent.countDocuments({}), 1);
 });
 test('failed webhook returns 500, rolls back its receipt, and succeeds on retry', async (t) => {
+  await seedPendingTopup();
   const failure = t.mock.method(Wallet, 'findOneAndUpdate', () => { throw new Error('Injected wallet failure'); });
   const request = paddleRequest(topup());
   const first = await invoke(webhook.handlePaddleWebhook, request);
   assert.equal(first.status, 500);
   assert.equal(await WebhookEvent.countDocuments({}), 0);
-  assert.equal(await WalletTransaction.countDocuments({}), 0);
+  assert.equal(await WalletTransaction.countDocuments({ status: 'completed' }), 0, 'the seeded pending record is rolled back to pending, never left completed');
   assert.equal((await Wallet.findOne({ user: sender._id })).available, 100);
   failure.mock.restore();
   assert.equal((await invoke(webhook.handlePaddleWebhook, request)).status, 200);
   assert.equal((await Wallet.findOne({ user: sender._id })).available, 125);
 });
 test('unpaid, wrong-purpose and currency-mismatched top-ups never credit', async () => {
+  await seedPendingTopup();
   for (const transaction of [
     { ...topup(), status: 'ready' },
     { ...topup(), currency_code: 'EUR' },
@@ -248,4 +350,55 @@ test('Paddle fee sync and webhook settle concurrently without duplicate effects'
   assert.equal(paidFee.status, 'paid');
   assert.equal(paidFee.paddleTransactionId, transaction.id);
   assert.equal(await WebhookEvent.countDocuments({}), 1);
+});
+
+test('a fee in a Paddle-unsupported currency (PKR) converts to USD for Paddle only — the fee still settles in PKR', async (t) => {
+  await Currency.create({ name: 'Pakistani Rupee', code: 'PKR', symbol: 'Rs', exchangeRateToUSD: 0.0036 });
+  const fee = await Fee.create({ student: sender._id, institution: new mongoose.Types.ObjectId(), title: 'Tuition', amount: 10000, currency: 'PKR', recordedBy: sender._id });
+
+  let capturedCurrency = null, capturedAmount = null;
+  t.mock.method(paddleService, 'createTransaction', async ({ amount, currencyCode }) => {
+    capturedAmount = amount; capturedCurrency = currencyCode;
+    return { id: 'txn_fee_pkr_test', status: 'draft' };
+  });
+
+  const res = await invoke(payment.createPaddleTransaction, { user: sender, params: { feeId: fee.id }, body: {} });
+  assert.equal(res.status, 200, 'the request that used to fail with Paddle\'s generic "invalid request" now succeeds');
+  assert.equal(capturedCurrency, 'USD', 'Paddle itself only ever sees a currency it actually supports');
+  assert.equal(capturedAmount, Number((10000 * 0.0036).toFixed(2)));
+
+  const transaction = { id: 'txn_fee_pkr_test', status: 'completed', custom_data: { kind: 'fee', feeId: fee.id, payerId: sender.id } };
+  await webhook.handleFeePaddleCompleted(transaction);
+  const paidFee = await Fee.findById(fee._id);
+  assert.equal(paidFee.status, 'paid');
+  assert.equal(paidFee.amount, 10000, 'the fee settles for the real PKR amount, not the converted USD figure');
+  assert.equal(paidFee.currency, 'PKR');
+});
+
+test('a course priced in a Paddle-unsupported currency (PKR) converts to USD for Paddle, verifies against that converted figure, and settles the real PKR purchase', async (t) => {
+  await Currency.create({ name: 'Pakistani Rupee', code: 'PKR', symbol: 'Rs', exchangeRateToUSD: 0.0036 });
+  const Course = require('../src/models/Course');
+  const CoursePurchase = require('../src/models/CoursePurchase');
+  await Promise.all([Course.init(), CoursePurchase.init()]);
+  const course = await Course.create({ title: 'PKR Course', teacher: sender._id, price: 5000, currency: 'PKR', isFree: false, published: true });
+
+  t.mock.method(paddleService, 'createTransaction', async ({ amount, currencyCode }) => ({ id: 'txn_course_pkr_test', status: 'draft', _sent: { amount, currencyCode } }));
+  const res = await invoke(payment.createPaddleCourseCheckout, { user: recipient, params: { courseId: course._id.toString() }, body: {} });
+  assert.equal(res.status, 200);
+
+  const purchase = await CoursePurchase.findOne({ provider: 'paddle', providerCheckoutId: 'txn_course_pkr_test' });
+  assert.equal(purchase.currency, 'PKR', 'the real purchase record keeps the course\'s actual currency');
+  assert.equal(purchase.gatewayCurrency, 'USD', 'the Paddle-side currency is tracked separately');
+
+  const expectedUsdMinor = Math.round(Number((5000 * 0.0036).toFixed(2)) * 100);
+  const transaction = {
+    id: 'txn_course_pkr_test', status: 'completed',
+    custom_data: { kind: 'course', courseId: course._id.toString(), studentId: recipient._id.toString() },
+    currency_code: 'USD',
+    items: [{ quantity: 1, price: { unit_price: { amount: String(expectedUsdMinor), currency_code: 'USD' } } }]
+  };
+  await webhook.handleCoursePaddleCompleted(transaction);
+  const settled = await CoursePurchase.findById(purchase._id);
+  assert.equal(settled.status, 'paid');
+  assert.equal(settled.currency, 'PKR', 'the settled purchase is still recorded in the real PKR the student was charged');
 });

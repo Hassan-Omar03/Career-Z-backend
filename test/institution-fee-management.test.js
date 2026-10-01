@@ -81,12 +81,12 @@ test('annual college fee generation produces one invoice per academic year', asy
   assert.equal(plan.reduce((s, p) => s + p.amount, 0), 9000);
 });
 
-test('multiple installments per billing cycle create the right number of Fee documents with unequal-safe rounding', async () => {
+test('institution-selected installments work for any academic billing cycle with unequal-safe rounding', async () => {
   const schedule = await makeSchedule({ installmentsPerBillingCycle: 3, totalProgramFee: 100 });
   const created1 = await feeSchedule.generateCurrentCycle(schedule, owner._id);
   assert.equal(created1.length, 3);
   const total = created1.reduce((s, f) => s + f.amount, 0);
-  assert.ok(Math.abs(total - 100 / 12) < 0.01, 'the 3 installments together equal one month worth of the total');
+  assert.ok(Math.abs(total - 100 / 12) < 0.01, 'the 3 installments together equal the monthly cycle amount');
 });
 
 test('generating the same billing period twice never creates duplicate invoices (idempotent)', async () => {
@@ -392,13 +392,13 @@ test('a rejected refund request never changes the fee\'s paid status', async () 
   assert.equal(rejected.body.data.status, 'paid', 'still paid — a rejected refund never touches fee status');
 });
 
-test('monetary values round-trip safely to 2 decimal places, never accumulating floating-point drift across many small instalments', async () => {
+test('institution-selected installments round-trip safely without floating-point drift', async () => {
   const schedule = await makeSchedule({ totalProgramFee: 100.01, installmentsPerBillingCycle: 7 });
   const created7 = await feeSchedule.generateCurrentCycle(schedule, owner._id);
   assert.equal(created7.length, 7);
   const total = created7.reduce((s, f) => s + f.amount, 0);
   const expectedMonthly = feeSchedule.round2(100.01 / 12);
-  assert.ok(Math.abs(total - expectedMonthly) < 0.01, `7 unevenly-rounded instalments still sum to the correct monthly amount (got ${total}, expected ~${expectedMonthly})`);
+  assert.ok(Math.abs(total - expectedMonthly) < 0.01, `7 unevenly-rounded instalments still sum to the monthly amount (got ${total}, expected ~${expectedMonthly})`);
   created7.forEach((f) => { assert.equal(f.amount, feeSchedule.round2(f.amount), 'every stored amount is already rounded to 2dp'); });
 });
 

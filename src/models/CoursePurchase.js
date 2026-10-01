@@ -7,6 +7,11 @@ const coursePurchaseSchema = new mongoose.Schema({
   providerCheckoutId: { type: String, required: true },
   amountMinor: { type: Number, required: true, min: 1 },
   currency: { type: String, required: true },
+  // Set only when the gateway charged in a DIFFERENT currency than `currency` (e.g. Paddle
+  // doesn't accept PKR, so the course was actually billed in converted USD) — the webhook
+  // verifies the payload against these instead, while the purchase itself stays in `currency`.
+  gatewayAmountMinor: { type: Number, default: null },
+  gatewayCurrency: { type: String, default: null },
   status: { type: String, enum: ['pending', 'paid'], default: 'pending' },
   paidAt: { type: Date, default: null },
   providerPaymentId: { type: String, default: null }

@@ -94,4 +94,22 @@ const verifyCertificate = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = { issueCertificate, listEligibleCompletions, listInstitutionCertificates, getMyCertificates, verifyCertificate };
+// PATCH /api/institutions/:id/certificates/:certificateId/revoke
+const revokeCertificate = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const certificate = await Certificate.findOne({ _id: req.params.certificateId, institution: institution._id });
+  if (!certificate) throw new AppError('Certificate not found.', 404);
+  if (certificate.status === 'revoked') return ok(res, certificate, 'Certificate already revoked.');
+  const reason = String(req.body.reason || '').trim();
+  if (!reason) throw new AppError('A revocation reason is required.', 422);
+  certificate.status = 'revoked';
+  certificate.revokedAt = new Date();
+  certificate.revokedBy = req.user._id;
+  certificate.revokeReason = reason;
+  await certificate.save();
+  return ok(res, certificate, 'Certificate revoked.');
+});
+
+module.exports = { issueCertificate, listEligibleCompletions, listInstitutionCertificates, getMyCertificates, verifyCertificate, revokeCertificate };

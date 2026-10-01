@@ -3,7 +3,7 @@ const User = require('../models/User');
 const BlockedUser = require('../models/BlockedUser');
 const { notify } = require('../services/notification.service');
 const { emitToUser, isUserOnline } = require('../realtime/socket');
-const { canCommunicate, communicationContacts } = require('../utils/messageAccess');
+const { canCommunicate, communicationContacts, operationalStaffScope } = require('../utils/messageAccess');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
@@ -36,7 +36,11 @@ const listConversations = asyncHandler(async (req, res) => {
     if (!seen.has(key)) seen.set(key, { user: other, lastMessage: m.text, lastAt: m.createdAt, unread: 0 });
     if (m.to._id.toString() === userId.toString() && !m.read) seen.get(key).unread += 1;
   }
-  return ok(res, Array.from(seen.values()));
+  const conversations = Array.from(seen.values());
+  const staffScope = await operationalStaffScope(userId);
+  return ok(res, staffScope
+    ? conversations.filter((conversation) => staffScope.studentIds.has(String(conversation.user._id)))
+    : conversations);
 });
 
 const getThread = asyncHandler(async (req, res) => {

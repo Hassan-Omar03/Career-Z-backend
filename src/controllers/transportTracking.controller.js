@@ -21,13 +21,11 @@ async function assertCanOperateVehicle(vehicle) {
   if (!institution) throw new AppError('Institution not found.', 404);
   return institution;
 }
-function assertStaffCanOperate(institution, userId) {
-  const isOwner = institution.owner.toString() === userId.toString();
-  if (isOwner) return;
-  const staffEntry = institution.staff.find((s) => s.user.toString() === userId.toString());
-  if (!staffEntry || !staffEntry.permissions.includes('transport:manage')) {
-    throw new AppError('You do not have permission to operate this vehicle\'s tracking.', 403);
-  }
+// `vehicle` is optional — when passed, its own driverUser account may also operate it (spec:
+// "dedicated Driver account/app"), scoped to that one vehicle only.
+function assertStaffCanOperate(institution, userId, vehicle) {
+  if (vehicle?.driverUser && vehicle.driverUser.toString() === userId.toString()) return;
+  throw new AppError('Only this vehicle\'s assigned driver can operate its journey.', 403);
 }
 
 async function notifyParentsOfStudents(studentIds, payload) {
@@ -42,7 +40,7 @@ const startJourney = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(req.params.vehicleId);
   if (!vehicle) throw new AppError('Vehicle not found.', 404);
   const institution = await assertCanOperateVehicle(vehicle);
-  assertStaffCanOperate(institution, req.user._id);
+  assertStaffCanOperate(institution, req.user._id, vehicle);
 
   const existing = await TransportJourney.findOne({ vehicle: vehicle._id, status: 'in_progress' });
   if (existing) throw new AppError('This vehicle already has a journey in progress.', 409);
@@ -64,7 +62,8 @@ const endJourney = asyncHandler(async (req, res) => {
   if (!journey) throw new AppError('Journey not found.', 404);
   const institution = await Institution.findById(journey.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertStaffCanOperate(institution, req.user._id);
+  const vehicleForAuth = await Vehicle.findById(journey.vehicle);
+  assertStaffCanOperate(institution, req.user._id, vehicleForAuth);
   if (journey.status !== 'in_progress') throw new AppError('This journey has already ended.', 400);
 
   journey.status = 'completed';
@@ -91,7 +90,7 @@ const postPing = asyncHandler(async (req, res) => {
   if (!journey) throw new AppError('Journey not found.', 404);
   const institution = await Institution.findById(journey.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertStaffCanOperate(institution, req.user._id);
+  assertStaffCanOperate(institution, req.user._id, await Vehicle.findById(journey.vehicle));
   if (journey.status !== 'in_progress') throw new AppError('This journey has already ended.', 400);
 
   await TransportLocationPing.create({ journey: journey._id, vehicle: journey.vehicle, lat, lng });
@@ -129,7 +128,7 @@ const triggerSos = asyncHandler(async (req, res) => {
   if (!journey) throw new AppError('Journey not found.', 404);
   const institution = await Institution.findById(journey.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertStaffCanOperate(institution, req.user._id);
+  assertStaffCanOperate(institution, req.user._id, await Vehicle.findById(journey.vehicle));
 
   journey.sosTriggeredAt = new Date();
   await journey.save();
@@ -151,7 +150,7 @@ const staffConfirmBoarding = asyncHandler(async (req, res) => {
   if (!journey) throw new AppError('Journey not found.', 404);
   const institution = await Institution.findById(journey.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertStaffCanOperate(institution, req.user._id);
+  assertStaffCanOperate(institution, req.user._id, await Vehicle.findById(journey.vehicle));
   if (journey.status !== 'in_progress') throw new AppError('This journey has already ended.', 400);
 
   const record = await TransportBoardingEvent.create({ journey: journey._id, student: studentId, event, method: 'staff_confirm', confirmedBy: req.user._id });
@@ -168,7 +167,7 @@ const getBoardingQr = asyncHandler(async (req, res) => {
   if (!journey) throw new AppError('Journey not found.', 404);
   const institution = await Institution.findById(journey.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertStaffCanOperate(institution, req.user._id);
+  assertStaffCanOperate(institution, req.user._id, await Vehicle.findById(journey.vehicle));
   if (journey.status !== 'in_progress') throw new AppError('This journey has already ended.', 400);
 
   journey.qrToken = crypto.randomBytes(16).toString('hex');
@@ -208,7 +207,8 @@ const getJourneyStatus = asyncHandler(async (req, res) => {
   const vehicle = await Vehicle.findById(journey.vehicle);
 
   const isStaff = institution && (institution.owner.toString() === req.user._id.toString()
-    || institution.staff.some((s) => s.user.toString() === req.user._id.toString()));
+    || institution.staff.some((s) => s.user.toString() === req.user._id.toString())
+    || (vehicle?.driverUser && vehicle.driverUser.toString() === req.user._id.toString()));
   let isParentOfAssigned = false;
   if (!isStaff && vehicle) {
     const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' }).select('student');
@@ -237,7 +237,7 @@ const myChildrenTransport = asyncHandler(async (req, res) => {
     const journey = await TransportJourney.findOne({ vehicle: v._id, status: 'in_progress' }).sort({ startedAt: -1 });
     const myChildrenOnThisVehicle = links.filter((l) => v.assignedStudents.some((s) => s.toString() === l.student._id.toString())).map((l) => l.student.fullName);
     return {
-      vehicle: { _id: v._id, vehicleNumber: v.vehicleNumber, routeName: v.routeName, type: v.type },
+      vehicle: { _id: v._id, vehicleNumber: v.vehicleNumber, routeName: v.routeName, type: v.type, stopPoints: v.stopPoints, expectedDurationMinutes: v.expectedDurationMinutes },
       children: myChildrenOnThisVehicle,
       activeJourney: journey ? { _id: journey._id, startedAt: journey.startedAt, lastPing: journey.lastPing } : null
     };
@@ -246,7 +246,23 @@ const myChildrenTransport = asyncHandler(async (req, res) => {
   return ok(res, result);
 });
 
+const myTransport = asyncHandler(async (req, res) => {
+  const vehicles = await Vehicle.find({ assignedStudents: req.user._id }).populate('institution', 'name');
+  const result = await Promise.all(vehicles.map(async (v) => {
+    const journey = await TransportJourney.findOne({ vehicle: v._id, status: 'in_progress' }).sort({ startedAt: -1 });
+    return {
+      vehicle: {
+        _id: v._id, vehicleNumber: v.vehicleNumber, routeName: v.routeName, type: v.type,
+        driverName: v.driverName, driverPhone: v.driverPhone, stopPoints: v.stopPoints,
+        monthlyFee: v.monthlyFee, currency: v.currency, institution: v.institution
+      },
+      activeJourney: journey ? { _id: journey._id, startedAt: journey.startedAt, lastPing: journey.lastPing } : null
+    };
+  }));
+  return ok(res, result);
+});
+
 module.exports = {
   startJourney, endJourney, postPing, triggerSos, staffConfirmBoarding,
-  getBoardingQr, studentSelfBoard, getJourneyStatus, myChildrenTransport
+  getBoardingQr, studentSelfBoard, getJourneyStatus, myChildrenTransport, myTransport
 };

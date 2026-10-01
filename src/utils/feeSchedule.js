@@ -100,6 +100,8 @@ async function generateInvoicesForPeriod(schedule, period, generatedBy) {
   const existing = await Fee.exists({ schedule: schedule._id, billingPeriod: period.key });
   if (existing) { schedule.periodsGenerated.push(period.key); await schedule.save(); return []; }
 
+  // Installment count is institution-configurable for every academic billing frequency.
+  // CareerZ validates only that it is positive; it does not impose a business maximum.
   const perInstallment = Math.max(1, Number(schedule.installmentsPerBillingCycle) || 1);
   const dueDate = dueDateFor(schedule, period);
   const graceEndDate = new Date(dueDate); graceEndDate.setDate(graceEndDate.getDate() + (schedule.gracePeriodDays || 0));
@@ -114,13 +116,18 @@ async function generateInvoicesForPeriod(schedule, period, generatedBy) {
       const extra = schedule.additionalFees?.[type];
       const recurring = ['hostel', 'transport'].includes(type) && extra?.recurrence === 'every_cycle';
       if (extra?.enabled && extra.amount > 0 && (!schedule.additionalFeesBilled || recurring)) {
+        let extraAmount = extra.amount;
+        if (type === 'hostel') {
+          extraAmount += extra.messEnabled ? Number(extra.messMonthlyAmount || 0) : 0;
+          if (!schedule.additionalFeesBilled) extraAmount += Number(extra.securityDeposit || 0);
+        }
         created.push(await Fee.create({
           student: schedule.student, institution: schedule.institution, schedule: schedule._id,
           title: `${schedule.programName} ${type.charAt(0).toUpperCase() + type.slice(1)} Fee`, feeType: type === 'admission' ? 'admission' : type,
-          amount: extra.amount, originalAmount: extra.amount, currency: schedule.currency, dueDate, graceEndDate,
+          amount: extraAmount, originalAmount: extraAmount, currency: schedule.currency, dueDate, graceEndDate,
           billingPeriod: period.key, academicYear: String((schedule.academicYearStart || dueDate).getFullYear()),
           installment: { planId: `${schedule._id}-extras`, number: 100 + extraIndex, totalInstallments: null },
-          status: 'pending', outstandingAmount: extra.amount, recordedBy: generatedBy
+          status: 'pending', outstandingAmount: extraAmount, recordedBy: generatedBy
         }));
       }
     }
@@ -131,10 +138,15 @@ async function generateInvoicesForPeriod(schedule, period, generatedBy) {
   for (let i = 1; i <= perInstallment; i += 1) {
     const amount = i === perInstallment ? round2(period.amount - allocated) : round2(period.amount / perInstallment);
     allocated += amount;
+    const installmentDueDate = new Date(dueDate);
+    if (schedule.billingFrequency === 'semester') installmentDueDate.setMonth(installmentDueDate.getMonth() + (i - 1));
+    if (schedule.billingFrequency === 'annual') installmentDueDate.setMonth(installmentDueDate.getMonth() + ((i - 1) * 3));
+    const installmentGraceEnd = new Date(installmentDueDate);
+    installmentGraceEnd.setDate(installmentGraceEnd.getDate() + (schedule.gracePeriodDays || 0));
     created.push(await Fee.create({
       student: schedule.student, institution: schedule.institution, schedule: schedule._id,
       title: `${schedule.programName} — ${period.label}${perInstallment > 1 ? ` (Instalment ${i}/${perInstallment})` : ''}`,
-      feeType: 'tuition', amount, originalAmount: amount, currency: schedule.currency, dueDate, graceEndDate,
+      feeType: 'tuition', amount, originalAmount: amount, currency: schedule.currency, dueDate: installmentDueDate, graceEndDate: installmentGraceEnd,
       billingPeriod: period.key, academicYear: String(period.startDate.getFullYear()),
       term: ['term', 'semester'].includes(schedule.billingFrequency) ? period.key : '',
       installment: { planId: `${schedule._id}`, number: i, totalInstallments: perInstallment },

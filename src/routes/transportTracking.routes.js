@@ -13,5 +13,6 @@ router.get('/journeys/:id/qr', ctrl.getBoardingQr);
 router.post('/journeys/board-by-qr', ctrl.studentSelfBoard);
 router.get('/journeys/:id', ctrl.getJourneyStatus);
 router.get('/my-children', ctrl.myChildrenTransport);
+router.get('/my-transport', ctrl.myTransport);
 
 module.exports = router;

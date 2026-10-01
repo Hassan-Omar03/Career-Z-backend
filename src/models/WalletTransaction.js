@@ -8,6 +8,10 @@ const walletTransactionSchema = new mongoose.Schema(
     type: { type: String, enum: ['topup', 'withdrawal', 'transfer_in', 'transfer_out'], required: true },
     amount: { type: Number, required: true }, // always positive; type says direction
     currency: { type: String, required: true },
+    // A unique, human-findable receipt id for THIS specific ledger entry — separate from any
+    // gateway id (paddleTransactionId/nowPaymentsId), so every internal wallet-to-wallet move
+    // (transfers, salary payouts) is independently searchable even though no gateway is involved.
+    reference: { type: String, default: null, index: true },
     status: { type: String, enum: ['pending', 'completed', 'rejected'], default: 'completed' },
     counterparty: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // for transfers
     note: { type: String, default: '' },

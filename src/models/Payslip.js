@@ -17,7 +17,7 @@ const payslipSchema = new mongoose.Schema(
     currency: { type: String, default: 'USD' },
     status: { type: String, enum: ['pending', 'processing', 'paid', 'rejected'], default: 'pending' },
     paidAt: { type: Date },
-    paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'cash', 'other', 'platform_wallet', 'stripe_transfer', ''], default: '' },
+    paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'crypto', 'cash', 'other', 'platform_wallet', 'stripe_transfer', ''], default: '' },
     transactionId: { type: String, default: null },
     paymentReference: { type: String, default: '' },
     paymentProofUrl: { type: String, default: '' },

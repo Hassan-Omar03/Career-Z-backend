@@ -32,7 +32,7 @@ function getStaffEntry(institution, userId) {
 
 // POST /api/institution-applications — a student starts/submits an application.
 const createApplication = asyncHandler(async (req, res) => {
-  const { institution, program, submit } = req.body;
+  const { institution, program, submit, requestedServices = {} } = req.body;
   if (!institution || !program) throw new AppError('institution and program are required.', 422);
   if (submit && !req.user.emailVerified) {
     throw new AppError('Verify your email before submitting an application (Profile tab).', 403);
@@ -45,9 +45,18 @@ const createApplication = asyncHandler(async (req, res) => {
   const duplicate = await InstitutionApplication.exists({ institution, applicant: req.user._id, program, status: { $nin: ['rejected'] } });
   if (duplicate) throw new AppError('You already have an active application for this program.', 409);
 
+  const selectedServices = {
+    hostel: Boolean(requestedServices.hostel && programPlan.additionalFees?.hostel?.enabled),
+    mess: Boolean(requestedServices.hostel && requestedServices.mess && programPlan.additionalFees?.hostel?.messAvailable),
+    transport: Boolean(requestedServices.transport && programPlan.additionalFees?.transport?.enabled)
+  };
+  const additionalFees = programPlan.additionalFees?.toObject ? programPlan.additionalFees.toObject() : { ...(programPlan.additionalFees || {}) };
+  if (additionalFees.hostel) additionalFees.hostel = { ...additionalFees.hostel, enabled: selectedServices.hostel, messEnabled: selectedServices.mess, recurrence: 'every_cycle' };
+  if (additionalFees.transport) additionalFees.transport = { ...additionalFees.transport, enabled: selectedServices.transport };
   const application = await InstitutionApplication.create({
     institution, applicant: req.user._id, program,
-    feePlanSnapshot: { department: programPlan.department, durationTerms: programPlan.durationTerms, admissionFee: programPlan.admissionFee, totalTuitionFee: programPlan.totalTuitionFee, installments: programPlan.installments, currency: programPlan.currency, additionalFees: programPlan.additionalFees, capturedAt: new Date() },
+    requestedServices: selectedServices,
+    feePlanSnapshot: { department: programPlan.department, durationTerms: programPlan.durationTerms, admissionFee: programPlan.admissionFee, totalTuitionFee: programPlan.totalTuitionFee, installments: programPlan.installments, currency: programPlan.currency, additionalFees, capturedAt: new Date() },
     status: submit ? 'submitted' : 'draft',
     submittedAt: submit ? new Date() : null
   });

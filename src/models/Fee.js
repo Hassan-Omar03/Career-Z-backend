@@ -31,6 +31,7 @@ const feeSchema = new mongoose.Schema(
     // Discounts/concessions/scholarships (spec) — `amount` above is always the FINAL payable
     // figure; `originalAmount` preserves what it was before any adjustment, so both can be shown.
     originalAmount: { type: Number, default: null },
+    components: [{ type: { type: String, enum: ['tuition', 'transport', 'hostel', 'mess', 'security', 'other'], default: 'other' }, label: String, amount: Number, billingPeriod: String, reason: String }],
     discounts: [
       {
         kind: { type: String, enum: ['percentage', 'fixed', 'sibling', 'merit_scholarship', 'need_based_scholarship', 'staff_child', 'waiver', 'custom'], required: true },

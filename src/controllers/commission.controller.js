@@ -87,27 +87,32 @@ const updateCommissionStatus = asyncHandler(async (req, res) => {
 // currency. Doesn't move real money (no payment processor in this app) — creates a real,
 // trackable request record instead of pretending a payout happened.
 const requestWithdrawal = asyncHandler(async (req, res) => {
-  const { currency, payoutMethod, payoutDetails } = req.body;
+  const { currency, payoutMethod, payoutDetails, accountTitle } = req.body;
   if (!currency) throw new AppError('currency is required.', 422);
   if (!payoutMethod || !PAYOUT_METHOD_LABEL[payoutMethod]) {
     throw new AppError('A valid payoutMethod is required (bank_transfer, mobile_wallet or other).', 422);
   }
   if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
+  if (!accountTitle || !accountTitle.trim()) throw new AppError("The account holder's name (accountTitle) is required.", 422);
 
   const available = await Commission.find({ agent: req.user._id, status: 'available', currency });
   if (available.length === 0) throw new AppError('No available commission balance in that currency.', 422);
 
   const amount = available.reduce((sum, c) => sum + c.amount, 0);
+  // A findable receipt exists from the moment the request is made, not only once an admin
+  // processes it — same reasoning as the main Wallet withdrawal flow.
+  const transactionId = generateTransactionId();
   const withdrawal = await Withdrawal.create({
     agent: req.user._id,
     amount,
     currency,
     commissions: available.map((c) => c._id),
     payoutMethod,
-    payoutDetails: payoutDetails.trim()
+    payoutDetails: `${accountTitle.trim()} — ${payoutDetails.trim()}`,
+    transactionId
   });
 
-  return created(res, withdrawal, 'Withdrawal requested.');
+  return created(res, withdrawal, `Withdrawal requested — receipt ${transactionId}.`);
 });
 
 // GET /api/commissions/mine/withdrawals — an agent's own withdrawal history.
@@ -129,7 +134,9 @@ const updateWithdrawalStatus = asyncHandler(async (req, res) => {
   withdrawal.status = status;
   if (status === 'paid') {
     withdrawal.processedAt = new Date();
-    withdrawal.transactionId = generateTransactionId();
+    // The receipt was already generated at request time (shown to the agent then) — keep it,
+    // never overwrite it, so the same receipt id stays valid through the whole lifecycle.
+    if (!withdrawal.transactionId) withdrawal.transactionId = generateTransactionId();
     await Commission.updateMany({ _id: { $in: withdrawal.commissions } }, { status: 'paid' });
   }
   await withdrawal.save();

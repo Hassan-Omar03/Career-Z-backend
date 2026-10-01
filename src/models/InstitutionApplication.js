@@ -8,6 +8,11 @@ const institutionApplicationSchema = new mongoose.Schema(
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     applicant: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     program: { type: String, required: true },
+    requestedServices: {
+      hostel: { type: Boolean, default: false },
+      mess: { type: Boolean, default: false },
+      transport: { type: Boolean, default: false }
+    },
     feePlanSnapshot: {
       department: { type: String, default: '' },
       durationTerms: { type: Number, default: null },
@@ -17,7 +22,15 @@ const institutionApplicationSchema = new mongoose.Schema(
       currency: { type: String, default: '' },
       additionalFees: {
         exam: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
-        hostel: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
+        hostel: {
+          enabled: { type: Boolean, default: false },
+          amount: { type: Number, default: 0 },
+          securityDeposit: { type: Number, default: 0 },
+          messAvailable: { type: Boolean, default: false },
+          messEnabled: { type: Boolean, default: false },
+          messMonthlyAmount: { type: Number, default: 0 },
+          recurrence: { type: String, enum: ['one_time', 'every_cycle'], default: 'every_cycle' }
+        },
         transport: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
         library: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } },
         activity: { enabled: { type: Boolean, default: false }, amount: { type: Number, default: 0 } }
