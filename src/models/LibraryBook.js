@@ -7,7 +7,7 @@ const libraryBookSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     author: { type: String, default: '' },
     isbn: { type: String, default: '' },
-    category: { type: String, enum: ['book', 'ebook', 'journal', 'research_paper'], default: 'book' },
+    category: { type: String, enum: ['book', 'ebook', 'journal', 'research_paper', 'video', 'audio_lecture', 'slides', 'notes'], default: 'book' },
     copies: { type: Number, default: 1, min: 0 }, // physical copies (0 for pure eBooks/journals)
     availableCopies: { type: Number, default: 1, min: 0 },
     fileUrl: { type: String, default: '' }, // eBook/journal/research paper file link

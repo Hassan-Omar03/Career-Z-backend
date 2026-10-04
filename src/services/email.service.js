@@ -1,5 +1,10 @@
 const nodemailer = require('nodemailer');
 const env = require('../config/env');
+function emailBrandHeader() {
+  return `<div style="background:linear-gradient(120deg,#0F3D2E,#1B8A63); padding:20px 32px; text-align:center;">
+    <div style="font-family:Georgia,serif; font-size:25px; font-weight:700; color:#ffffff;"><span style="color:#E3A23C;">&#9679;</span>&nbsp; Career<span style="color:#E3A23C;">Z.pk</span></div>
+  </div>`;
+}
 
 let transporter = null;
 if (env.smtp.host) {
@@ -38,9 +43,7 @@ function otpEmailTemplate({ heading, intro, code, minutes }) {
   return `
   <div style="background:#F4F1E8; padding:40px 16px; font-family:'Segoe UI',Arial,sans-serif;">
     <div style="max-width:480px; margin:0 auto; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(11,20,16,0.12);">
-      <div style="background:linear-gradient(120deg,#0F3D2E,#1B8A63); padding:28px 32px; text-align:center;">
-        <span style="font-family:Georgia,serif; font-size:24px; font-weight:700; color:#ffffff;">Career<span style="color:#E3A23C;">Z.pk</span></span>
-      </div>
+      ${emailBrandHeader()}
       <div style="padding:32px;">
         <h1 style="font-family:Georgia,serif; font-size:20px; color:#0F3D2E; margin:0 0 12px;">${heading}</h1>
         <p style="font-size:14.5px; color:#4B5A53; line-height:1.6; margin:0 0 24px;">${intro}</p>
@@ -63,9 +66,7 @@ function noticeEmailTemplate({ heading, body, footer, ctaUrl, ctaLabel }) {
   return `
   <div style="background:#F4F1E8; padding:40px 16px; font-family:'Segoe UI',Arial,sans-serif;">
     <div style="max-width:480px; margin:0 auto; background:#ffffff; border-radius:16px; overflow:hidden; box-shadow:0 8px 24px rgba(11,20,16,0.12);">
-      <div style="background:linear-gradient(120deg,#0F3D2E,#1B8A63); padding:28px 32px; text-align:center;">
-        <span style="font-family:Georgia,serif; font-size:24px; font-weight:700; color:#ffffff;">Career<span style="color:#E3A23C;">Z.pk</span></span>
-      </div>
+      ${emailBrandHeader()}
       <div style="padding:32px;">
         <h1 style="font-family:Georgia,serif; font-size:20px; color:#0F3D2E; margin:0 0 12px;">${heading}</h1>
         <p style="font-size:14.5px; color:#4B5A53; line-height:1.6; margin:0 0 8px; white-space:pre-line;">${body}</p>

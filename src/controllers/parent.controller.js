@@ -58,7 +58,17 @@ const requestLink = asyncHandler(async (req, res) => {
 const myChildren = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' })
     .populate('student', 'fullName email');
-  return ok(res, links);
+  // Each child's current institution, for UI that needs to resolve "which institution is this
+  // parent related to" (Events/Help Desk) without a separate round trip.
+  const StudentProfile = require('../models/StudentProfile');
+  const profiles = await StudentProfile.find({ user: { $in: links.map((l) => l.student._id) } }).select('user primaryInstitution');
+  const institutionByStudent = new Map(profiles.map((p) => [p.user.toString(), p.primaryInstitution]));
+  const withInstitution = links.map((l) => {
+    const obj = l.toObject();
+    obj.student.primaryInstitution = institutionByStudent.get(l.student._id.toString()) || null;
+    return obj;
+  });
+  return ok(res, withInstitution);
 });
 
 // GET /api/parents/link-requests - all of my requests (any status)
@@ -274,11 +284,19 @@ const getChildHealth = asyncHandler(async (req, res) => {
   assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
   const profile = await StudentProfile.findOne({ user: req.params.studentId });
+  // Incidents are read-only here (institution staff record them) — a guardian should see the
+  // same incident history the institution has, not just the one-off notification email.
+  const HealthIncident = require('../models/HealthIncident');
+  const incidents = profile?.primaryInstitution
+    ? await HealthIncident.find({ institution: profile.primaryInstitution, student: req.params.studentId }).sort({ occurredAt: -1 })
+    : [];
   return ok(res, {
     bloodGroup: profile?.bloodGroup || '',
     allergies: profile?.allergies || [],
     medicalNotes: profile?.medicalNotes || '',
-    emergencyContact: profile?.emergencyContact || { name: '', phone: '', relation: '' }
+    vaccinations: profile?.vaccinations || [],
+    emergencyContact: profile?.emergencyContact || { name: '', phone: '', relation: '' },
+    incidents
   });
 });
 
@@ -287,7 +305,7 @@ const updateChildHealth = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
-  const allowed = ['bloodGroup', 'allergies', 'medicalNotes', 'emergencyContact'];
+  const allowed = ['bloodGroup', 'allergies', 'medicalNotes', 'emergencyContact', 'vaccinations'];
   const update = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f]; });
 

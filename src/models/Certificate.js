@@ -6,6 +6,8 @@ const certificateSchema = new mongoose.Schema(
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
+    program: { type: mongoose.Schema.Types.ObjectId, ref: 'InstitutionProgram', default: null },
+    achievement: { type: mongoose.Schema.Types.ObjectId, ref: 'Achievement', default: null },
     type: { type: String, enum: ['course', 'diploma', 'training', 'degree', 'achievement'], default: 'course' },
     title: { type: String, required: true },
     academicSession: { type: String, default: '' },
@@ -23,5 +25,7 @@ const certificateSchema = new mongoose.Schema(
 );
 
 certificateSchema.index({ student: 1, course: 1, type: 1 }, { unique: true, partialFilterExpression: { course: { $type: 'objectId' } } });
+certificateSchema.index({ student: 1, program: 1, type: 1 }, { unique: true, partialFilterExpression: { program: { $type: 'objectId' } } });
+certificateSchema.index({ student: 1, achievement: 1, type: 1 }, { unique: true, partialFilterExpression: { achievement: { $type: 'objectId' } } });
 
 module.exports = mongoose.model('Certificate', certificateSchema);

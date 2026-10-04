@@ -2,16 +2,25 @@ const router = require('express').Router();
 const ctrl = require('../controllers/institutionOps.controller');
 const { protect } = require('../middleware/auth');
 
+// Genuinely public — a prospective student should be able to see an institution's upcoming
+// events (Sports Day, Open House, Convocation, etc.) without logging in first, since the whole
+// point of publishing them is to attract people who aren't students yet (spec 15D.17). Must be
+// registered BEFORE router.use(protect) below, or it would silently require login anyway.
+router.get('/:id/events/public', ctrl.listPublicEvents);
+
 router.use(protect);
 
 // Library
 router.get('/:id/books', ctrl.listBooks);
 router.get('/mine/library', ctrl.getMyLibrary);
+router.get('/:id/library-borrowers', ctrl.listLibraryBorrowers);
+router.get('/:id/books/qr/:code', ctrl.findBookByQr);
 router.post('/:id/books', ctrl.createBook);
 router.patch('/books/:bookId', ctrl.updateBook);
 router.delete('/books/:bookId', ctrl.deleteBook);
 router.post('/books/:bookId/borrow', ctrl.borrowBook);
 router.patch('/loans/:loanId/return', ctrl.returnBook);
+router.patch('/loans/:loanId/waive-fine', ctrl.waiveLibraryFine);
 router.get('/:id/loans', ctrl.listLoans);
 
 // Hostel
@@ -59,11 +68,11 @@ router.patch('/students/:userId/health', ctrl.updateStudentHealthRecord);
 // Events & Activities
 router.get('/mine/events', ctrl.getMyInstitutionEvents);
 router.get('/:id/events', ctrl.listEvents);
-router.get('/:id/events/public', ctrl.listPublicEvents);
 router.post('/:id/events', ctrl.createEvent);
 router.patch('/events/:eventId', ctrl.updateEvent);
 router.delete('/events/:eventId', ctrl.deleteEvent);
 router.post('/events/:eventId/rsvp', ctrl.rsvpEvent);
+router.delete('/events/:eventId/rsvp', ctrl.cancelRsvp);
 
 // Help Desk
 router.get('/:id/tickets', ctrl.listTickets);

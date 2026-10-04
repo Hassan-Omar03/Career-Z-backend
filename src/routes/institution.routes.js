@@ -68,7 +68,10 @@ router.delete('/:id/comms-credential', notificationCtrl.removeCommsCredential);
 router.post('/:id/certificates', certificateCtrl.issueCertificate);
 router.patch('/:id/certificates/:certificateId/revoke', certificateCtrl.revokeCertificate);
 router.get('/:id/certificates/eligible', certificateCtrl.listEligibleCompletions);
+router.get('/:id/certificates/advanced-eligible', certificateCtrl.listAdvancedEligible);
 router.get('/:id/certificates', certificateCtrl.listInstitutionCertificates);
+router.get('/:id/transcripts/preview/:studentId', certificateCtrl.previewTranscript);
+router.post('/:id/transcripts', certificateCtrl.createTranscript);
 
 router.get('/:id/teachers', ctrl.listInstitutionTeachers);
 router.get('/:id/students', ctrl.listInstitutionStudents);

@@ -17,6 +17,7 @@ const TeacherEmployment = require('../models/TeacherEmployment');
 const InstitutionEvent = require('../models/InstitutionEvent');
 const HelpDeskTicket = require('../models/HelpDeskTicket');
 const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
+const ParentChildLink = require('../models/ParentChildLink');
 const Fee = require('../models/Fee');
 const FeeSchedule = require('../models/FeeSchedule');
 const { generateCurrentCycle } = require('../utils/feeSchedule');
@@ -36,6 +37,11 @@ async function assertActiveMember(studentId, institutionId) {
   if (!membership) throw new AppError('This student is not an active member of your institution.', 422);
 }
 
+async function assertLibraryMember(studentId, institutionId) {
+  const membership = await StudentInstitutionMembership.findOne({ student: studentId, institution: institutionId, status: { $in: ['active', 'graduated'] } });
+  if (!membership) throw new AppError('This student is not an active or graduated member of your institution.', 422);
+}
+
 async function assertTransportApplicant(studentId, institutionId) {
   const application = await InstitutionApplication.findOne({
     applicant: studentId,
@@ -45,6 +51,22 @@ async function assertTransportApplicant(studentId, institutionId) {
   });
   if (!application) throw new AppError('Only an accepted student who selected transport during admission can be assigned.', 422);
   return application;
+}
+
+// A user may raise a Help Desk ticket at an institution only if they actually have a real
+// relationship to it — student, teacher, staff/owner, or a parent of one of its students. Before
+// this, createTicket had no check at all: any logged-in user could file a ticket at any
+// institution id (spec gap flagged during Complaint & Help Desk review).
+async function assertHasRelationshipToInstitution(userId, institutionId) {
+  const institution = await Institution.findById(institutionId).select('owner staff');
+  if (!institution) throw new AppError('Institution not found.', 404);
+  if (institution.owner.toString() === userId.toString()) return;
+  if (institution.staff.some((s) => s.user.toString() === userId.toString())) return;
+  if (await StudentInstitutionMembership.exists({ student: userId, institution: institutionId, status: 'active' })) return;
+  if (await TeacherEmployment.exists({ teacher: userId, institution: institutionId, status: 'active' })) return;
+  const childIds = await StudentInstitutionMembership.find({ institution: institutionId, status: 'active' }).distinct('student');
+  if (childIds.length && await ParentChildLink.exists({ parent: userId, student: { $in: childIds }, status: 'approved' })) return;
+  throw new AppError('You have no relationship with this institution.', 403);
 }
 
 async function assertActiveInstitutionDriver(driverUserId, institutionId) {
@@ -124,10 +146,27 @@ const listBooks = asyncHandler(async (req, res) => {
   return ok(res, books);
 });
 
+const findBookByQr = asyncHandler(async (req, res) => {
+  await loadInstitutionAndAssert(req.params.id, req.user._id);
+  const code = String(req.params.code || '').trim();
+  const book = await LibraryBook.findOne({ institution: req.params.id, qrCode: code });
+  if (!book) throw new AppError('No library resource matches this QR code.', 404);
+  return ok(res, book);
+});
+
+const listLibraryBorrowers = asyncHandler(async (req, res) => {
+  await loadInstitutionAndAssert(req.params.id, req.user._id);
+  const memberIds = await StudentInstitutionMembership.find({ institution: req.params.id, status: { $in: ['active', 'graduated'] } }).distinct('student');
+  const students = await StudentProfile.find({ user: { $in: memberIds } }).populate('user', 'fullName email').sort({ createdAt: -1 });
+  return ok(res, students);
+});
+
 const createBook = asyncHandler(async (req, res) => {
   await loadInstitutionAndAssert(req.params.id, req.user._id);
   const { title, author, isbn, category, copies, fileUrl, coverImage } = req.body;
   if (!title) throw new AppError('title is required.', 422);
+  const digitalCategories = ['ebook', 'journal', 'research_paper', 'video', 'audio_lecture', 'slides', 'notes'];
+  if (digitalCategories.includes(category) && !fileUrl) throw new AppError('A digital file URL is required for this resource type.', 422);
   const book = await LibraryBook.create({
     institution: req.params.id, title, author: author || '', isbn: isbn || '',
     category: category || 'book', copies: copies ?? 1, availableCopies: copies ?? 1,
@@ -162,6 +201,9 @@ const borrowBook = asyncHandler(async (req, res) => {
 
   const { borrower, dueDate, finePerDay } = req.body;
   if (!borrower || !dueDate) throw new AppError('borrower and dueDate are required.', 422);
+  await assertLibraryMember(borrower, book.institution);
+  const existingLoan = await LibraryLoan.findOne({ book: book._id, borrower, status: { $in: ['borrowed', 'overdue'] } });
+  if (existingLoan) throw new AppError('This student already has this resource on loan.', 409);
 
   const loan = await LibraryLoan.create({
     institution: book.institution, book: book._id, borrower, dueDate,
@@ -198,15 +240,30 @@ const listLoans = asyncHandler(async (req, res) => {
   return ok(res, loans);
 });
 
+const waiveLibraryFine = asyncHandler(async (req, res) => {
+  const loan = await LibraryLoan.findById(req.params.loanId).populate('book', 'title');
+  if (!loan) throw new AppError('Loan not found.', 404);
+  await loadInstitutionAndAssert(loan.institution, req.user._id);
+  loan.fineWaived = true;
+  loan.fineAmount = 0;
+  await loan.save();
+  await notify(loan.borrower, { title: `Library fine waived: ${loan.book?.title || 'Library resource'}`, body: req.body.reason || 'Your institution waived this fine.', sentBy: req.user._id }).catch(() => {});
+  return ok(res, loan, 'Library fine waived.');
+});
+
 const getMyLibrary = asyncHandler(async (req, res) => {
-  const profile = await StudentProfile.findOne({ user: req.user._id }).select('primaryInstitution');
-  if (!profile?.primaryInstitution) throw new AppError('You are not linked to an institution.', 404);
-  await assertActiveMember(req.user._id, profile.primaryInstitution);
+  // Viewing the library (and, crucially, your own loan/fine history) should not hard-require
+  // 'active' status — a graduated or transferred student may still owe a fine or need to return
+  // a book, and should still be able to see that. Only a withdrawn/rejected membership (never a
+  // real relationship to begin with, or formally cut off) is excluded.
+  const memberships = await StudentInstitutionMembership.find({ student: req.user._id, status: { $nin: ['withdrawn', 'rejected', 'pending'] } }).select('institution');
+  const institutionIds = [...new Set(memberships.map((entry) => String(entry.institution)))];
+  if (!institutionIds.length) throw new AppError('You are not linked to any institution.', 404);
   const [books, loans] = await Promise.all([
-    LibraryBook.find({ institution: profile.primaryInstitution }).sort({ title: 1 }),
-    LibraryLoan.find({ institution: profile.primaryInstitution, borrower: req.user._id }).populate('book', 'title author category fileUrl').sort({ borrowedAt: -1 })
+    LibraryBook.find({ institution: { $in: institutionIds } }).populate('institution', 'name').sort({ title: 1 }),
+    LibraryLoan.find({ institution: { $in: institutionIds }, borrower: req.user._id }).populate('institution', 'name').populate('book', 'title author category fileUrl').sort({ borrowedAt: -1 })
   ]);
-  return ok(res, { institutionId: profile.primaryInstitution, books, loans });
+  return ok(res, { institutionIds, books, loans });
 });
 
 const getMyInstitutionEvents = asyncHandler(async (req, res) => {
@@ -780,10 +837,20 @@ const deleteEvent = asyncHandler(async (req, res) => {
 const rsvpEvent = asyncHandler(async (req, res) => {
   const event = await InstitutionEvent.findById(req.params.eventId);
   if (!event) throw new AppError('Event not found.', 404);
+  await assertHasRelationshipToInstitution(req.user._id, event.institution);
   if (event.rsvps.some((r) => r.user.toString() === req.user._id.toString())) throw new AppError('Already RSVP\'d.', 409);
   event.rsvps.push({ user: req.user._id });
   await event.save();
   return ok(res, event, 'RSVP recorded.');
+});
+
+// DELETE /api/institution-ops/events/:eventId/rsvp — withdraw a previous RSVP.
+const cancelRsvp = asyncHandler(async (req, res) => {
+  const event = await InstitutionEvent.findById(req.params.eventId);
+  if (!event) throw new AppError('Event not found.', 404);
+  event.rsvps = event.rsvps.filter((r) => r.user.toString() !== req.user._id.toString());
+  await event.save();
+  return ok(res, event, 'RSVP withdrawn.');
 });
 
 // ======================= Help Desk (15D.16) =======================
@@ -802,6 +869,7 @@ const myTickets = asyncHandler(async (req, res) => {
 const createTicket = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
+  await assertHasRelationshipToInstitution(req.user._id, institution._id);
   const { category, subject, description, priority } = req.body;
   if (!category || !subject || !description) throw new AppError('category, subject and description are required.', 422);
 
@@ -818,7 +886,7 @@ const createTicket = asyncHandler(async (req, res) => {
 const updateTicket = asyncHandler(async (req, res) => {
   const ticket = await HelpDeskTicket.findById(req.params.ticketId);
   if (!ticket) throw new AppError('Ticket not found.', 404);
-  await loadInstitutionAndAssert(ticket.institution, req.user._id);
+  const institution = await loadInstitutionAndAssert(ticket.institution, req.user._id);
 
   const { status, priority, assignedTo, resolutionNotes } = req.body;
   if (status !== undefined) {
@@ -826,12 +894,22 @@ const updateTicket = asyncHandler(async (req, res) => {
     if (status === 'resolved' || status === 'closed') ticket.resolvedAt = new Date();
   }
   if (priority !== undefined) ticket.priority = priority;
-  if (assignedTo !== undefined) ticket.assignedTo = assignedTo || null;
+  if (assignedTo !== undefined) {
+    if (assignedTo) {
+      const isStaffOrOwner = institution.owner.toString() === assignedTo.toString()
+        || institution.staff.some((s) => s.user.toString() === assignedTo.toString());
+      if (!isStaffOrOwner) throw new AppError('A ticket can only be assigned to this institution\'s own owner/staff.', 422);
+    }
+    ticket.assignedTo = assignedTo || null;
+  }
   if (resolutionNotes !== undefined) ticket.resolutionNotes = resolutionNotes;
   await ticket.save();
 
   if (status) {
     await notify(ticket.raisedBy, { title: `Ticket ${ticket.ticketNumber} — ${status}`, body: resolutionNotes || '', sentBy: req.user._id }).catch(() => {});
+  }
+  if (assignedTo) {
+    await notify(assignedTo, { title: `Ticket assigned to you: ${ticket.ticketNumber}`, body: ticket.subject, sentBy: req.user._id }).catch(() => {});
   }
   return ok(res, ticket, 'Ticket updated.');
 });
@@ -858,7 +936,7 @@ async function sweepHostelTransportFees(institutionId) {
 }
 
 module.exports = {
-  listBooks, createBook, updateBook, deleteBook, borrowBook, returnBook, listLoans, getMyLibrary,
+  listBooks, findBookByQr, listLibraryBorrowers, createBook, updateBook, deleteBook, borrowBook, returnBook, waiveLibraryFine, listLoans, getMyLibrary,
   listHostelRooms, listHostelEligibleStudents, createHostelRoom, updateHostelRoom, allocateHostelRoom, transferHostelStudent, removeHostelOccupant,
   getMyHostelStatus, createHostelRequest, listHostelRequests, decideHostelRequest,
   getWardenDashboard, markHostelAttendance, listHostelAttendance,
@@ -866,6 +944,6 @@ module.exports = {
   getMyDriverVehicles, generateMonthlyTransportFees, listFuelLogs, createFuelLog, listMaintenanceLogs, createMaintenanceLog,
   listInventory, createInventoryItem, updateInventoryItem, deleteInventoryItem,
   listHealthIncidents, createHealthIncident, getStudentHealthRecord, updateStudentHealthRecord,
-  listEvents, listPublicEvents, getMyInstitutionEvents, createEvent, updateEvent, deleteEvent, rsvpEvent,
+  listEvents, listPublicEvents, getMyInstitutionEvents, createEvent, updateEvent, deleteEvent, rsvpEvent, cancelRsvp,
   listTickets, myTickets, createTicket, updateTicket, sweepHostelTransportFees
 };

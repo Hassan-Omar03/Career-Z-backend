@@ -976,7 +976,27 @@ const getMyBadges = asyncHandler(async (req, res) => {
   return ok(res, { badges, earnedCount: badges.filter((b) => b.earned).length, totalCount: badges.length });
 });
 
+// GET /api/students/me/health — a student viewing their OWN health record (spec 15D.14). Before
+// this, only the institution and a linked guardian could see it — the student themself had no
+// way to check their own blood group, allergies, vaccinations or incident history.
+const getMyHealthRecord = asyncHandler(async (req, res) => {
+  const profile = await StudentProfile.findOne({ user: req.user._id }).select('bloodGroup allergies medicalNotes vaccinations emergencyContact primaryInstitution');
+  const HealthIncident = require('../models/HealthIncident');
+  const incidents = profile?.primaryInstitution
+    ? await HealthIncident.find({ institution: profile.primaryInstitution, student: req.user._id }).sort({ occurredAt: -1 })
+    : [];
+  return ok(res, {
+    bloodGroup: profile?.bloodGroup || '',
+    allergies: profile?.allergies || [],
+    medicalNotes: profile?.medicalNotes || '',
+    vaccinations: profile?.vaccinations || [],
+    emergencyContact: profile?.emergencyContact || { name: '', phone: '', relation: '' },
+    incidents
+  });
+});
+
 module.exports = {
+  getMyHealthRecord,
   getMyProfile,
   updateMyProfile,
   connectToInstitution,

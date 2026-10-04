@@ -9,6 +9,8 @@ const courseSchema = new mongoose.Schema(
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
 
     subject: { type: String, default: '' },
+    creditHours: { type: Number, min: 0.5, max: 12, default: 3 },
+    academicTerm: { type: String, default: '' },
     level: { type: String, default: '' },
     language: { type: String, default: 'en' },
 

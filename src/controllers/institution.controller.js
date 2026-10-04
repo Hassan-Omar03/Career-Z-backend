@@ -782,7 +782,7 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
   const course = await Course.findOne({ _id: req.params.courseId, institution: institution._id });
   if (!course) throw new AppError('Course not found for this institution.', 404);
-  const { subject, classSection, teacher } = req.body;
+  const { subject, classSection, teacher, creditHours, academicTerm } = req.body;
   if (!String(subject || '').trim() || !classSection || !teacher) throw new AppError('Subject, class section and teacher are required.', 422);
   const section = await ClassSection.findOne({ _id: classSection, institution: institution._id });
   if (!section) throw new AppError('Select a class section from this institution.', 422);
@@ -791,6 +791,8 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   course.subject = String(subject).trim();
   course.classSection = section._id;
   course.teacher = teacher;
+  course.creditHours = Number(creditHours) || 3;
+  course.academicTerm = String(academicTerm || '').trim();
   await course.save();
   await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} Â· ${section.name} Â· ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
   await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);

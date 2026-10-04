@@ -51,7 +51,10 @@ const respondPartnership = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(partnership.institution);
   const isInstitutionSide = institution && assertOwnerOrStaff(institution, req.user._id);
   const isEmployerSide = partnership.employer.toString() === req.user._id.toString();
-  const requesterIsInstitution = institution && institution.owner.toString() === partnership.requestedBy.toString();
+  // Was the request raised by the institution SIDE (owner OR any staff member), not just the
+  // owner specifically — a staff-raised request was previously misclassified as employer-raised,
+  // which let the institution wrongly respond to its own request instead of the employer.
+  const requesterIsInstitution = institution && assertOwnerOrStaff(institution, partnership.requestedBy);
   // Only the side that did NOT request it may respond.
   const canRespond = requesterIsInstitution ? isEmployerSide : isInstitutionSide;
   if (!canRespond) throw new AppError('Only the other party can respond to this request.', 403);
@@ -63,6 +66,27 @@ const respondPartnership = asyncHandler(async (req, res) => {
   const notifyTarget = requesterIsInstitution ? institution.owner : partnership.employer;
   await notify(notifyTarget, { title: `Partnership ${decision}`, sentBy: req.user._id }).catch(() => {});
   return ok(res, partnership, `Partnership ${decision}.`);
+});
+
+// PATCH /api/institution-employer/partnerships/:id/end — either side can end an active
+// partnership (spec gap: "ended" was a valid status that nothing ever actually set).
+const endPartnership = asyncHandler(async (req, res) => {
+  const partnership = await InstitutionEmployerPartnership.findById(req.params.id);
+  if (!partnership) throw new AppError('Partnership not found.', 404);
+  if (partnership.status !== 'active') throw new AppError('Only an active partnership can be ended.', 400);
+
+  const institution = await Institution.findById(partnership.institution);
+  const isInstitutionSide = institution && assertOwnerOrStaff(institution, req.user._id);
+  const isEmployerSide = partnership.employer.toString() === req.user._id.toString();
+  if (!isInstitutionSide && !isEmployerSide) throw new AppError('You are not part of this partnership.', 403);
+
+  partnership.status = 'ended';
+  partnership.respondedAt = new Date();
+  await partnership.save();
+
+  const notifyTarget = isInstitutionSide ? partnership.employer : institution.owner;
+  await notify(notifyTarget, { title: `Partnership ended: ${institution.name}`, sentBy: req.user._id }).catch(() => {});
+  return ok(res, partnership, 'Partnership ended.');
 });
 
 // GET /api/institution-employer/partnerships/mine — either side.
@@ -96,6 +120,22 @@ const createReferral = asyncHandler(async (req, res) => {
   const referral = await PlacementReferral.create({ institution: institution._id, student: studentId, job: jobId, referredBy: req.user._id });
   await notify(studentId, { title: `You've been referred: ${job.title}`, body: `${institution.name} recommended you for this role.`, sentBy: req.user._id }).catch(() => {});
   return created(res, referral, 'Referral created.');
+});
+
+// PATCH /api/institution-employer/referrals/:id/decline — the institution withdraws a referral
+// it made, before the student has acted on it (spec gap: "declined" was a valid status that
+// nothing ever actually set).
+const declineReferral = asyncHandler(async (req, res) => {
+  const referral = await PlacementReferral.findById(req.params.id);
+  if (!referral) throw new AppError('Referral not found.', 404);
+  const institution = await Institution.findById(referral.institution);
+  if (!institution || !assertOwnerOrStaff(institution, req.user._id)) throw new AppError('Only the referring institution can withdraw this.', 403);
+  if (referral.status !== 'referred') throw new AppError('This referral has already been actioned by the student.', 400);
+
+  referral.status = 'declined';
+  await referral.save();
+  await notify(referral.student, { title: 'A referral was withdrawn', body: `${institution.name} withdrew a job referral.`, sentBy: req.user._id }).catch(() => {});
+  return ok(res, referral, 'Referral withdrawn.');
 });
 
 // GET /api/institution-employer/referrals/mine — student's own referrals.
@@ -150,6 +190,6 @@ const institutionReferrals = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  requestPartnership, respondPartnership, myPartnerships,
-  createReferral, myReferrals, applyViaReferral, institutionReferrals
+  requestPartnership, respondPartnership, endPartnership, myPartnerships,
+  createReferral, myReferrals, applyViaReferral, institutionReferrals, declineReferral
 };
