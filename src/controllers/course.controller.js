@@ -580,6 +580,8 @@ const recordResult = asyncHandler(async (req, res) => {
   if (!student || marksObtained === undefined || totalMarks === undefined) {
     throw new AppError('student, marksObtained and totalMarks are required.', 422);
   }
+  if (!(Number(totalMarks) > 0)) throw new AppError('totalMarks must be greater than zero.', 422);
+  if (!(Number(marksObtained) >= 0 && Number(marksObtained) <= Number(totalMarks))) throw new AppError('marksObtained must be between 0 and totalMarks.', 422);
 
   const enrollment = await Enrollment.findOne({ student, course: course._id });
   if (!enrollment) throw new AppError('Student is not enrolled in this course.', 400);
@@ -848,7 +850,7 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
     classSection: submission.exam.classSection || course.classSection,
     teacher: submission.exam.teacher,
     academicSession: submission.exam.academicSession || '',
-    term: submission.exam.term || submission.exam.type,
+    term: submission.exam.term || '',
     subject: submission.exam.subject || course.subject || course.title,
     marksObtained: submission.score,
     totalMarks: submission.exam.toObject().totalMarks,

@@ -7,6 +7,7 @@ const Exam = require('../models/Exam');
 const Result = require('../models/Result');
 const User = require('../models/User');
 const InstitutionProgram = require('../models/InstitutionProgram');
+require('../models/ClassSection'); // registered for the transcript's course.classSection populate
 const StudentProfile = require('../models/StudentProfile');
 const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
 const Achievement = require('../models/Achievement');
@@ -53,6 +54,8 @@ async function ensureCourseCompletionCertificate(studentId, courseId, issuedBy) 
   return { certificate, reason: '' };
 }
 
+const EXAM_TYPES = new Set(['quiz', 'midterm', 'final', 'test']);
+
 function pointsFor(percentage) {
   if (percentage >= 85) return 4; if (percentage >= 80) return 3.7; if (percentage >= 75) return 3.3;
   if (percentage >= 70) return 3; if (percentage >= 65) return 2.7; if (percentage >= 60) return 2.3;
@@ -93,21 +96,27 @@ async function achievementCredentialEligibility(studentId, achievementId, instit
 async function buildTranscript(studentId, institutionId) {
   const [profile, results] = await Promise.all([
     StudentProfile.findOne({ user: studentId, primaryInstitution: institutionId }),
-    Result.find({ student: studentId, institution: institutionId }).populate('course', 'title subject creditHours academicTerm').sort({ academicSession: 1, term: 1, createdAt: 1 })
+    Result.find({ student: studentId, institution: institutionId }).populate({ path: 'course', select: 'title subject creditHours academicTerm classSection', populate: { path: 'classSection', select: 'academicYear' } }).sort({ academicSession: 1, term: 1, createdAt: 1 })
   ]);
   if (!profile) throw new Error('Student is not enrolled at this institution.');
-  if (!results.length) throw new Error('No graded academic results are available.');
+  // One transcript row per course per academic session: every quiz/midterm/final/offline mark of
+  // that course is pooled into it. Result.term can't key the row — offline entries put the
+  // assessment name there ("Mid Term"), and older exam results stored the exam type when no term
+  // was set. The semester label comes from the course's academicTerm, else an exam's own term.
   const grouped = new Map();
   results.forEach((result) => {
-    if (!result.course) return;
-    const term = result.term || result.course.academicTerm || 'Term not specified';
-    const key = `${result.course._id}:${term}:${result.academicSession || ''}`;
-    const current = grouped.get(key) || { course: result.course._id, subject: result.subject || result.course.subject || result.course.title, term, academicSession: result.academicSession || '', creditHours: Number(result.course.creditHours || 3), marksObtained: 0, totalMarks: 0 };
+    if (!result.course || !(Number(result.totalMarks) > 0)) return;
+    const academicSession = result.academicSession || result.course.classSection?.academicYear || '';
+    const key = `${result.course._id}:${academicSession}`;
+    const current = grouped.get(key) || { course: result.course._id, subject: result.subject || result.course.subject || result.course.title, term: result.course.academicTerm || '', academicSession, creditHours: Number(result.course.creditHours || 3), marksObtained: 0, totalMarks: 0 };
+    if (!current.term && result.exam && result.term && !EXAM_TYPES.has(result.term)) current.term = result.term;
     current.marksObtained += Number(result.marksObtained); current.totalMarks += Number(result.totalMarks); grouped.set(key, current);
   });
-  const rows = [...grouped.values()].map((row) => { const percentage = Number(((row.marksObtained / row.totalMarks) * 100).toFixed(2)); return { ...row, percentage, grade: gradeFor(percentage), gradePoints: pointsFor(percentage) }; });
-  const termMap = new Map(); rows.forEach((row) => { const item = termMap.get(row.term) || { term: row.term, credits: 0, weighted: 0 }; item.credits += row.creditHours; item.weighted += row.gradePoints * row.creditHours; termMap.set(row.term, item); });
-  const semesterSummaries = [...termMap.values()].map((item) => ({ term: item.term, credits: item.credits, gpa: Number((item.weighted / item.credits).toFixed(2)) }));
+  if (!grouped.size) throw new Error('No graded academic results are available.');
+  const rows = [...grouped.values()].map((row) => { const percentage = Number(((row.marksObtained / row.totalMarks) * 100).toFixed(2)); return { ...row, term: row.term || 'Term not specified', percentage, grade: gradeFor(percentage), gradePoints: pointsFor(percentage) }; });
+  // A semester is a term within a session — "Fall" of 2025 and "Fall" of 2026 are separate GPAs.
+  const termMap = new Map(); rows.forEach((row) => { const key = `${row.academicSession}:${row.term}`; const item = termMap.get(key) || { academicSession: row.academicSession, term: row.term, credits: 0, weighted: 0 }; item.credits += row.creditHours; item.weighted += row.gradePoints * row.creditHours; termMap.set(key, item); });
+  const semesterSummaries = [...termMap.values()].map((item) => ({ academicSession: item.academicSession, term: item.term, credits: item.credits, gpa: Number((item.weighted / item.credits).toFixed(2)) }));
   const totalCredits = rows.reduce((sum, row) => sum + row.creditHours, 0); const weighted = rows.reduce((sum, row) => sum + row.gradePoints * row.creditHours, 0);
   return { profile, rows, semesterSummaries, totalCredits, cgpa: Number((weighted / totalCredits).toFixed(2)) };
 }

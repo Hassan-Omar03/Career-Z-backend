@@ -13,7 +13,7 @@ const schema = new mongoose.Schema({
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
   programName: { type: String, default: '' }, rollNumber: { type: String, default: '' },
-  rows: [rowSchema], semesterSummaries: [{ term: String, credits: Number, gpa: Number }],
+  rows: [rowSchema], semesterSummaries: [{ academicSession: { type: String, default: '' }, term: String, credits: Number, gpa: Number }],
   totalCredits: { type: Number, required: true }, cgpa: { type: Number, required: true },
   status: { type: String, enum: ['active', 'revoked'], default: 'active' },
   issueDate: { type: Date, default: Date.now },
