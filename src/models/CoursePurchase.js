@@ -3,7 +3,7 @@ const mongoose = require('mongoose');
 const coursePurchaseSchema = new mongoose.Schema({
   course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
   student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
-  provider: { type: String, enum: ['stripe', 'paddle'], required: true },
+  provider: { type: String, enum: ['stripe', 'paddle', 'jazzcash'], required: true }, // 'stripe' = legacy purchases only
   providerCheckoutId: { type: String, required: true },
   amountMinor: { type: Number, required: true, min: 1 },
   currency: { type: String, required: true },

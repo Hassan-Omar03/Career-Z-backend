@@ -605,7 +605,7 @@ const listFees = asyncHandler(async (req, res) => {
     if (fee.status === 'paid') throw new AppError('Fee is already paid.', 409);
 
     const { paidVia, reference } = req.body;
-    if (!paidVia || /card|stripe|paddle/i.test(paidVia)) {
+    if (!paidVia || /card|stripe|paddle|jazzcash|nowpayments/i.test(paidVia)) {
       throw new AppError('Specify a verified manual payment method; online payments require gateway confirmation.', 422);
     }
     if (!String(reference || '').trim()) throw new AppError('Cash receipt/reference number is required.', 422);
@@ -1173,7 +1173,7 @@ const getMyPayoutProfile = asyncHandler(async (req, res) => {
 });
 
 const saveMyPayoutProfile = asyncHandler(async (req, res) => {
-  const allowed = ['platform_wallet', 'stripe_transfer', 'bank_transfer', 'mobile_wallet', 'crypto', 'cash'];
+  const allowed = ['platform_wallet', 'bank_transfer', 'mobile_wallet', 'crypto', 'cash'];
   const preferredMethod = String(req.body.preferredMethod || 'platform_wallet');
   if (!allowed.includes(preferredMethod)) throw new AppError('Invalid preferred payout method.', 422);
   const clean = (value) => String(value || '').trim();
@@ -1227,29 +1227,7 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
   if (paymentMethod === 'bank_transfer' && !(payoutProfile?.bank?.iban || payoutProfile?.bank?.accountNumber)) throw new AppError('Employee must save bank payout details before bank transfer.', 422);
   if (paymentMethod === 'mobile_wallet' && !payoutProfile?.mobileWallet?.number) throw new AppError('Employee must save mobile wallet details before mobile-wallet payment.', 422);
   if (paymentMethod === 'crypto' && !payoutProfile?.crypto?.address) throw new AppError('Employee must save a crypto address and network before crypto payment.', 422);
-  if (paymentMethod === 'stripe_transfer') {
-    const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
-    if (!isStripeConfigured()) throw new AppError('Real bank transfer is not available — Stripe is not configured on this platform yet.', 503);
-    const teacherProfile = await TeacherProfile.findOne({ user: payslip.staff });
-    if (!teacherProfile?.payout?.stripeAccountId || !teacherProfile.payout.payoutsEnabled) {
-      throw new AppError('This teacher has not finished connecting a bank account for real transfers yet.', 422);
-    }
-    const stripe = getStripeClient();
-    try {
-      const transfer = await stripe.transfers.create({
-        amount: Math.round(payslip.netAmount * 100),
-        currency: (payslip.currency || 'USD').toLowerCase(),
-        destination: teacherProfile.payout.stripeAccountId,
-        description: `Salary ${payslip.month}/${payslip.year} — ${institution.name}`
-      });
-      payslip.status = 'paid'; payslip.paidAt = new Date(); payslip.paymentMethod = paymentMethod;
-      payslip.transactionId = transfer.id; payslip.stripeTransferId = transfer.id; payslip.stripeTransferStatus = 'sent';
-      await payslip.save();
-    } catch (err) {
-      payslip.stripeTransferStatus = 'failed'; payslip.stripeTransferError = err.message; await payslip.save();
-      throw new AppError(`Real bank transfer failed: ${err.message}`, 422);
-    }
-  } else if (paymentMethod === 'platform_wallet') {
+  if (paymentMethod === 'platform_wallet') {
     // Verified BEFORE anything is touched — the recipient must be a real account tied to this
     // exact payslip's employment record. If they somehow don't exist, this throws here and zero
     // balance has moved yet, so there is nothing to reverse.

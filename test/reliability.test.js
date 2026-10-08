@@ -11,8 +11,6 @@ process.env.NODE_ENV = 'test';
 process.env.JWT_ACCESS_SECRET = 'reliability-test-access-secret';
 process.env.PADDLE_API_KEY = 'test-key';
 process.env.PADDLE_WEBHOOK_SECRET = 'test-paddle-webhook-secret';
-process.env.STRIPE_SECRET_KEY = 'sk_test_reliability';
-process.env.STRIPE_WEBHOOK_SECRET = 'whsec_reliability';
 const notifications = require('../src/services/notification.service');
 mock.method(notifications, 'notify', async () => {});
 mock.method(notifications, 'notifyAdmins', async () => {});
@@ -32,7 +30,6 @@ const payment = require('../src/controllers/payment.controller');
 const paddleService = require('../src/services/paddle.service');
 const { initSocket } = require('../src/realtime/socket');
 const env = require('../src/config/env');
-const { getStripeClient } = require('../src/services/stripe.service');
 
 let database, server, io, origin, sender, recipient;
 before(async () => {
@@ -305,38 +302,6 @@ test('bad signatures are rejected before payment processing', async () => {
   request.headers['paddle-signature'] = 'ts=invalid;h1=00';
   assert.equal((await invoke(webhook.handlePaddleWebhook, request)).status, 400);
   assert.equal(await WebhookEvent.countDocuments({}), 0);
-});
-test('Stripe failed settlement rolls back the fee and accepts a later retry', async (t) => {
-  const fee = await Fee.create({ student: sender._id, institution: new mongoose.Types.ObjectId(), title: 'Tuition', amount: 25, recordedBy: sender._id });
-  const event = {
-    id: 'evt_stripe_test', type: 'checkout.session.completed',
-    data: { object: { id: 'cs_test', payment_status: 'paid', metadata: { kind: 'fee', feeId: fee.id, payerId: sender.id } } }
-  };
-  const body = JSON.stringify(event);
-  const request = { body: Buffer.from(body), headers: {
-    'stripe-signature': getStripeClient().webhooks.generateTestHeaderString({ payload: body, secret: env.stripe.webhookSecret })
-  } };
-  const failure = t.mock.method(Institution, 'findById', () => { throw new Error('Injected post-save failure'); });
-  assert.equal((await invoke(webhook.handleStripeWebhook, request)).status, 500);
-  assert.equal((await Fee.findById(fee._id)).status, 'pending');
-  assert.equal(await WebhookEvent.countDocuments({}), 0);
-  failure.mock.restore();
-  assert.equal((await invoke(webhook.handleStripeWebhook, request)).status, 200);
-  assert.equal((await Fee.findById(fee._id)).status, 'paid');
-  assert.equal((await invoke(webhook.handleStripeWebhook, request)).body.duplicate, true);
-});
-test('Stripe checkout completion without payment does not mark a fee paid', async () => {
-  const fee = await Fee.create({ student: sender._id, institution: new mongoose.Types.ObjectId(), title: 'Tuition', amount: 25, recordedBy: sender._id });
-  const event = {
-    id: 'evt_unpaid', type: 'checkout.session.completed',
-    data: { object: { id: 'cs_unpaid', payment_status: 'unpaid', metadata: { kind: 'fee', feeId: fee.id, payerId: sender.id } } }
-  };
-  const body = JSON.stringify(event);
-  const result = await invoke(webhook.handleStripeWebhook, { body: Buffer.from(body), headers: {
-    'stripe-signature': getStripeClient().webhooks.generateTestHeaderString({ payload: body, secret: env.stripe.webhookSecret })
-  } });
-  assert.equal(result.status, 200);
-  assert.equal((await Fee.findById(fee._id)).status, 'pending');
 });
 test('Paddle fee sync and webhook settle concurrently without duplicate effects', async () => {
   const fee = await Fee.create({ student: sender._id, institution: new mongoose.Types.ObjectId(), title: 'Tuition', amount: 25, recordedBy: sender._id });

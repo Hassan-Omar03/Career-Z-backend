@@ -25,10 +25,7 @@ const teacherProfileSchema = new mongoose.Schema(
 
     status: { type: String, enum: ['active', 'suspended'], default: 'active' },
 
-    // Stripe Connect Express account — lets an institution actually WIRE payroll to this
-    // teacher's real bank account (not just mark a payslip "paid" on an internal ledger).
-    // The teacher's bank details never touch our server — Stripe's own hosted onboarding
-    // collects them directly.
+    // Legacy: Stripe Connect payroll payouts were removed. Kept so existing profiles still load.
     payout: {
       stripeAccountId: { type: String, default: null },
       payoutsEnabled: { type: Boolean, default: false },

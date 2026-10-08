@@ -6,7 +6,6 @@ const ParentChildLink = require('../models/ParentChildLink');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
 const nowPaymentsService = require('../services/nowpayments.service');
 const WalletTransaction = require('../models/WalletTransaction');
@@ -51,21 +50,6 @@ async function loadPayableCourse(courseId, userId) {
   return { course, amountMinor: Math.round(amount * 100), currency };
 }
 
-const createStripeCourseCheckout = asyncHandler(async (req, res) => {
-  if (!isStripeConfigured()) throw new AppError('Stripe checkout is not configured.', 503);
-  const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
-  const checkout = await getStripeClient().checkout.sessions.create({
-    mode: 'payment', payment_method_types: ['card'],
-    line_items: [{ price_data: { currency: currency.toLowerCase(), product_data: { name: course.title }, unit_amount: amountMinor }, quantity: 1 }],
-    success_url: `${env.clientUrl}/dashboard?courseCheckout=success&courseId=${course._id}`,
-    cancel_url: `${env.clientUrl}/dashboard?courseCheckout=cancelled&courseId=${course._id}`,
-    metadata: { kind: 'course', courseId: course._id.toString(), studentId: req.user._id.toString() }
-  });
-  await CoursePurchase.create({ course: course._id, student: req.user._id, provider: 'stripe',
-    providerCheckoutId: checkout.id, amountMinor, currency });
-  return ok(res, { url: checkout.url, sessionId: checkout.id });
-});
-
 const createPaddleCourseCheckout = asyncHandler(async (req, res) => {
   if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
   const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
@@ -97,54 +81,8 @@ const syncPaddleCourseStatus = asyncHandler(async (req, res) => {
   return ok(res, { status: refreshed.status });
 });
 
-// POST /api/payments/stripe/fees/:feeId/checkout — creates a real Stripe Checkout Session.
-// Unlike the self-report payment methods (bank_transfer/cash/mobile_wallet), this fee is NOT
-// marked paid here — only Stripe's webhook (payment.webhook.controller.js), after verifying the
-// event's signature, can do that. Creating a session just proves intent to pay, not payment.
-const createFeeCheckoutSession = asyncHandler(async (req, res) => {
-  if (!isStripeConfigured()) {
-    throw new AppError('Card payments are not set up yet — ask the Super Admin to configure STRIPE_SECRET_KEY and STRIPE_WEBHOOK_SECRET.', 503);
-  }
-  const stripe = getStripeClient();
-
-  const fee = await Fee.findById(req.params.feeId);
-  if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
-  await assertCanPayFee(fee, req.user);
-
-  const session = await stripe.checkout.sessions.create({
-    mode: 'payment',
-    payment_method_types: ['card'],
-    line_items: [
-      {
-        price_data: {
-          currency: fee.currency.toLowerCase(),
-          product_data: { name: fee.title },
-          unit_amount: Math.round(fee.amount * 100)
-        },
-        quantity: 1
-      }
-    ],
-    success_url: `${env.clientUrl}/dashboard?feePaid=1&feeId=${fee._id}`,
-    cancel_url: `${env.clientUrl}/dashboard?feeCancelled=1&feeId=${fee._id}`,
-    metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee' }
-  });
-
-  fee.status = 'processing';
-  fee.stripeSessionId = session.id;
-  await fee.save();
-
-  return ok(res, { url: session.url, sessionId: session.id });
-});
-
-// GET /api/payments/stripe/config — the frontend needs to know whether card checkout is
-// available at all before showing the button (no publishable key leaks anything sensitive).
-const getStripeConfig = asyncHandler(async (req, res) => {
-  return ok(res, { enabled: isStripeConfigured(), publishableKey: env.stripe.publishableKey || null });
-});
-
 // GET /api/payments/paddle/config — frontend needs the client-side token + environment before
-// it can load Paddle.js at all (this token is public/safe to expose, same as a Stripe pk_).
+// it can load Paddle.js at all (this client token is public/safe to expose).
 const getPaddleConfig = asyncHandler(async (req, res) => {
   return ok(res, {
     enabled: paddleService.isPaddleConfigured(),
@@ -153,8 +91,8 @@ const getPaddleConfig = asyncHandler(async (req, res) => {
   });
 });
 
-// POST /api/payments/paddle/fees/:feeId/checkout — creates a real Paddle transaction. Like the
-// Stripe flow, the fee is NOT marked paid here — only the Paddle webhook, after verifying its
+// POST /api/payments/paddle/fees/:feeId/checkout — creates a real Paddle transaction. The fee is
+// NOT marked paid here — only the Paddle webhook, after verifying its
 // signature, does that. Creating a transaction just proves intent to pay.
 const createPaddleTransaction = asyncHandler(async (req, res) => {
   if (!paddleService.isPaddleConfigured()) {
@@ -363,8 +301,9 @@ const syncPaddleFeaturedJobStatus = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  createFeeCheckoutSession, getStripeConfig, getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus,
-  createWalletTopup, syncWalletTopup, createStripeCourseCheckout, createPaddleCourseCheckout, syncPaddleCourseStatus,
+  getPaddleConfig, createPaddleTransaction, syncPaddleFeeStatus,
+  createWalletTopup, syncWalletTopup, createPaddleCourseCheckout, syncPaddleCourseStatus,
   createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus,
-  getNowPaymentsConfig, createCryptoWalletTopup, syncCryptoWalletTopup
+  getNowPaymentsConfig, createCryptoWalletTopup, syncCryptoWalletTopup,
+  assertCanPayFee, loadPayableCourse
 };

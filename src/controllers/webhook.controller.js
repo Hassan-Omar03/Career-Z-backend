@@ -5,14 +5,12 @@ const Institution = require('../models/Institution');
 const Wallet = require('../models/Wallet');
 const WalletTransaction = require('../models/WalletTransaction');
 const WebhookEvent = require('../models/WebhookEvent');
-const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
 const paddleService = require('../services/paddle.service');
 const nowPaymentsService = require('../services/nowpayments.service');
 const { transactionWithDuplicateRetry, sendSettlementNotifications, settle } = require('../services/settlement.service');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
 const AppError = require('../utils/AppError');
-const env = require('../config/env');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 
@@ -38,43 +36,6 @@ async function processWebhook(provider, eventId, type, work, res) {
   }
 }
 
-async function handleStripeWebhook(req, res) {
-  if (!isStripeConfigured()) return res.status(503).json({ success: false, message: 'Stripe is not configured.' });
-  let event;
-  try {
-    event = getStripeClient().webhooks.constructEvent(req.body, req.headers['stripe-signature'], env.stripe.webhookSecret);
-  } catch {
-    return res.status(400).send('Webhook signature verification failed.');
-  }
-  return processWebhook('stripe', event.id, event.type, async (session) => {
-    if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
-      const checkout = event.data.object;
-      // Checkout completion may precede payment for delayed payment methods.
-      if (checkout.metadata?.kind === 'fee' && checkout.payment_status === 'paid') {
-        return handleFeeCheckoutCompleted(checkout, session);
-      }
-      if (checkout.metadata?.kind === 'course' && checkout.payment_status === 'paid') {
-        return handleCourseStripeCompleted(checkout, session);
-      }
-    }
-    return [];
-  }, res);
-}
-
-async function handleFeeCheckoutCompleted(checkout, session) {
-  const fee = await Fee.findById(checkout.metadata.feeId).session(session);
-  if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') return [];
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
-  Object.assign(fee, receipt, {
-    status: 'paid', paidAt: new Date(), paymentMethod: 'stripe', paidVia: 'Stripe (Card)',
-    transactionId: checkout.payment_intent || checkout.id, stripePaymentIntentId: checkout.payment_intent || null,
-    paidBy: checkout.metadata.payerId, escrowStatus: 'held'
-  });
-  await fee.save({ session });
-  return feeNotification(fee, 'Stripe', session);
-}
-
 async function settleCoursePurchase(purchase, paymentId, session) {
   if (purchase.status === 'paid') return [];
   await Enrollment.updateOne(
@@ -89,18 +50,6 @@ async function settleCoursePurchase(purchase, paymentId, session) {
   return [{ userId: purchase.student, payload: {
     title: 'Course payment confirmed', body: 'Your course is ready in My Courses.'
   } }];
-}
-
-async function handleCourseStripeCompleted(checkout, session) {
-  const purchase = await CoursePurchase.findOne({ provider: 'stripe', providerCheckoutId: checkout.id }).session(session);
-  if (!purchase) throw new AppError('Course checkout not found.', 404);
-  if (checkout.metadata?.courseId !== purchase.course.toString()
-    || checkout.metadata?.studentId !== purchase.student.toString()
-    || checkout.currency?.toUpperCase() !== purchase.currency
-    || checkout.amount_total !== purchase.amountMinor) {
-    throw new AppError('Course checkout amount, currency or ownership does not match.', 422);
-  }
-  return settleCoursePurchase(purchase, checkout.payment_intent || checkout.id, session);
 }
 
 async function handleCoursePaddleCompleted(transaction, session) {
@@ -358,7 +307,8 @@ async function handleTutoringFeePaddleCompleted(transaction, session) {
 }
 
 module.exports = {
-  handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
+  handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
   handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted,
-  handleTutoringFeePaddleCompleted, handleNowPaymentsWebhook, handleNowPaymentsCompleted
+  handleTutoringFeePaddleCompleted, handleNowPaymentsWebhook, handleNowPaymentsCompleted,
+  feeNotification, settleCoursePurchase
 };

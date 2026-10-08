@@ -28,16 +28,8 @@ module.exports = {
     pass: process.env.SMTP_PASS || '',
     from: process.env.SMTP_FROM || 'CareerZ <no-reply@careerz.local>'
   },
-  // Real Stripe integration (client-provided in production — no keys are baked into this repo).
-  // secretKey empty = Stripe is treated as "not configured" and card-checkout is disabled with a
-  // clear error, rather than silently pretending to work.
-  stripe: {
-    secretKey: process.env.STRIPE_SECRET_KEY || '',
-    publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
-    webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || ''
-  },
   // Real Paddle (Billing) integration — CareerZ's primary worldwide card/Apple Pay/Google Pay
-  // gateway (client-provided, platform-wide, same pattern as Stripe above). Paddle is a
+  // gateway (client-provided, platform-wide; empty keys = not configured). Paddle is a
   // Merchant of Record: CareerZ is the single seller Paddle sees, and pays institutions out
   // separately/internally — Paddle never auto-splits funds to individual institutions.
   paddle: {
@@ -46,8 +38,19 @@ module.exports = {
     webhookSecret: process.env.PADDLE_WEBHOOK_SECRET || '',
     environment: process.env.PADDLE_ENVIRONMENT || 'sandbox' // 'sandbox' | 'production'
   },
+  // Real JazzCash (Pakistan) payments — mobile account, card and voucher via JazzCash's hosted
+  // page. Same "empty = not configured" rule. returnUrl is where JazzCash posts the payer's
+  // browser back to; it must match the Return URL registered on the JazzCash merchant portal.
+  jazzCash: {
+    merchantId: process.env.JAZZCASH_MERCHANT_ID || '',
+    password: process.env.JAZZCASH_PASSWORD || '',
+    integritySalt: process.env.JAZZCASH_INTEGRITY_SALT || '',
+    environment: process.env.JAZZCASH_ENVIRONMENT || 'sandbox', // 'sandbox' | 'production'
+    returnUrl: process.env.JAZZCASH_RETURN_URL
+      || `${(process.env.SERVER_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/+$/, '')}/api/payments/jazzcash/return`
+  },
   // Real crypto wallet top-ups (USDT TRC20 / BTC / ETH) via NOWPayments — client-provided keys,
-  // same "empty = not configured" rule as Stripe/Paddle above.
+  // same "empty = not configured" rule as Paddle above.
   nowPayments: {
     apiKey: process.env.NOWPAYMENTS_API_KEY || '',
     ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET || ''

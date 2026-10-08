@@ -7,50 +7,28 @@ const rateLimit = require('express-rate-limit');
 
 const env = require('./config/env');
 const connectDB = require('./config/db');
-const allowedOrigins = new Set([
-  'https://career-z-zeta.vercel.app',
-  ...(env.nodeEnv !== 'production' ? ['http://localhost:5173', 'http://localhost:5500'] : []),
-  ...env.clientUrl.split(',').map(value => value.trim().replace(/\/+$/, '')).filter(Boolean)
-]);
+const { isAllowedOrigin } = require('./utils/allowedOrigins');
 const routes = require('./routes');
 const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { maintenanceGate } = require('./middleware/maintenance');
 const { metricsMiddleware } = require('./services/platformMetrics');
 const { emergencyControls } = require('./middleware/emergencyControls');
-const { handleStripeWebhook, handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
+const { handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
-
-// Vite's dev server picks the next free port (5174, 5175, ...) whenever 5173 is
-// already taken, so in development we allow any localhost/127.0.0.1 port instead
-// of hardcoding one — avoids CORS breaking every time a stray process holds 5173.
-const isDevLocalOrigin = (origin) =>
-  env.nodeEnv !== 'production' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+$/.test(origin);
 
 app.use(helmet());
 app.use(
   cors({
     origin(origin, callback) {
-      callback(null, !origin || allowedOrigins.has(origin) || isDevLocalOrigin(origin));
+      callback(null, !origin || isAllowedOrigin(origin));
     },
     credentials: true
   })
 );
-// Stripe webhook signature verification needs the exact raw request bytes, so this route is
-// registered with express.raw() BEFORE the global express.json() below — a JSON-parsed-and-
-// restringified body would never match the signature Stripe sends. Connects the DB itself
+// Paddle's HMAC signature is computed over the exact request bytes, so this route is
+// registered with express.raw() BEFORE the global express.json() below. Connects the DB itself
 // (the /api-wide connectDB middleware below hasn't run yet at this point in the chain).
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res, next) => {
-  try {
-    await connectDB();
-    await handleStripeWebhook(req, res);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Same raw-body requirement as Stripe above — Paddle's HMAC signature is computed over the
-// exact request bytes.
 app.post('/api/webhooks/paddle', express.raw({ type: 'application/json' }), async (req, res, next) => {
   try {
     await connectDB();
@@ -66,7 +44,7 @@ app.post('/api/webhooks/paddle', express.raw({ type: 'application/json' }), asyn
 app.use(express.json({ limit: '6mb' }));
 
 // NOWPayments' IPN signature is computed over the PARSED body's keys re-sorted alphabetically
-// (their own documented rule), not the raw bytes — so unlike Stripe/Paddle above, this can safely
+// (their own documented rule), not the raw bytes — so unlike Paddle above, this can safely
 // sit after express.json() instead of needing express.raw().
 app.post('/api/webhooks/nowpayments', async (req, res, next) => {
   try {

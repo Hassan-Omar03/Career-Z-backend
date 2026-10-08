@@ -117,9 +117,7 @@ const feeSchema = new mongoose.Schema(
     // Digital Receipt System (spec 15D.8) — a unique, QR-verifiable receipt, same pattern as
     // Certificate.verifyCode, generated the moment a fee is marked paid.
     receiptNumber: { type: String, unique: true, sparse: true },
-    // Real Stripe Checkout tracking (spec 4.6/3A.3) — set when a Checkout Session is created;
-    // the fee moves to 'paid' only when the webhook confirms the session actually completed, not
-    // when the session is merely created (that would be trusting the client, not the gateway).
+    // Legacy: Stripe was removed as a gateway. Kept only so fees paid through it keep their record.
     stripeSessionId: { type: String, default: null },
     stripePaymentIntentId: { type: String, default: null },
     paddleTransactionId: { type: String, default: null },
