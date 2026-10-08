@@ -9,8 +9,10 @@ router.get('/nowpayments/config', ctrl.getNowPaymentsConfig);
 router.get('/jazzcash/config', jazzcash.getConfig);
 // JazzCash posts the payer's browser back here (no auth header) — verified by its secure hash.
 router.post('/jazzcash/return', jazzcash.handleReturn);
+router.post('/jazzcash/ipn', jazzcash.handleIpn);
 
 router.use(protect);
+router.post('/pending/sync', require('express-rate-limit')({ windowMs: 60000, max: 4, standardHeaders: true, legacyHeaders: false }), require('../controllers/paymentRecovery.controller').syncPendingPayments);
 router.post('/paddle/fees/:feeId/checkout', ctrl.createPaddleTransaction);
 router.post('/paddle/courses/:courseId/checkout', requirePermission('course:enroll:own'), ctrl.createPaddleCourseCheckout);
 router.get('/paddle/fees/:feeId/sync', ctrl.syncPaddleFeeStatus);

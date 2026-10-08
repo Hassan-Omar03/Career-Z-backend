@@ -77,10 +77,10 @@ function buildCheckoutFields({ txnRefNo, amountPaisa, billReference, description
 // Server-to-server status inquiry — the source of truth before anything is settled. The
 // browser-posted return can be replayed or forged; this call cannot.
 async function inquire(txnRefNo) {
-  const fields = { pp_TxnRefNo: txnRefNo, pp_MerchantID: env.jazzCash.merchantId, pp_Password: env.jazzCash.password };
+  const fields = { pp_TxnRefNo: txnRefNo, pp_MerchantID: env.jazzCash.merchantId, pp_Password: env.jazzCash.password, pp_Version: '1.1' };
   fields.pp_SecureHash = secureHash(fields);
   const response = await fetch(`${baseUrl()}/ApplicationAPI/API/PaymentInquiry/Inquire`, {
-    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields)
+    method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields), signal: AbortSignal.timeout(20000)
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -94,7 +94,7 @@ async function inquire(txnRefNo) {
 // '000' = paid. '124' = voucher issued, waiting for the payer to pay over the counter.
 function outcomeOf(code) {
   if (code === '000') return 'paid';
-  if (code === '124') return 'awaiting_payment';
+  if (['124', '157', '210', ''].includes(code)) return 'awaiting_payment';
   return 'failed';
 }
 

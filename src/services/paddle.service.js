@@ -18,6 +18,7 @@ function baseUrl() {
 async function createTransaction({ title, amount, currencyCode, customerEmail, metadata }) {
   const response = await fetch(`${baseUrl()}/transactions`, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: {
       Authorization: `Bearer ${env.paddle.apiKey}`,
       'Content-Type': 'application/json'
@@ -39,7 +40,7 @@ async function createTransaction({ title, amount, currencyCode, customerEmail, m
         }
       ],
       currency_code: currencyCode,
-      customer: customerEmail ? { email: customerEmail } : undefined,
+      collection_mode: 'automatic', // customer details are collected by Paddle Checkout
       custom_data: metadata
     })
   });
@@ -56,7 +57,7 @@ async function createTransaction({ title, amount, currencyCode, customerEmail, m
 
 async function getTransaction(transactionId) {
   const response = await fetch(`${baseUrl()}/transactions/${transactionId}`, {
-    headers: { Authorization: `Bearer ${env.paddle.apiKey}` }
+    headers: { Authorization: `Bearer ${env.paddle.apiKey}` }, signal: AbortSignal.timeout(20000)
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {

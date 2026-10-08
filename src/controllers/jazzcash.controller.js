@@ -201,21 +201,27 @@ function frontendUrl(payment) {
 // after the hosted page. Only a correctly signed response for the exact amount we stored is
 // applied; anything else is ignored. Always ends by redirecting the payer back to the app.
 const handleReturn = asyncHandler(async (req, res) => {
-  const body = req.body || {};
+  let body = req.body || {};
+  if (typeof body.Response === 'string') {
+    try { body = JSON.parse(body.Response); } catch { body = {}; }
+  }
   const txnRefNo = String(body.pp_TxnRefNo || '');
   let result = 'error';
   let payment = null;
   try {
     payment = txnRefNo ? await JazzCashPayment.findOne({ txnRefNo }) : null;
     if (payment && jazzCash.isJazzCashConfigured() && jazzCash.verifySecureHash(body)
-      && String(body.pp_Amount) === String(payment.amountPaisa)) {
+      && String(body.pp_Amount) === String(payment.amountPaisa)
+      && body.pp_MerchantID === env.jazzCash.merchantId && body.pp_TxnCurrency === 'PKR') {
       await applyOutcome(txnRefNo, { code: String(body.pp_ResponseCode || ''), message: String(body.pp_ResponseMessage || ''), rrn: String(body.pp_RetreivalReferenceNo || body.pp_RetrievalReferenceNo || '') });
       result = (await JazzCashPayment.findById(payment._id)).status;
     }
   } catch (error) {
     console.error('[jazzcash return] processing failed:', error.message);
   }
+  const refreshed = payment ? await JazzCashPayment.findById(payment._id) : null;
   const query = new URLSearchParams({ jazzcash: result, ref: txnRefNo });
+  if (result !== 'paid' && refreshed?.responseCode) query.set('code', refreshed.responseCode);
   return res.redirect(303, `${frontendUrl(payment)}/dashboard?${query}`);
 });
 
@@ -233,7 +239,18 @@ const syncPayment = asyncHandler(async (req, res) => {
     }
   }
   const refreshed = await JazzCashPayment.findById(payment._id);
-  return ok(res, { status: refreshed.status, responseMessage: refreshed.responseMessage });
+  return ok(res, { status: refreshed.status, responseMessage: refreshed.responseMessage, responseCode: refreshed.responseCode });
+});
+
+// Signed server-to-server notifications use the same amount/merchant/currency checks as return.
+const handleIpn = asyncHandler(async (req, res) => {
+  const body = req.body || {};
+  if (!jazzCash.isJazzCashConfigured() || !jazzCash.verifySecureHash(body)) throw new AppError('JazzCash signature verification failed.', 400);
+  const payment = await JazzCashPayment.findOne({ txnRefNo: String(body.pp_TxnRefNo || '') });
+  if (!payment || String(body.pp_Amount) !== String(payment.amountPaisa)
+    || body.pp_MerchantID !== env.jazzCash.merchantId || body.pp_TxnCurrency !== 'PKR') throw new AppError('JazzCash notification does not match checkout.', 422);
+  await applyOutcome(payment.txnRefNo, { code: String(body.pp_ResponseCode || ''), message: String(body.pp_ResponseMessage || ''), rrn: String(body.pp_RetreivalReferenceNo || body.pp_RetrievalReferenceNo || '') });
+  return ok(res, { received: true });
 });
 
 // GET /api/payments/jazzcash/config — whether to show "Pay with JazzCash" at all.
@@ -241,4 +258,4 @@ const syncPayment = asyncHandler(async (req, res) => {
 // matches the Return URL registered on the JazzCash portal.
 const getConfig = asyncHandler(async (req, res) => ok(res, { enabled: jazzCash.isJazzCashConfigured(), environment: env.jazzCash.environment, returnUrl: returnUrlFor(req) }));
 
-module.exports = { createFeeCheckout, createCourseCheckout, createWalletTopup, handleReturn, syncPayment, getConfig, applyOutcome };
+module.exports = { createFeeCheckout, createCourseCheckout, createWalletTopup, handleReturn, handleIpn, syncPayment, getConfig, applyOutcome };

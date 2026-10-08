@@ -16,6 +16,7 @@ function isNowPaymentsConfigured() {
 async function createPayment({ priceAmount, priceCurrency, payCurrency, orderId, orderDescription, ipnCallbackUrl }) {
   const response = await fetch(`${BASE_URL}/payment`, {
     method: 'POST',
+    signal: AbortSignal.timeout(20000),
     headers: { 'x-api-key': env.nowPayments.apiKey, 'Content-Type': 'application/json' },
     body: JSON.stringify({
       price_amount: priceAmount,
@@ -37,7 +38,7 @@ async function createPayment({ priceAmount, priceCurrency, payCurrency, orderId,
 
 async function getPaymentStatus(paymentId) {
   const response = await fetch(`${BASE_URL}/payment/${paymentId}`, {
-    headers: { 'x-api-key': env.nowPayments.apiKey }
+    headers: { 'x-api-key': env.nowPayments.apiKey }, signal: AbortSignal.timeout(20000)
   });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) {
@@ -52,7 +53,12 @@ async function getPaymentStatus(paymentId) {
 // documented rule — an unsorted/raw-body hash will never match), hex digest, header x-nowpayments-sig.
 function verifyIpnSignature(parsedBody, signatureHeader) {
   if (!signatureHeader || !parsedBody || typeof parsedBody !== 'object') return false;
-  const sorted = Object.keys(parsedBody).sort().reduce((acc, key) => { acc[key] = parsedBody[key]; return acc; }, {});
+  function canonical(value) {
+    if (Array.isArray(value)) return value.map(canonical);
+    if (!value || typeof value !== 'object') return value;
+    return Object.fromEntries(Object.keys(value).sort().map(key => [key, canonical(value[key])]));
+  }
+  const sorted = canonical(parsedBody);
   const computed = crypto.createHmac('sha512', env.nowPayments.ipnSecret).update(JSON.stringify(sorted)).digest('hex');
   const a = Buffer.from(computed, 'hex');
   const b = Buffer.from(String(signatureHeader), 'hex');

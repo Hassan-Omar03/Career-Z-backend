@@ -94,3 +94,30 @@ test('a payment_id with no matching pending top-up fails cleanly, without credit
   assert.equal(res.status, 500);
   assert.equal((await Wallet.findOne({ user: student._id })).available, 0);
 });
+
+test('confirmed is intermediate and cannot credit a wallet before finished', async () => {
+  const res = await invoke(webhookCtrl.handleNowPaymentsWebhook, ipnRequest({ payment_id: 'np_pay_1', payment_status: 'confirmed' }));
+  assert.equal(res.status, 200);
+  assert.equal((await Wallet.findOne({ user: student._id })).available, 0);
+});
+
+test('new checkout snapshots reject wrong order, amount, currency and underpayment', async () => {
+  await WalletTransaction.updateOne({ nowPaymentsId: 'np_pay_1' }, { $set: { gatewayOrderId: 'order-1', gatewayPriceAmount: 50, gatewayPriceCurrency: 'usd', gatewayPayCurrency: 'usdttrc20', gatewayPayAmount: 50 } });
+  const valid = { payment_id: 'np_pay_1', payment_status: 'finished', order_id: 'order-1', price_amount: 50, price_currency: 'usd', pay_currency: 'usdttrc20', actually_paid: 50 };
+  for (const overrides of [{ order_id: 'another' }, { price_amount: 1 }, { price_currency: 'eur' }, { pay_currency: 'btc' }, { actually_paid: 10 }]) {
+    const result = await invoke(webhookCtrl.handleNowPaymentsWebhook, ipnRequest({ ...valid, ...overrides }));
+    assert.equal(result.status, 500);
+    assert.equal((await Wallet.findOne({ user: student._id })).available, 0);
+  }
+  assert.equal((await invoke(webhookCtrl.handleNowPaymentsWebhook, ipnRequest(valid))).status, 200);
+  assert.equal((await Wallet.findOne({ user: student._id })).available, 50);
+});
+
+test('provider signature canonicalizes nested objects and arrays recursively', () => {
+  const service = require('../src/services/nowpayments.service');
+  const body = { payment_status: 'waiting', payment_id: 'np_pay_1', outcome: [{ z: 2, a: { y: 1, b: 0 } }] };
+  const canonicalPayload = '{"outcome":[{"a":{"b":0,"y":1},"z":2}],"payment_id":"np_pay_1","payment_status":"waiting"}';
+  const signature = crypto.createHmac('sha512', env.nowPayments.ipnSecret).update(canonicalPayload).digest('hex');
+  assert.equal(service.verifyIpnSignature(body, signature), true);
+  assert.equal(service.verifyIpnSignature({ ...body, outcome: [{ z: 3 }] }, signature), false);
+});

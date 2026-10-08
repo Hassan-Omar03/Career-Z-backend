@@ -189,3 +189,45 @@ test('wallet: a failed top-up is rejected and never credits', async () => {
   assert.equal(await Wallet.countDocuments({ user: student._id }), 0);
   assert.equal((await WalletTransaction.findOne({ reference: checkout.txnRefNo })).status, 'rejected');
 });
+
+test('pending MWALLET response 157 never rejects or credits a top-up', async () => {
+  const checkout = (await invoke(ctrl.createWalletTopup, { body: { amount: 100, currency: 'PKR' } })).body.data;
+  const result = await invoke(ctrl.handleReturn, { body: signedReturn(checkout, { pp_ResponseCode: '157' }) });
+  assert.match(result.redirect, /jazzcash=awaiting_payment/);
+  assert.match(result.redirect, /code=157/);
+  assert.equal((await WalletTransaction.findOne({ reference: checkout.txnRefNo })).status, 'pending');
+  assert.equal(await Wallet.countDocuments({ user: student._id }), 0);
+});
+
+test('signed wrong merchant/currency returns cannot settle; JSON Response envelope can', async () => {
+  const checkout = (await invoke(ctrl.createWalletTopup, { body: { amount: 100, currency: 'PKR' } })).body.data;
+  for (const overrides of [{ pp_MerchantID: 'OTHER' }, { pp_TxnCurrency: 'USD' }]) {
+    const result = await invoke(ctrl.handleReturn, { body: signedReturn(checkout, overrides) });
+    assert.match(result.redirect, /jazzcash=error/);
+  }
+  assert.equal(await Wallet.countDocuments({ user: student._id }), 0);
+  await invoke(ctrl.handleReturn, { body: { Response: JSON.stringify(signedReturn(checkout)) } });
+  assert.equal((await Wallet.findOne({ user: student._id, currency: 'PKR' })).available, 100);
+});
+
+test('provider IPN settles without browser return and duplicate delivery never credits twice', async () => {
+  const checkout = (await invoke(ctrl.createWalletTopup, { body: { amount: 100, currency: 'PKR' } })).body.data;
+  const body = signedReturn(checkout);
+  await assert.rejects(invoke(ctrl.handleIpn, { body: { ...body, pp_SecureHash: 'bad' } }), { statusCode: 400 });
+  await Promise.all([invoke(ctrl.handleIpn, { body }), invoke(ctrl.handleIpn, { body })]);
+  assert.equal((await Wallet.findOne({ user: student._id, currency: 'PKR' })).available, 100);
+});
+
+test('automatic recovery only checks the current payer and settles a missed browser return', async (t) => {
+  const checkout = (await invoke(ctrl.createWalletTopup, { body: { amount: 100, currency: 'PKR' } })).body.data;
+  let inquiries = 0;
+  t.mock.method(jazzCash, 'inquire', async () => { inquiries++; return { pp_ResponseCode: '000', pp_PaymentResponseCode: '000', pp_PaymentResponseMessage: 'Completed' }; });
+  const recovery = require('../src/controllers/paymentRecovery.controller');
+  const unrelated = await invoke(recovery.syncPendingPayments, { user: other });
+  assert.equal(unrelated.body.data.checked, 0);
+  assert.equal(inquiries, 0);
+  const result = await invoke(recovery.syncPendingPayments);
+  assert.equal(result.body.data.completed, 1);
+  assert.equal((await Wallet.findOne({ user: student._id, currency: 'PKR' })).available, 100);
+  assert.equal((await invoke(recovery.syncPendingPayments)).body.data.checked, 0);
+});

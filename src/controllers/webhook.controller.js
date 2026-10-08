@@ -158,16 +158,24 @@ async function handleWalletTopupCompleted(transaction, session) {
   }, session);
 }
 
-// NOWPayments statuses: waiting -> confirming -> confirmed/finished (success), or
-// failed/expired/refunded. Only confirmed/finished ever credits the wallet.
+// NOWPayments statuses: waiting -> confirming -> confirmed -> finished (settled), or
+// failed/expired/refunded. Only finished credits the wallet.
 async function handleNowPaymentsCompleted(payment, session) {
   return settle(async (dbSession) => {
-    if (!['finished', 'confirmed'].includes(payment.payment_status) || !payment.payment_id) {
-      throw new AppError('Expected a finished/confirmed crypto payment.', 422);
+    if (!(payment.payment_status === 'finished') || !payment.payment_id) {
+      throw new AppError('Expected a finished crypto payment.', 422);
     }
     const pending = await WalletTransaction.findOne({ nowPaymentsId: String(payment.payment_id) }).session(dbSession);
     if (!pending) throw new AppError('Crypto top-up record not found.', 404);
     if (pending.status === 'completed') return [];
+    if (pending.gatewayOrderId && (payment.order_id !== pending.gatewayOrderId
+      || Number(payment.price_amount) !== pending.gatewayPriceAmount
+      || String(payment.price_currency).toLowerCase() !== pending.gatewayPriceCurrency
+      || payment.pay_currency !== pending.gatewayPayCurrency
+      || !Number.isFinite(Number(payment.actually_paid))
+      || Number(payment.actually_paid) + 1e-8 < pending.gatewayPayAmount)) {
+      throw new AppError('Crypto payment amount, currency or order does not match checkout.', 422);
+    }
 
     pending.status = 'completed';
     await pending.save({ session: dbSession });
@@ -189,7 +197,7 @@ async function handleNowPaymentsWebhook(req, res) {
   // confirming -> finished) — keying the dedupe receipt on id+status alone (not just id) so the
   // eventual "finished" call is never swallowed as a duplicate of an earlier "waiting" one.
   return processWebhook('nowpayments', `${payment.payment_id}:${payment.payment_status}`, payment.payment_status, async (session) => {
-    if (['finished', 'confirmed'].includes(payment.payment_status)) return handleNowPaymentsCompleted(payment, session);
+    if ((payment.payment_status === 'finished')) return handleNowPaymentsCompleted(payment, session);
     return [];
   }, res);
 }

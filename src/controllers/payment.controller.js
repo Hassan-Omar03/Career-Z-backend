@@ -85,7 +85,7 @@ const syncPaddleCourseStatus = asyncHandler(async (req, res) => {
 // it can load Paddle.js at all (this client token is public/safe to expose).
 const getPaddleConfig = asyncHandler(async (req, res) => {
   return ok(res, {
-    enabled: paddleService.isPaddleConfigured(),
+    enabled: paddleService.isPaddleConfigured() && Boolean(env.paddle.clientToken),
     clientToken: env.paddle.clientToken || null,
     environment: env.paddle.environment
   });
@@ -229,12 +229,13 @@ const createCryptoWalletTopup = asyncHandler(async (req, res) => {
     payCurrency,
     orderId,
     orderDescription: `Wallet top-up — ${cur} ${amount}`,
-    ipnCallbackUrl: env.serverUrl ? `${env.serverUrl.replace(/\/+$/, '')}/api/webhooks/nowpayments` : undefined
+    ipnCallbackUrl: env.serverUrl ? `${env.serverUrl.replace(/\/+$/, '')}/api/webhooks/nowpayments`
+      : req.headers?.['x-forwarded-proto'] === 'https' && req.headers?.host ? `https://${req.headers.host}/api/webhooks/nowpayments` : undefined
   });
 
   await WalletTransaction.create({
     user: req.user._id, type: 'topup', amount, currency: cur, status: 'pending',
-    nowPaymentsId: String(payment.payment_id), note: `Crypto top-up via ${nowPaymentsService.SUPPORTED_CURRENCIES[payCurrency]}`
+    nowPaymentsId: String(payment.payment_id), gatewayOrderId: orderId, gatewayPriceAmount: priceAmount, gatewayPriceCurrency: priceCurrency.toLowerCase(), gatewayPayCurrency: payCurrency, gatewayPayAmount: Number(payment.pay_amount), note: `Crypto top-up via ${nowPaymentsService.SUPPORTED_CURRENCIES[payCurrency]}`
   });
 
   return ok(res, {
@@ -250,7 +251,7 @@ const syncCryptoWalletTopup = asyncHandler(async (req, res) => {
   if (!pending) throw new AppError('Crypto top-up not found.', 404);
   if (pending.status === 'pending') {
     const payment = await nowPaymentsService.getPaymentStatus(req.params.paymentId);
-    if (['finished', 'confirmed'].includes(payment.payment_status)) {
+    if (payment.payment_status === 'finished') {
       const { handleNowPaymentsCompleted } = require('./webhook.controller');
       await handleNowPaymentsCompleted(payment);
     }
