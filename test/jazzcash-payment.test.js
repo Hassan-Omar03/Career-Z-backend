@@ -231,3 +231,21 @@ test('automatic recovery only checks the current payer and settles a missed brow
   assert.equal((await Wallet.findOne({ user: student._id, currency: 'PKR' })).available, 100);
   assert.equal((await invoke(recovery.syncPendingPayments)).body.data.checked, 0);
 });
+
+test('hash follows independently specified ASCII field order and rejects malformed Unicode signatures', () => {
+  const crypto = require('node:crypto');
+  const fields = { pp_OrderInfo: 'A48cvE28', pp_MerchantID: 'MER123', pp_Amount: '2995', pp_BankID: '' };
+  const salt = '0F5DD14AE2';
+  const expected = crypto.createHmac('sha256', salt).update('0F5DD14AE2&2995&MER123&A48cvE28').digest('hex').toUpperCase();
+  assert.equal(jazzCash.secureHash(fields, salt), expected);
+  assert.equal(jazzCash.verifySecureHash({ ...fields, pp_SecureHash: 'é'.repeat(64) }), false);
+});
+
+test('malformed return JSON shapes safely redirect without settling', async () => {
+  for (const Response of ['null', '[]', '123', '"string"', '{broken']) {
+    const result = await invoke(ctrl.handleReturn, { body: { Response }, user: undefined });
+    assert.equal(result.status, 303);
+    assert.match(result.redirect, /jazzcash=error/);
+  }
+  assert.equal(await WalletTransaction.countDocuments({ status: 'completed' }), 0);
+});

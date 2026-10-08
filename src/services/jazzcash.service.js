@@ -33,7 +33,7 @@ function secureHash(fields, salt = env.jazzCash.integritySalt) {
 function verifySecureHash(fields) {
   const received = String(fields?.pp_SecureHash || '').toUpperCase();
   const expected = secureHash(fields);
-  return received.length === expected.length && crypto.timingSafeEqual(Buffer.from(received), Buffer.from(expected));
+  return /^[0-9A-F]{64}$/.test(received) && crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex'));
 }
 
 // yyyyMMddHHmmss in Pakistan time — JazzCash validates these against its own PKT clock.

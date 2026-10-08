@@ -205,6 +205,7 @@ const handleReturn = asyncHandler(async (req, res) => {
   if (typeof body.Response === 'string') {
     try { body = JSON.parse(body.Response); } catch { body = {}; }
   }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
   const txnRefNo = String(body.pp_TxnRefNo || '');
   let result = 'error';
   let payment = null;
