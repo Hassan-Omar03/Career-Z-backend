@@ -237,6 +237,8 @@ const syncPayment = asyncHandler(async (req, res) => {
 });
 
 // GET /api/payments/jazzcash/config — whether to show "Pay with JazzCash" at all.
-const getConfig = asyncHandler(async (req, res) => ok(res, { enabled: jazzCash.isJazzCashConfigured(), environment: env.jazzCash.environment }));
+// returnUrl is public (it's posted in every checkout form) — shown so an admin can check it
+// matches the Return URL registered on the JazzCash portal.
+const getConfig = asyncHandler(async (req, res) => ok(res, { enabled: jazzCash.isJazzCashConfigured(), environment: env.jazzCash.environment, returnUrl: returnUrlFor(req) }));
 
 module.exports = { createFeeCheckout, createCourseCheckout, createWalletTopup, handleReturn, syncPayment, getConfig, applyOutcome };
