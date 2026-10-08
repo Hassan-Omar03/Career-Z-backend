@@ -49,7 +49,7 @@ function newTxnRefNo() {
 
 // The signed form fields the frontend auto-posts to checkoutUrl(). pp_TxnType is left blank so
 // JazzCash's page offers every method enabled on the merchant account (wallet, card, voucher).
-function buildCheckoutFields({ txnRefNo, amountPaisa, billReference, description, expiryHours = 72 }) {
+function buildCheckoutFields({ txnRefNo, amountPaisa, billReference, description, returnUrl, expiryHours = 72 }) {
   const now = new Date();
   const fields = {
     pp_Version: '1.1',
@@ -67,7 +67,7 @@ function buildCheckoutFields({ txnRefNo, amountPaisa, billReference, description
     pp_BillReference: String(billReference).replace(/[^A-Za-z0-9]/g, '').slice(0, 20) || 'billRef',
     pp_Description: String(description).replace(/[^A-Za-z0-9 .,-]/g, '').slice(0, 100) || 'CareerZ payment',
     pp_TxnExpiryDateTime: pktTimestamp(new Date(now.getTime() + expiryHours * 60 * 60 * 1000)),
-    pp_ReturnURL: env.jazzCash.returnUrl,
+    pp_ReturnURL: returnUrl || env.jazzCash.returnUrl,
     ppmpf_1: '', ppmpf_2: '', ppmpf_3: '', ppmpf_4: '', ppmpf_5: ''
   };
   fields.pp_SecureHash = secureHash(fields);

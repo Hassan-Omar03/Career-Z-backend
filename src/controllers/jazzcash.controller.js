@@ -49,10 +49,19 @@ function returnOriginOf(req) {
   return isAllowedOrigin(origin) ? origin : '';
 }
 
-function checkoutResponse(res, payment, description) {
+// JAZZCASH_RETURN_URL when set; otherwise this backend's own public address, taken from the
+// request (behind Vercel's proxy, x-forwarded-proto carries the real https scheme).
+function returnUrlFor(req) {
+  if (env.jazzCash.returnUrl) return env.jazzCash.returnUrl;
+  const proto = String(req.headers?.['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const host = req.headers?.['x-forwarded-host'] || req.headers?.host || `localhost:${env.port}`;
+  return `${proto}://${host}/api/payments/jazzcash/return`;
+}
+
+function checkoutResponse(req, res, payment, description) {
   const fields = jazzCash.buildCheckoutFields({
     txnRefNo: payment.txnRefNo, amountPaisa: payment.amountPaisa,
-    billReference: payment.kind, description
+    billReference: payment.kind, description, returnUrl: returnUrlFor(req)
   });
   return ok(res, { actionUrl: jazzCash.checkoutUrl(), fields, txnRefNo: payment.txnRefNo });
 }
@@ -74,7 +83,7 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
   });
   fee.status = 'processing';
   await fee.save();
-  return checkoutResponse(res, payment, fee.title);
+  return checkoutResponse(req, res, payment, fee.title);
 });
 
 // POST /api/payments/jazzcash/courses/:courseId/checkout
@@ -92,7 +101,7 @@ const createCourseCheckout = asyncHandler(async (req, res) => {
     txnRefNo, kind: 'course', payer: req.user._id, coursePurchase: purchase._id,
     amountPaisa, amount: amountMinor / 100, currency, returnOrigin: returnOriginOf(req)
   });
-  return checkoutResponse(res, payment, course.title);
+  return checkoutResponse(req, res, payment, course.title);
 });
 
 // POST /api/payments/jazzcash/wallet/topup
@@ -110,7 +119,7 @@ const createWalletTopup = asyncHandler(async (req, res) => {
     txnRefNo, kind: 'wallet_topup', payer: req.user._id, walletTransaction: pending._id,
     amountPaisa, amount, currency: cur, returnOrigin: returnOriginOf(req)
   });
-  return checkoutResponse(res, payment, `Wallet top-up ${cur} ${amount}`);
+  return checkoutResponse(req, res, payment, `Wallet top-up ${cur} ${amount}`);
 });
 
 // Applies a JazzCash outcome to the stored checkout, exactly once. Everything credited comes

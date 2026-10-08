@@ -8,6 +8,7 @@ process.env.JAZZCASH_MERCHANT_ID = 'MC_TEST';
 process.env.JAZZCASH_PASSWORD = 'test-password';
 process.env.JAZZCASH_INTEGRITY_SALT = 'test-salt';
 process.env.CLIENT_URL = 'http://localhost:5173';
+process.env.JAZZCASH_RETURN_URL = ''; // derive from the request; never pick up a developer's .env value
 const notifications = require('../src/services/notification.service');
 mock.method(notifications, 'notify', async () => {});
 const User = require('../src/models/User');
@@ -98,6 +99,13 @@ test('fee: a signed successful return marks the fee paid exactly once and redire
 
   await invoke(ctrl.handleReturn, { body, user: undefined }); // replayed return
   assert.equal((await Fee.findById(fee._id)).receiptNumber, receipt);
+});
+
+test('without JAZZCASH_RETURN_URL, the return URL is this backend\'s own public address (never localhost on Vercel)', async () => {
+  const fee = await mkFee();
+  const checkout = (await invoke(ctrl.createFeeCheckout, { params: { feeId: fee.id }, headers: { host: 'career-z-backend.vercel.app', 'x-forwarded-proto': 'https' } })).body.data;
+  assert.equal(checkout.fields.pp_ReturnURL, 'https://career-z-backend.vercel.app/api/payments/jazzcash/return');
+  assert.ok(jazzCash.verifySecureHash(checkout.fields));
 });
 
 test('the payer returns to the frontend they started from, never to a non-allow-listed site', async () => {

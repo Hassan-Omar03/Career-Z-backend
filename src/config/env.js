@@ -41,13 +41,13 @@ module.exports = {
   // Real JazzCash (Pakistan) payments — mobile account, card and voucher via JazzCash's hosted
   // page. Same "empty = not configured" rule. returnUrl is where JazzCash posts the payer's
   // browser back to; it must match the Return URL registered on the JazzCash merchant portal.
+  // Empty = derived from the host the checkout request reached (see jazzcash.controller.js).
   jazzCash: {
     merchantId: process.env.JAZZCASH_MERCHANT_ID || '',
     password: process.env.JAZZCASH_PASSWORD || '',
     integritySalt: process.env.JAZZCASH_INTEGRITY_SALT || '',
     environment: process.env.JAZZCASH_ENVIRONMENT || 'sandbox', // 'sandbox' | 'production'
-    returnUrl: process.env.JAZZCASH_RETURN_URL
-      || `${(process.env.SERVER_URL || `http://localhost:${process.env.PORT || 5000}`).replace(/\/+$/, '')}/api/payments/jazzcash/return`
+    returnUrl: (process.env.JAZZCASH_RETURN_URL || '').trim()
   },
   // Real crypto wallet top-ups (USDT TRC20 / BTC / ETH) via NOWPayments — client-provided keys,
   // same "empty = not configured" rule as Paddle above.
