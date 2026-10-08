@@ -14,6 +14,8 @@ const env = require('../config/env');
 const { isAllowedOrigin } = require('../utils/allowedOrigins');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
+// A checkout JazzCash still has no record of after this long was never completed on its page.
+const NEVER_REACHED_AFTER_MS = 60 * 60 * 1000;
 
 function assertConfigured() {
   if (!jazzCash.isJazzCashConfigured()) {
@@ -206,6 +208,7 @@ const handleReturn = asyncHandler(async (req, res) => {
     try { body = JSON.parse(body.Response); } catch { body = {}; }
   }
   if (!body || typeof body !== 'object' || Array.isArray(body)) body = {};
+  jazzCash.debugLog('return (browser post)', body);
   const txnRefNo = String(body.pp_TxnRefNo || '');
   let result = 'error';
   let payment = null;
@@ -237,6 +240,10 @@ const syncPayment = asyncHandler(async (req, res) => {
     const code = inquiry.pp_PaymentResponseCode;
     if (inquiry.pp_ResponseCode === '000' && code) {
       await applyOutcome(payment.txnRefNo, { code: String(code), message: String(inquiry.pp_PaymentResponseMessage || ''), rrn: String(inquiry.pp_RetreivalReferenceNo || inquiry.pp_RetrievalReferenceNo || '') });
+    } else if (inquiry.pp_ResponseCode === '199' && !code && Date.now() - payment.createdAt.getTime() > NEVER_REACHED_AFTER_MS) {
+      // JazzCash has no transaction for this reference (the payer never completed its page, or
+      // it was routed elsewhere). Close it so recovery stops re-asking JazzCash every minute.
+      await applyOutcome(payment.txnRefNo, { code: 'NOT_FOUND', message: String(inquiry.pp_ResponseMessage || 'JazzCash has no transaction for this reference.') });
     }
   }
   const refreshed = await JazzCashPayment.findById(payment._id);
@@ -246,6 +253,7 @@ const syncPayment = asyncHandler(async (req, res) => {
 // Signed server-to-server notifications use the same amount/merchant/currency checks as return.
 const handleIpn = asyncHandler(async (req, res) => {
   const body = req.body || {};
+  jazzCash.debugLog('IPN (server notification)', body);
   if (!jazzCash.isJazzCashConfigured() || !jazzCash.verifySecureHash(body)) throw new AppError('JazzCash signature verification failed.', 400);
   const payment = await JazzCashPayment.findOne({ txnRefNo: String(body.pp_TxnRefNo || '') });
   if (!payment || String(body.pp_Amount) !== String(payment.amountPaisa)

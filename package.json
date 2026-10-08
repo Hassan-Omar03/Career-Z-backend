@@ -10,7 +10,8 @@
     "seed:mohammad-hostel": "node src/seed/seedMohammadHostel.js",
     "seed:gcuf-driver": "node src/seed/seedGcufDriver.js",
     "seed:reset-abdul-payroll": "node src/seed/resetAbdulPayroll.js",
-    "test": "node --test --test-concurrency=2 test/*.test.js"
+    "test": "node --test --test-concurrency=2 test/*.test.js",
+    "jazzcash:simulate": "node scripts/jazzcash-simulate.js"
   },
   "dependencies": {
     "@simplewebauthn/server": "^14.0.2",

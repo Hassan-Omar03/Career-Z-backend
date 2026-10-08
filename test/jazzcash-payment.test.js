@@ -249,3 +249,14 @@ test('malformed return JSON shapes safely redirect without settling', async () =
   }
   assert.equal(await WalletTransaction.countDocuments({ status: 'completed' }), 0);
 });
+
+test('a checkout JazzCash never received is closed after an hour instead of being re-asked forever', async (t) => {
+  const checkout = (await invoke(ctrl.createWalletTopup, { body: { amount: 100, currency: 'PKR' } })).body.data;
+  t.mock.method(jazzCash, 'inquire', async () => ({ pp_ResponseCode: '199', pp_ResponseMessage: 'Transactions were not found for provided criteria', pp_PaymentResponseCode: '' }));
+  assert.equal((await invoke(ctrl.syncPayment, { params: { txnRefNo: checkout.txnRefNo } })).body.data.status, 'pending'); // too recent to give up
+  await JazzCashPayment.collection.updateOne({ txnRefNo: checkout.txnRefNo }, { $set: { createdAt: new Date(Date.now() - 2 * 60 * 60 * 1000) } });
+  const closed = (await invoke(ctrl.syncPayment, { params: { txnRefNo: checkout.txnRefNo } })).body.data;
+  assert.equal(closed.status, 'failed');
+  assert.equal(closed.responseCode, 'NOT_FOUND');
+  assert.equal((await WalletTransaction.findOne({ reference: checkout.txnRefNo })).status, 'rejected');
+});

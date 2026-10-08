@@ -36,6 +36,17 @@ function verifySecureHash(fields) {
   return /^[0-9A-F]{64}$/.test(received) && crypto.timingSafeEqual(Buffer.from(received, 'hex'), Buffer.from(expected, 'hex'));
 }
 
+// JAZZCASH_DEBUG=true prints JazzCash requests/responses to the console (local testing only).
+// The password and secure hash are masked; nothing is logged when the flag is off.
+function debugLog(label, fields) {
+  if (process.env.JAZZCASH_DEBUG !== 'true') return;
+  const shown = { ...fields };
+  for (const key of Object.keys(shown)) {
+    if (/password|securehash/i.test(key) && shown[key]) shown[key] = '***';
+  }
+  console.log(`[jazzcash] ${label}`, JSON.stringify(shown, null, 2));
+}
+
 // yyyyMMddHHmmss in Pakistan time — JazzCash validates these against its own PKT clock.
 function pktTimestamp(date = new Date()) {
   const pkt = new Date(date.getTime() + 5 * 60 * 60 * 1000);
@@ -71,6 +82,7 @@ function buildCheckoutFields({ txnRefNo, amountPaisa, billReference, description
     ppmpf_1: '', ppmpf_2: '', ppmpf_3: '', ppmpf_4: '', ppmpf_5: ''
   };
   fields.pp_SecureHash = secureHash(fields);
+  debugLog(`checkout ${txnRefNo} -> ${checkoutUrl()}`, fields);
   return fields;
 }
 
@@ -83,6 +95,7 @@ async function inquire(txnRefNo) {
     method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(fields), signal: AbortSignal.timeout(20000)
   });
   const payload = await response.json().catch(() => ({}));
+  debugLog(`inquiry ${txnRefNo} -> HTTP ${response.status}`, payload);
   if (!response.ok) {
     const err = new Error(`JazzCash status inquiry failed (${response.status}).`);
     err.statusCode = 502;
@@ -100,5 +113,5 @@ function outcomeOf(code) {
 
 module.exports = {
   isJazzCashConfigured, checkoutUrl, secureHash, verifySecureHash, newTxnRefNo,
-  buildCheckoutFields, inquire, outcomeOf
+  buildCheckoutFields, inquire, outcomeOf, debugLog
 };
