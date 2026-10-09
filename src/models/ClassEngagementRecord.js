@@ -8,6 +8,7 @@ const classEngagementRecordSchema = new mongoose.Schema(
   {
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
+    liveClassSession: { type: mongoose.Schema.Types.ObjectId, ref: 'LiveClassSession', default: null, index: true },
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     startedAt: { type: Date, required: true },
     endedAt: { type: Date, required: true },

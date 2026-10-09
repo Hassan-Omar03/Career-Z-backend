@@ -12,6 +12,7 @@ const StudentProfile = require('../models/StudentProfile');
 const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
 const Achievement = require('../models/Achievement');
 const AcademicTranscript = require('../models/AcademicTranscript');
+const { policyFor, gradeFor: gradeWithPolicy } = require('./grading.service');
 const { assertFeeAccessForCapability } = require('../utils/feeAccess');
 const { notify } = require('./notification.service');
 
@@ -56,16 +57,6 @@ async function ensureCourseCompletionCertificate(studentId, courseId, issuedBy) 
 
 const EXAM_TYPES = new Set(['quiz', 'midterm', 'final', 'test']);
 
-function pointsFor(percentage) {
-  if (percentage >= 85) return 4; if (percentage >= 80) return 3.7; if (percentage >= 75) return 3.3;
-  if (percentage >= 70) return 3; if (percentage >= 65) return 2.7; if (percentage >= 60) return 2.3;
-  if (percentage >= 55) return 2; if (percentage >= 50) return 1.7; return 0;
-}
-function gradeFor(percentage) {
-  if (percentage >= 85) return 'A'; if (percentage >= 80) return 'A-'; if (percentage >= 75) return 'B+';
-  if (percentage >= 70) return 'B'; if (percentage >= 65) return 'B-'; if (percentage >= 60) return 'C+';
-  if (percentage >= 55) return 'C'; if (percentage >= 50) return 'D'; return 'F';
-}
 
 async function programCredentialEligibility(studentId, programId, type) {
   if (!['diploma', 'training', 'degree'].includes(type)) return { eligible: false, reason: 'Invalid program credential type.' };
@@ -113,18 +104,20 @@ async function buildTranscript(studentId, institutionId) {
     current.marksObtained += Number(result.marksObtained); current.totalMarks += Number(result.totalMarks); grouped.set(key, current);
   });
   if (!grouped.size) throw new Error('No graded academic results are available.');
-  const rows = [...grouped.values()].map((row) => { const percentage = Number(((row.marksObtained / row.totalMarks) * 100).toFixed(2)); return { ...row, term: row.term || 'Term not specified', percentage, grade: gradeFor(percentage), gradePoints: pointsFor(percentage) }; });
+  // The institution's own grading scale (or the platform default 4.0 scale).
+  const policy = await policyFor(institutionId);
+  const rows = [...grouped.values()].map((row) => { const percentage = Number(((row.marksObtained / row.totalMarks) * 100).toFixed(2)); const graded = gradeWithPolicy(policy, percentage); return { ...row, term: row.term || 'Term not specified', percentage, grade: graded.grade, gradePoints: graded.points, passed: graded.passed }; });
   // A semester is a term within a session — "Fall" of 2025 and "Fall" of 2026 are separate GPAs.
   const termMap = new Map(); rows.forEach((row) => { const key = `${row.academicSession}:${row.term}`; const item = termMap.get(key) || { academicSession: row.academicSession, term: row.term, credits: 0, weighted: 0 }; item.credits += row.creditHours; item.weighted += row.gradePoints * row.creditHours; termMap.set(key, item); });
   const semesterSummaries = [...termMap.values()].map((item) => ({ academicSession: item.academicSession, term: item.term, credits: item.credits, gpa: Number((item.weighted / item.credits).toFixed(2)) }));
   const totalCredits = rows.reduce((sum, row) => sum + row.creditHours, 0); const weighted = rows.reduce((sum, row) => sum + row.gradePoints * row.creditHours, 0);
-  return { profile, rows, semesterSummaries, totalCredits, cgpa: Number((weighted / totalCredits).toFixed(2)) };
+  return { profile, rows, semesterSummaries, totalCredits, cgpa: Number((weighted / totalCredits).toFixed(2)), gpaScaleMax: policy.gpaScaleMax, passingPercent: policy.passingPercent };
 }
 
 async function issueTranscript(studentId, institutionId, issuedBy) {
   try { await assertFeeAccessForCapability(studentId, institutionId, 'certificates'); } catch { throw new Error('Outstanding institution fees must be cleared.'); }
   const data = await buildTranscript(studentId, institutionId);
-  return AcademicTranscript.findOneAndUpdate({ student: studentId, institution: institutionId }, { $set: { programName: data.profile.program, rollNumber: data.profile.rollNumber, rows: data.rows, semesterSummaries: data.semesterSummaries, totalCredits: data.totalCredits, cgpa: data.cgpa, status: 'active', issueDate: new Date(), issuedBy } }, { upsert: true, new: true, setDefaultsOnInsert: true });
+  return AcademicTranscript.findOneAndUpdate({ student: studentId, institution: institutionId }, { $set: { programName: data.profile.program, rollNumber: data.profile.rollNumber, rows: data.rows, semesterSummaries: data.semesterSummaries, totalCredits: data.totalCredits, cgpa: data.cgpa, gpaScaleMax: data.gpaScaleMax, status: 'active', issueDate: new Date(), issuedBy } }, { upsert: true, new: true, setDefaultsOnInsert: true });
 }
 
 module.exports = { courseCertificateEligibility, ensureCourseCompletionCertificate, programCredentialEligibility, achievementCredentialEligibility, buildTranscript, issueTranscript };

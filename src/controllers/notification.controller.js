@@ -3,6 +3,9 @@ const Institution = require('../models/Institution');
 const StudentProfile = require('../models/StudentProfile');
 const TeacherProfile = require('../models/TeacherProfile');
 const ParentChildLink = require('../models/ParentChildLink');
+const StudentInstitutionMembership = require('../models/StudentInstitutionMembership');
+const PushSubscription = require('../models/PushSubscription');
+const pushService = require('../services/push.service');
 const User = require('../models/User');
 const { notifyMany } = require('../services/notification.service');
 const smsService = require('../services/sms.service');
@@ -52,16 +55,27 @@ function assertOwnerOrStaff(institution, userId) {
 const broadcast = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertOwnerOrStaff(institution, req.user._id);
+  // Owner, or staff explicitly granted 'communication:send' — not every staff member.
+  const isOwner = institution.owner.toString() === req.user._id.toString();
+  const staffEntry = institution.staff.find((s) => s.user.toString() === req.user._id.toString());
+  if (!isOwner && !staffEntry?.permissions?.includes('communication:send')) {
+    throw new AppError('Only the owner or staff with the "Send broadcasts" permission can broadcast.', 403);
+  }
   if (institution.verificationStatus !== 'approved') {
     throw new AppError('This institution must be verified by Super Admin before it can broadcast.', 403);
   }
 
   const { audience, title, body, channels } = req.body;
   if (!title || !audience) throw new AppError('audience and title are required.', 422);
+  if (!['all', 'students', 'teachers', 'parents', 'staff'].includes(audience)) throw new AppError('Invalid audience.', 422);
 
-  const studentProfiles = await StudentProfile.find({ primaryInstitution: institution._id }).select('user');
-  const studentUserIds = studentProfiles.map((p) => p.user);
+  // Students whose PRIMARY institution this is, plus active members enrolled here as an
+  // additional institution — both are this institution's students.
+  const [studentProfiles, memberships] = await Promise.all([
+    StudentProfile.find({ primaryInstitution: institution._id }).select('user'),
+    StudentInstitutionMembership.find({ institution: institution._id, status: 'active' }).select('student')
+  ]);
+  const studentUserIds = [...studentProfiles.map((p) => p.user), ...memberships.map((m) => m.student)];
 
   let recipientIds = [];
   if (audience === 'students' || audience === 'all') recipientIds.push(...studentUserIds);
@@ -78,7 +92,9 @@ const broadcast = asyncHandler(async (req, res) => {
   }
 
   const uniqueIds = Array.from(new Set(recipientIds.map((id) => id.toString())));
-  await notifyMany(uniqueIds, { title, body: body || '', sentBy: req.user._id });
+  // In-app + live socket + background push always; email too unless channels includes 'no-email'.
+  const wantsEmail = !(Array.isArray(channels) && channels.includes('no-email'));
+  await notifyMany(uniqueIds, { title: `${institution.name}: ${title}`, body: body || '', sentBy: req.user._id }, { email: wantsEmail });
 
   let smsResult = null;
   let whatsappResult = null;
@@ -143,4 +159,27 @@ const platformAnnouncement = asyncHandler(async (req, res) => {
   return ok(res, { sentTo: users.length }, `Announcement sent to ${users.length} user(s).`);
 });
 
-module.exports = { listMine, getUnreadCount, markRead, markAllRead, broadcast, platformAnnouncement, getCommsStatus, saveCommsCredential, removeCommsCredential };
+// ---- Background (Web Push) subscriptions ----
+
+// GET /api/notifications/push/public-key — the VAPID key the browser subscribes with.
+const getPushPublicKey = asyncHandler(async (req, res) => ok(res, { enabled: pushService.isPushConfigured(), publicKey: pushService.publicKey() }));
+
+// POST /api/notifications/push/subscriptions — save this browser's subscription for the user.
+const savePushSubscription = asyncHandler(async (req, res) => {
+  const { endpoint, keys } = req.body || {};
+  if (!/^https:\/\//.test(String(endpoint || '')) || !keys?.p256dh || !keys?.auth) throw new AppError('A valid push subscription is required.', 422);
+  await PushSubscription.findOneAndUpdate(
+    { endpoint },
+    { $set: { user: req.user._id, keys: { p256dh: String(keys.p256dh), auth: String(keys.auth) }, userAgent: String(req.headers['user-agent'] || '').slice(0, 300) } },
+    { upsert: true, new: true, setDefaultsOnInsert: true }
+  );
+  return ok(res, { subscribed: true }, 'Browser notifications enabled.');
+});
+
+// DELETE /api/notifications/push/subscriptions — remove this browser (only the caller's own).
+const deletePushSubscription = asyncHandler(async (req, res) => {
+  await PushSubscription.deleteOne({ endpoint: String(req.body?.endpoint || ''), user: req.user._id });
+  return ok(res, { subscribed: false }, 'Browser notifications disabled.');
+});
+
+module.exports = { getPushPublicKey, savePushSubscription, deletePushSubscription, listMine, getUnreadCount, markRead, markAllRead, broadcast, platformAnnouncement, getCommsStatus, saveCommsCredential, removeCommsCredential };

@@ -3,10 +3,16 @@ const ctrl = require('../controllers/institution.controller');
 const notificationCtrl = require('../controllers/notification.controller');
 const certificateCtrl = require('../controllers/certificate.controller');
 const employmentCtrl = require('../controllers/teacherEmployment.controller');
+const staffPermissionCtrl = require('../controllers/staffPermission.controller');
+const gradingPolicyCtrl = require('../controllers/gradingPolicy.controller');
+const settingsCtrl = require('../controllers/institutionSettings.controller');
 const { protect, optionalAuth } = require('../middleware/auth');
 const { requireRole, requireDepartment } = require('../middleware/rbac');
 
 router.get('/', optionalAuth, ctrl.listInstitutions);
+router.get('/by-subdomain/:subdomain', settingsCtrl.bySubdomain);
+router.get('/:id/settings', optionalAuth, settingsCtrl.getSettings);
+router.get('/:id/pages/:slug', settingsCtrl.getPage);
 router.get('/:id', optionalAuth, ctrl.getInstitution);
 router.get('/:id/campuses', ctrl.listCampuses);
 router.get('/:id/class-sections', ctrl.listClassSections);
@@ -30,6 +36,12 @@ router.get('/admin/all', requireRole('admin', 'super_admin', 'platform_staff'), 
 router.post('/:id/staff', ctrl.addStaff);
 router.delete('/:id/staff/:userId', ctrl.removeStaff);
 router.patch('/:id/staff/:userId/ai-permissions', ctrl.updateStaffAiPermissions);
+router.get('/meta/staff-permissions', staffPermissionCtrl.listGrantable);
+router.patch('/:id/staff/:userId/permissions', staffPermissionCtrl.updateStaffPermissions);
+router.get('/:id/grading-policy', gradingPolicyCtrl.getPolicy);
+router.put('/:id/settings', settingsCtrl.saveSettings);
+router.put('/:id/grading-policy', gradingPolicyCtrl.savePolicy);
+router.delete('/:id/grading-policy', gradingPolicyCtrl.resetPolicy);
 router.get('/:id/staff-attendance', ctrl.listStaffAttendance);
 
 router.get('/:id/teacher-directory', employmentCtrl.listTeacherDirectory);

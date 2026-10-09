@@ -8,6 +8,7 @@ const TimetableEntry = require('../models/TimetableEntry');
 const LiveClassSession = require('../models/LiveClassSession');
 const StudyGroup = require('../models/StudyGroup');
 const ClassEngagementRecord = require('../models/ClassEngagementRecord');
+const classroomLifecycle = require('../services/classroomLifecycle.service');
 const { assertFeeAccessForCapability } = require('../utils/feeAccess');
 const crypto = require('crypto');
 
@@ -22,7 +23,7 @@ const liveVideoEnergy = new Map();
 function publicSession(session) {
   return {
     id: session.id, courseId: session.courseId, courseTitle: session.courseTitle, teacherName: session.teacherName,
-    currentSlide: session.currentSlide, meetingLink: session.meetingLink, startedAt: session.startedAt,
+    currentSlide: session.currentSlide, meetingLink: session.meetingLink, startedAt: session.startedAt, liveClassSessionId: session.liveClassSessionId || null,
     participants: Array.from(session.participants.values()),
     raisedHands: Array.from(session.raisedHands.values())
   };
@@ -32,13 +33,15 @@ function publicSession(session) {
 // session stays ephemeral (see module comment), but its engagement summary becomes real history
 // a teacher/institution can review later (spec: "historical engagement analytics").
 async function persistEngagementRecord(session) {
-  if (!session.participants || session.participants.size <= 1) return; // teacher-only, nothing happened
+  const rows = Array.from(session.energy?.values?.() || []);
+  const summary = { averageEnergy: rows.length ? Math.round(rows.reduce((s, r) => s + r.score, 0) / rows.length) : null, attentiveCount: rows.filter((r) => r.attentive).length, participantCount: Math.max(0, (session.participants?.size || 1) - 1), record: null };
   try {
+    if (session.participants && session.participants.size > 1) { // teacher-only = nothing to keep
     const course = await Course.findById(session.courseId).select('institution');
-    const rows = Array.from(session.energy.values());
-    await ClassEngagementRecord.create({
+    const record = await ClassEngagementRecord.create({
       institution: course?.institution || null,
       course: session.courseId,
+      liveClassSession: session.liveClassSessionId || null,
       teacher: session.teacherId,
       startedAt: session.startedAt,
       endedAt: new Date(),
@@ -48,6 +51,10 @@ async function persistEngagementRecord(session) {
       roster: rows.map((r) => ({ student: r.userId, name: r.name, attentive: r.attentive, score: r.score })),
       poll: session.poll ? { question: session.poll.question, options: session.poll.options.map((o) => ({ text: o.text, votes: o.votes })) } : undefined
     });
+    summary.record = record._id;
+    }
+    // One classroom lifecycle: the linked scheduled class keeps this engagement and is ended too.
+    if (session.liveClassSessionId) await classroomLifecycle.finish(session.liveClassSessionId, session.teacherId, summary);
   } catch { /* best-effort — never blocks the class from actually ending */ }
 }
 
@@ -304,6 +311,8 @@ function initSocket(httpServer) {
           energy: new Map(),
           poll: null
         };
+        // Attach to (and start) this course's scheduled class happening now, if there is one.
+        session.liveClassSessionId = await classroomLifecycle.linkLiveSession({ courseId: course._id, teacherId: socket.data.userId, requestedId: payload.liveClassSessionId || null }).catch(() => null);
         liveClasses.set(session.id, session);
         socket.join(`class:${session.id}`); socket.data.liveSessionIds.add(session.id);
         session.participants.set(socket.data.userId, { userId: socket.data.userId, name: course.teacher.fullName, teacher: true });
@@ -340,6 +349,7 @@ function initSocket(httpServer) {
         // class gets the real current roster back from class:join/class:list, not an empty one —
         // the previous version only ever broadcast a transient "someone joined" ping.
         session.participants.set(socket.data.userId, { userId: socket.data.userId, name: user?.fullName || 'Participant', teacher: session.teacherId === socket.data.userId });
+        if (session.liveClassSessionId && session.teacherId !== socket.data.userId) await classroomLifecycle.recordJoin(session.liveClassSessionId, socket.data.userId).catch(() => {});
         io.to(`class:${session.id}`).emit('class:participant', { userId: socket.data.userId, name: user?.fullName || 'Participant', joined: true });
         reply({ ok: true, session: { ...publicSession(session), slides: session.slides, messages: session.messages } });
       } catch (error) { reply({ ok: false, message: error.message }); }

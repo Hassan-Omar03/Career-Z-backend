@@ -36,5 +36,8 @@ router.delete('/staff/:id', requireRole('super_admin'), staffCtrl.removeStaff);
 router.get('/backups', requireRole('super_admin'), backupCtrl.listBackups);
 router.post('/backups', requireRole('super_admin'), backupCtrl.createBackup);
 router.get('/backups/:id/files/:filename', requireRole('super_admin'), backupCtrl.downloadBackupFile);
+router.get('/backups/:id/uploads', requireRole('super_admin'), backupCtrl.listBackupUploads);
+router.get('/backups/:id/uploads/:key', requireRole('super_admin'), backupCtrl.downloadBackupUpload);
+router.post('/backups/:id/uploads/restore', requireRole('super_admin'), backupCtrl.restoreBackupUploads);
 
 module.exports = router;

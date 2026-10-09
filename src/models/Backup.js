@@ -8,6 +8,8 @@ const backupSchema = new mongoose.Schema(
     folder: { type: String, required: true, unique: true },
     collections: [{ name: String, documentCount: Number, sizeBytes: Number }],
     totalSizeBytes: { type: Number, default: 0 },
+    // Uploaded files (Cloudinary etc.) copied into <folder>/files with files-manifest.json.
+    files: { count: { type: Number, default: 0 }, failed: { type: Number, default: 0 }, sizeBytes: { type: Number, default: 0 } },
     status: { type: String, enum: ['completed', 'failed'], default: 'completed' },
     error: { type: String, default: '' },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }

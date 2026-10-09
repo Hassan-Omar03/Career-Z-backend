@@ -15,6 +15,11 @@ async function notify(userId, { title, body = '', sentBy = null }, { email = fal
     _id: notification._id, title, body, createdAt: notification.createdAt, read: false
   });
 
+  // Background push — reaches the user's subscribed browsers even with no tab open. Best-effort.
+  require('./push.service').pushToUser(userId, { title, body }).catch((err) => {
+    console.error('[notification.service] Web push failed:', err.message);
+  });
+
   if (email) {
     try {
       const address = toAddress || (await User.findById(userId).select('email'))?.email;

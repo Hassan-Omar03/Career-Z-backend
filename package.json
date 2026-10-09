@@ -12,7 +12,8 @@
     "seed:reset-abdul-payroll": "node src/seed/resetAbdulPayroll.js",
     "test": "node --test --test-concurrency=2 test/*.test.js",
     "jazzcash:simulate": "node scripts/jazzcash-simulate.js",
-    "seed:mohammad-active": "node src/seed/seedMohammadActive.js"
+    "seed:mohammad-active": "node src/seed/seedMohammadActive.js",
+    "seed:remove-institution-test-quiz": "node src/seed/removeInstitutionTestQuiz.js"
   },
   "dependencies": {
     "@simplewebauthn/server": "^14.0.2",
@@ -31,7 +32,8 @@
     "qrcode": "^1.5.4",
     "socket.io": "^4.8.3",
     "stripe": "^22.6.2",
-    "uuid": "^9.0.1"
+    "uuid": "^9.0.1",
+    "web-push": "^3.6.7"
   },
   "devDependencies": {
     "mongodb-memory-server": "^11.2.0",

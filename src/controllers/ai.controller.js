@@ -36,6 +36,8 @@ const FEATURE_PROMPTS = {
   teacher_assignment: 'Draft an assignment with objectives, tasks, marks and assessment criteria for the supplied topic and level.',
   teacher_paper: 'Draft a question paper with marks and a separate answer key matching the supplied topic, level and duration.',
   teacher_rubric: 'Create an assessment rubric with measurable criteria, performance levels and marks.',
+  whiteboard_mindmap: 'Return ONLY a mind map for the given topic as an indented outline: the first line is the central topic, each following line is a short node (max 6 words) indented with two spaces per level under its parent. At most 3 levels and 20 lines. No numbering, bullets, markdown or commentary.',
+  whiteboard_equation: 'Return ONLY the requested formula or equation as a single line of LaTeX math (no $ delimiters, no explanation, no markdown). Use standard notation, e.g. \\frac, \\sqrt, ^, _.',
   teacher_notes: 'You are a teaching assistant. Given a topic, write clear, well-structured class notes with headings and bullet points suitable for students. Keep it concise and accurate.',
   teacher_quiz: 'You are a teaching assistant. Given a topic, generate 5 multiple-choice quiz questions with 4 options each and mark the correct answer. Format clearly.',
   teacher_lesson_plan: 'You are a teaching assistant. Given a topic and grade level, write a structured lesson plan: objectives, materials, activities (with rough timing), and an assessment idea.',

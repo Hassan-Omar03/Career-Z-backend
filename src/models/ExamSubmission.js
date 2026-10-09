@@ -22,7 +22,16 @@ const examSubmissionSchema = new mongoose.Schema(
     expiresAt: { type: Date, default: null },
     submittedAt: { type: Date, default: Date.now },
     gradedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    gradedAt: { type: Date, default: null }
+    gradedAt: { type: Date, default: null },
+    // This attempt's paper: original question indexes in display order, and for each displayed
+    // MCQ the original option indexes in display order. Empty = legacy identity order.
+    questionOrder: { type: [Number], default: [] },
+    optionOrders: { type: [[Number]], default: [] },
+    // Integrity log: tab switches, copy/paste, fullscreen exits, IP/device changes.
+    securityEvents: [{ type: { type: String }, at: { type: Date, default: Date.now }, detail: { type: String, default: '' }, _id: false }],
+    flagged: { type: Boolean, default: false },
+    startIp: { type: String, default: '' },
+    startUserAgent: { type: String, default: '' }
   },
   { timestamps: true }
 );

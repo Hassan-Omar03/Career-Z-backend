@@ -39,6 +39,7 @@ router.post('/:id/enroll', requirePermission('course:enroll:own'), ctrl.enroll);
 router.post('/assignments/:assignmentId/submit', requirePermission('assignment:submit:own'), ctrl.submitAssignment);
 router.post('/exams/:examId/start', requirePermission('assignment:submit:own'), ctrl.startExam);
 router.post('/exams/:examId/submit', requirePermission('assignment:submit:own'), ctrl.submitExam);
+router.post('/exam-attempts/:attemptId/events', requirePermission('assignment:submit:own'), require('express-rate-limit')({ windowMs: 60000, max: 60, standardHeaders: true, legacyHeaders: false }), ctrl.recordExamEvent);
 router.get('/exam-attempts/mine', requirePermission('assignment:submit:own'), ctrl.listMyExamAttempts);
 
 // Shared (teacher sees all + answer key, student sees published + no answer key — controller decides)

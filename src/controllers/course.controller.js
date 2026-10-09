@@ -211,6 +211,7 @@ const shareAiResource = asyncHandler(async (req, res) => {
     content: content || '',
     kind: cleanDeck ? 'slide_deck' : 'lesson',
     deck: cleanDeck,
+    metadata: { author: req.user._id, aiAssisted: true, aiNote: 'Created with the CareerZ AI teaching tools (Save to Class).' },
     published: course.approvalWorkflow !== 'staged',
     approvalStatus: course.approvalWorkflow === 'staged' ? 'draft' : 'approved',
     order: (lastLesson?.order || 0) + 1
@@ -600,7 +601,11 @@ const recordResult = asyncHandler(async (req, res) => {
     subject: subject || course.subject,
     marksObtained,
     totalMarks,
-    grade: grade || '',
+    // No grade typed in → use the institution's own grading scale.
+    grade: grade || (await (async () => {
+      const grading = require('../services/grading.service');
+      return grading.gradeFor(await grading.policyFor(course.institution), (Number(marksObtained) / Number(totalMarks)) * 100).grade;
+    })()),
     recordedBy: req.user._id
   });
 
@@ -636,8 +641,15 @@ const createExam = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const { title, type, academicSession, term, durationMinutes, scheduledDate, closesAt, passingPercent, venue, instructions, questions } = req.body;
-  if (!title || !Array.isArray(questions) || questions.length === 0) {
+  const { title, type, academicSession, term, durationMinutes, scheduledDate, closesAt, passingPercent, venue, instructions, shuffleQuestions, shuffleOptions, questionsPerAttempt, flagThreshold, bankQuestionIds } = req.body;
+  // Questions typed into the form, plus any picked from the question bank.
+  const questions = [...(Array.isArray(req.body.questions) ? req.body.questions : [])];
+  if (Array.isArray(bankQuestionIds) && bankQuestionIds.length) {
+    const picked = await require('./questionBank.controller').resolveForExam(bankQuestionIds, req.user._id, course.institution);
+    questions.push(...picked);
+  }
+  if (Number(questionsPerAttempt || 0) < 0 || Number(questionsPerAttempt || 0) > questions.length) throw new AppError('Questions per attempt must be between 0 (all) and the number of questions.', 422);
+  if (!title || questions.length === 0) {
     throw new AppError('title and at least one question are required.', 422);
   }
   if (!Number.isFinite(Number(durationMinutes || 0)) || Number(durationMinutes || 0) < 0) throw new AppError('durationMinutes cannot be negative.', 422);
@@ -665,7 +677,11 @@ const createExam = asyncHandler(async (req, res) => {
     passingPercent: passingPercent === undefined ? 50 : Number(passingPercent),
     venue: venue || '',
     instructions: instructions || '',
-    questions
+    questions,
+    shuffleQuestions: Boolean(shuffleQuestions),
+    shuffleOptions: Boolean(shuffleOptions),
+    questionsPerAttempt: Number(questionsPerAttempt || 0),
+    flagThreshold: Math.max(1, Number(flagThreshold || 3))
   });
   return created(res, exam, 'Exam created (unpublished).');
 });
@@ -691,10 +707,15 @@ const listExams = asyncHandler(async (req, res) => {
 
   if (isOwner) return ok(res, exams);
 
-  // Students never see the answer key.
+  // Students never see the answer key — or the questions themselves before they start the exam
+  // (startExam returns their own paper). Only the count and marks are listed.
   const sanitized = exams.map((e) => {
     const obj = e.toObject();
-    obj.questions = obj.questions.map((q) => ({ text: q.text, type: q.type, options: q.options, marks: q.marks }));
+    const perAttempt = obj.questionsPerAttempt > 0 && obj.questionsPerAttempt < obj.questions.length;
+    obj.questionCount = perAttempt ? obj.questionsPerAttempt : obj.questions.length;
+    if (perAttempt) obj.totalMarks = null; // varies with each student's random paper
+    obj.questions = [];
+    delete obj.shuffleQuestions; delete obj.shuffleOptions; delete obj.flagThreshold;
     return obj;
   });
   return ok(res, sanitized);
@@ -713,13 +734,18 @@ const startExam = asyncHandler(async (req, res) => {
   if (exam.closesAt && now > exam.closesAt) throw new AppError('This exam has closed.', 409);
   let attempt = await ExamSubmission.findOne({ exam: exam._id, student: req.user._id });
   if (attempt && attempt.status !== 'in_progress') throw new AppError('You already submitted this exam.', 409);
+  const examControls = require('../services/examControls.service');
   if (!attempt) {
     const expiresAt = exam.durationMinutes > 0 ? new Date(now.getTime() + exam.durationMinutes * 60000) : exam.closesAt;
-    attempt = await ExamSubmission.create({ exam: exam._id, student: req.user._id, status: 'in_progress', startedAt: now, expiresAt: expiresAt || null, answers: [] });
+    // Each student gets their own paper (random subset / question order / option order).
+    const paper = examControls.buildAttemptPaper(exam);
+    attempt = await ExamSubmission.create({ exam: exam._id, student: req.user._id, status: 'in_progress', startedAt: now, expiresAt: expiresAt || null, answers: [], ...paper, startIp: examControls.clientIp(req), startUserAgent: String(req.headers?.['user-agent'] || '').slice(0, 300) });
   }
   if (attempt.expiresAt && now > attempt.expiresAt) throw new AppError('Your exam time has expired.', 409);
   const obj = exam.toObject();
-  obj.questions = obj.questions.map((q) => ({ text: q.text, type: q.type, options: q.options, marks: q.marks }));
+  delete obj.shuffleQuestions; delete obj.shuffleOptions; delete obj.flagThreshold;
+  obj.questions = examControls.studentView(exam, attempt);
+  obj.totalMarks = examControls.attemptTotalMarks(exam, attempt);
   return ok(res, { exam: obj, attempt: { _id: attempt._id, startedAt: attempt.startedAt, expiresAt: attempt.expiresAt, status: attempt.status } });
 });
 
@@ -776,22 +802,15 @@ const submitExam = asyncHandler(async (req, res) => {
 
   const { answers } = req.body;
   if (!Array.isArray(answers)) throw new AppError('answers array is required.', 422);
-  const indexes = answers.map((answer) => answer?.questionIndex);
-  if (indexes.some((index) => !Number.isInteger(index) || index < 0 || index >= exam.questions.length)
-      || new Set(indexes).size !== indexes.length) {
-    throw new AppError('Each answer must refer to a distinct valid question.', 422);
-  }
-  if (answers.length !== exam.questions.length) throw new AppError('Submit one answer entry for every question.', 422);
-
-  const gradedAnswers = answers.map((a) => {
-    const question = exam.questions[a.questionIndex];
-    if (!question) return { ...a, marksAwarded: 0 };
-    if (question.type === 'mcq') {
-      if (!Number.isInteger(a.selectedOption) || a.selectedOption < 0 || a.selectedOption >= question.options.length) return { questionIndex: a.questionIndex, selectedOption: null, textAnswer: '', marksAwarded: 0 };
-      return { questionIndex: a.questionIndex, selectedOption: a.selectedOption, textAnswer: '', marksAwarded: 0 };
-    }
-    return { questionIndex: a.questionIndex, selectedOption: null, textAnswer: a.textAnswer || '', marksAwarded: 0 };
-  });
+  const examControls = require('../services/examControls.service');
+  // Answers arrive keyed by the student's DISPLAY order; store them against the original paper.
+  let gradedAnswers;
+  try { gradedAnswers = examControls.toOriginalAnswers(exam, existing, answers); } catch (error) { throw new AppError(error.message, error.statusCode || 422); }
+  // Submitting from a different network/device than the attempt started on is logged.
+  const ip = examControls.clientIp(req);
+  if (existing.startIp && ip && ip !== existing.startIp) examControls.recordEvent(exam, existing, 'ip_changed', `${existing.startIp} -> ${ip}`);
+  const agent = String(req.headers?.['user-agent'] || '').slice(0, 300);
+  if (existing.startUserAgent && agent && agent !== existing.startUserAgent) examControls.recordEvent(exam, existing, 'device_changed');
 
   existing.answers = gradedAnswers;
   existing.score = 0;
@@ -806,6 +825,18 @@ const submitExam = asyncHandler(async (req, res) => {
   }).catch(() => {});
 
   return created(res, submission, 'Exam submitted. Your teacher will review every answer before publishing marks.');
+});
+
+// POST /api/courses/exam-attempts/:attemptId/events — the exam screen reports integrity events
+// (tab switch, copy/paste, fullscreen exit...) while the student's own attempt is in progress.
+const recordExamEvent = asyncHandler(async (req, res) => {
+  const attempt = await ExamSubmission.findOne({ _id: req.params.attemptId, student: req.user._id });
+  if (!attempt) throw new AppError('Exam attempt not found.', 404);
+  if (attempt.status !== 'in_progress') return ok(res, { recorded: false });
+  const exam = await Exam.findById(attempt.exam);
+  try { require('../services/examControls.service').recordEvent(exam, attempt, String(req.body?.type || ''), req.body?.detail); } catch (error) { throw new AppError(error.message, error.statusCode || 422); }
+  await attempt.save();
+  return ok(res, { recorded: true, warnings: attempt.securityEvents.length });
 });
 
 // GET /api/exams/:examId/submissions (teacher)
@@ -826,7 +857,8 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
 
   const { manualMarks, grade } = req.body; // [{ questionIndex, marks }], teacher-selected grade
   if (!Array.isArray(manualMarks)) throw new AppError('manualMarks array is required.', 422);
-  if (manualMarks.length !== submission.exam.questions.length) throw new AppError('Enter marks for every question before completing the review.', 422);
+  // Every question THIS student was given (a random subset may be fewer than the whole paper).
+  if (manualMarks.length !== submission.answers.length) throw new AppError('Enter marks for every question before completing the review.', 422);
   if (!String(grade || '').trim() || String(grade).trim().length > 20) throw new AppError('Select a valid final grade before publishing the result.', 422);
 
   const seen = new Set();
@@ -859,7 +891,7 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
     term: submission.exam.term || '',
     subject: submission.exam.subject || course.subject || course.title,
     marksObtained: submission.score,
-    totalMarks: submission.exam.toObject().totalMarks,
+    totalMarks: require('../services/examControls.service').attemptTotalMarks(submission.exam, submission),
     grade: String(grade).trim(),
     recordedBy: req.user._id
   }, { upsert: true, new: true, runValidators: true });
@@ -882,5 +914,5 @@ module.exports = {
   createAssignment, listAssignments, deleteAssignment,
   submitAssignment, listSubmissions, gradeSubmission, requestAssignmentResubmission,
   recordResult, listCourseResults,
-  createExam, listExams, publishExam, startExam, listMyExamAttempts, submitExam, listExamSubmissions, gradeExamSubmission
+  createExam, listExams, publishExam, startExam, listMyExamAttempts, submitExam, listExamSubmissions, gradeExamSubmission, recordExamEvent
 };

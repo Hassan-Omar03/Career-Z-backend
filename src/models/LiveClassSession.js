@@ -14,6 +14,14 @@ const liveClassSessionSchema = new mongoose.Schema({
   classroomPolicy:{chatAllowed:{type:Boolean,default:true},microphoneAllowed:{type:Boolean,default:true},cameraRequired:{type:Boolean,default:false},screenShareAllowed:{type:Boolean,default:false},fileSharingAllowed:{type:Boolean,default:true}},
   recordingUrl: String,
   recording: {type:Boolean,default:false},
+  // Snapshot of the institution's consent rule when recording was switched on, and each
+  // student's answer (true = agreed, false = declined).
+  recordingConsentRequired: {type:Boolean,default:false},
+  // One lifecycle with Advanced Class Control: whether class control started this session, and
+  // the engagement summary it recorded (Class Energy Meter / attentiveness / poll).
+  startedByClassControl: {type:Boolean,default:false},
+  engagement: {averageEnergy:{type:Number,default:null},attentiveCount:{type:Number,default:0},participantCount:{type:Number,default:0},record:{type:mongoose.Schema.Types.ObjectId,ref:'ClassEngagementRecord',default:null}},
+  recordingConsents: [{student:{type:mongoose.Schema.Types.ObjectId,ref:'User'},consent:Boolean,at:{type:Date,default:Date.now},_id:false}],
   breakoutGroups: [{name:String,students:[{type:mongoose.Schema.Types.ObjectId,ref:'User'}]}],
   board: [{type:mongoose.Schema.Types.Mixed}],
   sharedFiles: [{name:String,url:String}],

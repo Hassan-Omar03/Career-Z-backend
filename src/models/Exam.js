@@ -29,6 +29,11 @@ const examSchema = new mongoose.Schema(
     venue: { type: String, default: '' }, // physical exam center, or an online link
     instructions: { type: String, default: '' }, // preparation notes shown to students/parents
     questions: [questionSchema],
+    // Exam security / anti-cheating controls (applied per attempt by startExam).
+    shuffleQuestions: { type: Boolean, default: false },
+    shuffleOptions: { type: Boolean, default: false },
+    questionsPerAttempt: { type: Number, default: 0, min: 0 }, // 0 = every question; N = random N per student
+    flagThreshold: { type: Number, default: 3, min: 1 }, // integrity events before an attempt is flagged
     published: { type: Boolean, default: false }
   },
   { timestamps: true }

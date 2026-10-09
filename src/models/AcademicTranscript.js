@@ -6,7 +6,8 @@ const rowSchema = new mongoose.Schema({
   subject: { type: String, required: true }, term: { type: String, default: '' },
   academicSession: { type: String, default: '' }, creditHours: { type: Number, required: true },
   marksObtained: { type: Number, required: true }, totalMarks: { type: Number, required: true },
-  percentage: { type: Number, required: true }, grade: { type: String, required: true }, gradePoints: { type: Number, required: true }
+  percentage: { type: Number, required: true }, grade: { type: String, required: true }, gradePoints: { type: Number, required: true },
+  passed: { type: Boolean, default: null }
 }, { _id: false });
 
 const schema = new mongoose.Schema({
@@ -15,6 +16,7 @@ const schema = new mongoose.Schema({
   programName: { type: String, default: '' }, rollNumber: { type: String, default: '' },
   rows: [rowSchema], semesterSummaries: [{ academicSession: { type: String, default: '' }, term: String, credits: Number, gpa: Number }],
   totalCredits: { type: Number, required: true }, cgpa: { type: Number, required: true },
+  gpaScaleMax: { type: Number, default: 4 }, // the institution's GPA scale when this was issued
   status: { type: String, enum: ['active', 'revoked'], default: 'active' },
   issueDate: { type: Date, default: Date.now },
   verifyCode: { type: String, required: true, unique: true, default: () => crypto.randomBytes(10).toString('hex') },

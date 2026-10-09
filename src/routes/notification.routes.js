@@ -5,6 +5,9 @@ const { requireRole } = require('../middleware/rbac');
 
 router.use(protect);
 
+router.get('/push/public-key', ctrl.getPushPublicKey);
+router.post('/push/subscriptions', ctrl.savePushSubscription);
+router.delete('/push/subscriptions', ctrl.deletePushSubscription);
 router.get('/mine', ctrl.listMine);
 router.get('/mine/unread-count', ctrl.getUnreadCount);
 router.patch('/mine/read-all', ctrl.markAllRead);
