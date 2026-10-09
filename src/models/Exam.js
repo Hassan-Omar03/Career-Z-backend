@@ -42,4 +42,7 @@ examSchema.virtual('totalMarks').get(function () {
 examSchema.set('toJSON', { virtuals: true });
 examSchema.set('toObject', { virtuals: true });
 
+examSchema.post('save',async function(){await require('../services/learningBackup.service').capture(this.course,this.$session()||null);});
+examSchema.pre('deleteOne',{document:true,query:false},async function(){await require('../services/learningBackup.service').capture(this.course,this.$session()||null);});
+examSchema.pre('findOneAndDelete',async function(){const item=await this.model.findOne(this.getFilter()).lean();if(item)await require('../services/learningBackup.service').capture(item.course,this.getOptions().session||null);});
 module.exports = mongoose.model('Exam', examSchema);

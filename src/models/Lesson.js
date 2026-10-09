@@ -4,7 +4,15 @@ const lessonSchema = new mongoose.Schema(
   {
     course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
     title: { type: String, required: true },
+    assignments: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Assignment' }],
+    exams: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Exam' }],
+    module: { type: mongoose.Schema.Types.ObjectId, ref: 'LearningUnit', default: null },
+    chapter: { type: mongoose.Schema.Types.ObjectId, ref: 'LearningUnit', default: null },
     content: { type: String, default: '' }, // text/notes
+    videoDownloadAllowed: {type:Boolean,default:true},
+    videoSources: [{label:String,url:String}],
+    captions: [{language:String,label:String,url:String}],
+    videoChapters: [{title:String,seconds:{type:Number,min:0}}],
     videoUrl: { type: String, default: null }, // external provider link (client-configured)
     resources: [{ name: String, url: String }],
     kind: { type: String, enum: ['lesson', 'slide_deck'], default: 'lesson', index: true },
@@ -25,4 +33,6 @@ const lessonSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+lessonSchema.pre('validate',function(){for(const url of [this.videoUrl,...this.resources.map(r=>r.url),...this.videoSources.map(r=>r.url),...this.captions.map(r=>r.url)]){if(url&&!/^https?:\/\//i.test(url))this.invalidate('resources','Lesson files require HTTP/HTTPS links.');}});
+require('../utils/contentVersioning')(lessonSchema,'lesson');
 module.exports = mongoose.model('Lesson', lessonSchema);

@@ -21,7 +21,8 @@ const helpDeskTicketSchema = new mongoose.Schema(
     priority: { type: String, enum: ['low', 'medium', 'high', 'urgent'], default: 'medium' },
     assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     resolutionNotes: { type: String, default: '' },
-    resolvedAt: { type: Date, default: null }
+    resolvedAt: { type: Date, default: null },
+    history: [{ actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, action: String, notes: String, status: String, assignedTo: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, at: { type: Date, default: Date.now } }]
   },
   { timestamps: true }
 );

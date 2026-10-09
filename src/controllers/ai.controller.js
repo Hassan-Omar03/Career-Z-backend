@@ -27,6 +27,15 @@ async function getEnabledProviders(purpose) {
 }
 
 const FEATURE_PROMPTS = {
+  student_study_plan: 'Create a realistic study plan from the supplied subjects, available time and goals. Do not claim access to records not provided.',
+  student_homework: 'Guide the student through the homework step by step with explanation and examples.',
+  student_revision: 'Create concise revision notes and a short self-check from the supplied topic.',
+  student_practice: 'Generate practice questions with explanations and answers separately for the specified subject and level.',
+  student_mock_test: 'Create a mock test with marks, timing guidance and a separate answer key for the supplied topic. Do not claim this is an official exam.',
+  student_skills: 'Recommend practical skills and a learning sequence from the supplied interests and goals.',
+  teacher_assignment: 'Draft an assignment with objectives, tasks, marks and assessment criteria for the supplied topic and level.',
+  teacher_paper: 'Draft a question paper with marks and a separate answer key matching the supplied topic, level and duration.',
+  teacher_rubric: 'Create an assessment rubric with measurable criteria, performance levels and marks.',
   teacher_notes: 'You are a teaching assistant. Given a topic, write clear, well-structured class notes with headings and bullet points suitable for students. Keep it concise and accurate.',
   teacher_quiz: 'You are a teaching assistant. Given a topic, generate 5 multiple-choice quiz questions with 4 options each and mark the correct answer. Format clearly.',
   teacher_lesson_plan: 'You are a teaching assistant. Given a topic and grade level, write a structured lesson plan: objectives, materials, activities (with rough timing), and an assessment idea.',

@@ -9,6 +9,7 @@ const institutionEmployerPartnershipSchema = new mongoose.Schema(
     employer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     message: { type: String, default: '' },
+    requestedSide: { type: String, enum: ['institution', 'employer'] },
     status: { type: String, enum: ['requested', 'active', 'declined', 'ended'], default: 'requested' },
     respondedAt: { type: Date, default: null }
   },

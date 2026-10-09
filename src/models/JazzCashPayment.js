@@ -21,6 +21,8 @@ const jazzCashPaymentSchema = new mongoose.Schema({
   responseCode: { type: String, default: '' },
   responseMessage: { type: String, default: '' },
   retrievalReferenceNo: { type: String, default: '' },
+  // JazzCash's last browser-return payload, minus its secure hash — for diagnosing failures.
+  gatewayReply: { type: mongoose.Schema.Types.Mixed, default: null },
   paidAt: { type: Date, default: null }
 }, { timestamps: true });
 

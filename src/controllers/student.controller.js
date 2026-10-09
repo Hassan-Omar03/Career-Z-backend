@@ -996,7 +996,7 @@ const getMyHealthRecord = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  getMyHealthRecord,
+  getMyHealthRecord: require('./health.controller').mine,
   getMyProfile,
   updateMyProfile,
   connectToInstitution,

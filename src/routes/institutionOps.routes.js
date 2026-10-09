@@ -1,14 +1,26 @@
 const router = require('express').Router();
 const ctrl = require('../controllers/institutionOps.controller');
+const community = require('../controllers/eventsHelpdesk.controller');
 const { protect } = require('../middleware/auth');
 
 // Genuinely public — a prospective student should be able to see an institution's upcoming
 // events (Sports Day, Open House, Convocation, etc.) without logging in first, since the whole
 // point of publishing them is to attract people who aren't students yet (spec 15D.17). Must be
 // registered BEFORE router.use(protect) below, or it would silently require login anyway.
-router.get('/:id/events/public', ctrl.listPublicEvents);
+router.get('/:id/events/public', community.publicEvents);
 
 router.use(protect);
+const inventory = require('../controllers/inventory.controller');
+const health = require('../controllers/health.controller');
+router.get('/health/teacher', health.teacher);
+router.get('/:id/health-students', health.members);
+router.patch('/health-incidents/:incidentId', health.followUp);
+router.get('/inventory/mine', inventory.mine);
+router.get('/:id/inventory-recipients', inventory.recipients);
+router.get('/:id/inventory-loans', inventory.loans);
+router.post('/inventory/:itemId/request', inventory.request);
+router.post('/inventory/:itemId/issue', inventory.issue);
+router.patch('/inventory-loans/:loanId', inventory.action);
 
 // Library
 router.get('/:id/books', ctrl.listBooks);
@@ -54,30 +66,32 @@ router.get('/vehicles/:vehicleId/maintenance-logs', ctrl.listMaintenanceLogs);
 router.post('/vehicles/:vehicleId/maintenance-logs', ctrl.createMaintenanceLog);
 
 // Inventory
-router.get('/:id/inventory', ctrl.listInventory);
-router.post('/:id/inventory', ctrl.createInventoryItem);
-router.patch('/inventory/:itemId', ctrl.updateInventoryItem);
-router.delete('/inventory/:itemId', ctrl.deleteInventoryItem);
+router.get('/:id/inventory', inventory.list);
+router.post('/:id/inventory', inventory.create);
+router.patch('/inventory/:itemId', inventory.update);
+router.delete('/inventory/:itemId', inventory.remove);
 
 // Medical & Health
-router.get('/:id/health-incidents', ctrl.listHealthIncidents);
-router.post('/:id/health-incidents', ctrl.createHealthIncident);
-router.get('/students/:userId/health', ctrl.getStudentHealthRecord);
-router.patch('/students/:userId/health', ctrl.updateStudentHealthRecord);
+router.get('/:id/health-incidents', health.list);
+router.post('/:id/health-incidents', health.create);
+router.get('/students/:userId/health', health.record);
+router.patch('/students/:userId/health', health.update);
 
+router.get('/community/institutions', community.institutions);
+router.get('/:id/ticket-recipients', community.recipients);
 // Events & Activities
 router.get('/mine/events', ctrl.getMyInstitutionEvents);
-router.get('/:id/events', ctrl.listEvents);
-router.post('/:id/events', ctrl.createEvent);
-router.patch('/events/:eventId', ctrl.updateEvent);
-router.delete('/events/:eventId', ctrl.deleteEvent);
-router.post('/events/:eventId/rsvp', ctrl.rsvpEvent);
-router.delete('/events/:eventId/rsvp', ctrl.cancelRsvp);
+router.get('/:id/events', community.listEvents);
+router.post('/:id/events', community.createEvent);
+router.patch('/events/:eventId', community.updateEvent);
+router.delete('/events/:eventId', community.deleteEvent);
+router.post('/events/:eventId/rsvp', community.rsvp);
+router.delete('/events/:eventId/rsvp', community.cancelRsvp);
 
 // Help Desk
-router.get('/:id/tickets', ctrl.listTickets);
-router.get('/tickets/mine', ctrl.myTickets);
-router.post('/:id/tickets', ctrl.createTicket);
-router.patch('/tickets/:ticketId', ctrl.updateTicket);
+router.get('/:id/tickets', community.tickets);
+router.get('/tickets/mine', community.myTickets);
+router.post('/:id/tickets', community.createTicket);
+router.patch('/tickets/:ticketId', community.updateTicket);
 
 module.exports = router;

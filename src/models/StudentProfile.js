@@ -26,7 +26,8 @@ const studentProfileSchema = new mongoose.Schema(
     },
     // Health Record (spec Part 11.13) — optional, parent-managed, visible only to the parent
     // and authorized institution staff (never public, never shown to other students/parents).
-    bloodGroup: { type: String, default: '' },
+    bloodGroup: { type: String, enum: ['', 'A+', 'A-', 'B+', 'B-', 'AB+', 'AB-', 'O+', 'O-'], default: '' },
+    healthChanges: [{ actor: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, fields: [String], at: { type: Date, default: Date.now } }],
     allergies: [{ type: String }],
     medicalNotes: { type: String, default: '' },
     vaccinations: [

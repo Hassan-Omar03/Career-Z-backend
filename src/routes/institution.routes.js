@@ -92,7 +92,7 @@ router.get('/:id/payroll-tax-report', ctrl.getPayrollTaxReport);
 router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);
 
 router.get('/:id/reports', ctrl.getInstitutionReports);
-router.post('/:id/ai-insights', ctrl.getAiInsights);
+router.post('/:id/ai-insights', require('../controllers/aiOperations.controller').insights);
 router.get('/:id/exams', ctrl.listInstitutionExams);
 
 module.exports = router;

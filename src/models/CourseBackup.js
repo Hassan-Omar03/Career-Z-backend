@@ -1,0 +1,1 @@
+const mongoose=require('mongoose');const schema=new mongoose.Schema({course:{type:mongoose.Schema.Types.ObjectId,ref:'Course',required:true,index:true},snapshot:{type:mongoose.Schema.Types.Mixed,required:true}},{timestamps:true});module.exports=mongoose.model('CourseBackup',schema);

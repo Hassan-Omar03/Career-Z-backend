@@ -12,6 +12,7 @@ const placementReferralSchema = new mongoose.Schema(
     referredBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     application: { type: mongoose.Schema.Types.ObjectId, ref: 'JobApplication', default: null },
     status: { type: String, enum: ['referred', 'applied', 'hired', 'declined'], default: 'referred' },
+    declinedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     studentRespondedAt: { type: Date, default: null }
   },
   { timestamps: true }

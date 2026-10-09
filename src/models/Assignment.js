@@ -18,4 +18,7 @@ const assignmentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+assignmentSchema.post('save',async function(){await require('../services/learningBackup.service').capture(this.course,this.$session()||null);});
+assignmentSchema.pre('deleteOne',{document:true,query:false},async function(){await require('../services/learningBackup.service').capture(this.course,this.$session()||null);});
+assignmentSchema.pre('findOneAndDelete',async function(){const item=await this.model.findOne(this.getFilter()).lean();if(item)await require('../services/learningBackup.service').capture(item.course,this.getOptions().session||null);});
 module.exports = mongoose.model('Assignment', assignmentSchema);

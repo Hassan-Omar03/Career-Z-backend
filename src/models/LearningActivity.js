@@ -1,0 +1,2 @@
+
+const mongoose=require('mongoose');module.exports=mongoose.model('LearningActivity',new mongoose.Schema({course:{type:mongoose.Schema.Types.ObjectId,ref:'Course',required:true,index:true},lesson:{type:mongoose.Schema.Types.ObjectId,ref:'Lesson',required:true},type:{type:String,enum:['quiz','flashcards','sorting','coding','simulation','virtual_lab','game'],required:true},title:{type:String,required:true},content:{type:mongoose.Schema.Types.Mixed,required:true},published:{type:Boolean,default:true},revision:{type:Number,default:1}},{timestamps:true}));

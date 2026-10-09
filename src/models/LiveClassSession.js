@@ -9,6 +9,15 @@ const participantSchema = new mongoose.Schema({
 }, { _id: false });
 
 const liveClassSessionSchema = new mongoose.Schema({
+  mode: { type: String, enum: ['online','physical','hybrid'], default: 'online' },
+  physicalAttendance: [{ student: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, status: { type: String, enum: ['present','late','absent','excused'] } }],
+  classroomPolicy:{chatAllowed:{type:Boolean,default:true},microphoneAllowed:{type:Boolean,default:true},cameraRequired:{type:Boolean,default:false},screenShareAllowed:{type:Boolean,default:false},fileSharingAllowed:{type:Boolean,default:true}},
+  recordingUrl: String,
+  recording: {type:Boolean,default:false},
+  breakoutGroups: [{name:String,students:[{type:mongoose.Schema.Types.ObjectId,ref:'User'}]}],
+  board: [{type:mongoose.Schema.Types.Mixed}],
+  sharedFiles: [{name:String,url:String}],
+  classroomQuiz: {type:mongoose.Schema.Types.Mixed},
   institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
   course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
   classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', required: true },

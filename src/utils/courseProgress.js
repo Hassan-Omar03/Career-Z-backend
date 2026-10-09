@@ -80,7 +80,7 @@ async function recalculateEnrollmentProgress(studentId, courseId) {
     Course.findById(courseId),
     Enrollment.findOne({ student: studentId, course: courseId })
   ]);
-  if (!course || !enrollment) return null;
+  if (!course || !enrollment || enrollment.status === 'dropped') return null;
 
   const components = await computeComponents(studentId, courseId);
   const weights = { ...DEFAULT_WEIGHTS, ...(course.completionRules?.weights || {}) };
@@ -94,7 +94,7 @@ async function recalculateEnrollmentProgress(studentId, courseId) {
     feeBlocked = Boolean(await getBlockingInstitutionFee(studentId, course.institution));
   }
 
-  const meetsAllRequirements = overallScore >= 100 && attendanceGateOk && !feeBlocked;
+  const meetsAllRequirements = !(course.approvalWorkflow === 'staged' && !course.published) && overallScore >= 100 && attendanceGateOk && !feeBlocked;
   const previousStatus = enrollment.completionStatus;
 
   enrollment.progressPercent = Math.round(components.lessonsPctRaw);

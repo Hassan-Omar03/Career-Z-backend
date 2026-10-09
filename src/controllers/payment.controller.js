@@ -306,5 +306,6 @@ module.exports = {
   createWalletTopup, syncWalletTopup, createPaddleCourseCheckout, syncPaddleCourseStatus,
   createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus,
   getNowPaymentsConfig, createCryptoWalletTopup, syncCryptoWalletTopup,
-  assertCanPayFee, loadPayableCourse
+  assertCanPayFee, loadPayableCourse,
+  ...require('./stripe.controller')
 };

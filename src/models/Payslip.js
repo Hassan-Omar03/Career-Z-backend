@@ -27,7 +27,7 @@ const payslipSchema = new mongoose.Schema(
     paymentVerifiedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     paymentRejectedAt: { type: Date, default: null },
     paymentRejectionReason: { type: String, default: '' },
-    // Legacy: Stripe Connect transfer state from before Stripe was removed ('stripe_transfer' payslips).
+    // Real Stripe Connect transfer state — only set when paymentMethod is 'stripe_transfer'.
     stripeTransferId: { type: String, default: null },
     stripeTransferStatus: { type: String, enum: ['none', 'sent', 'failed'], default: 'none' },
     stripeTransferError: { type: String, default: '' },

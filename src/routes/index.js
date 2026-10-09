@@ -8,6 +8,7 @@ router.use('/students', require('./student.routes'));
 router.use('/teachers', require('./teacher.routes'));
 router.use('/parents', require('./parent.routes'));
 router.use('/courses', require('./course.routes'));
+router.use('/learning', require('./learning.routes'));
 router.use('/users', require('./user.routes'));
 router.use('/dashboard', require('./dashboard.routes'));
 router.use('/messages', require('./message.routes'));

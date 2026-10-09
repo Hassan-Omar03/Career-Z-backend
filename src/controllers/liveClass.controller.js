@@ -45,7 +45,7 @@ const schedule = asyncHandler(async (req, res) => {
   if (!Number.isFinite(scheduledStart.getTime()) || !Number.isFinite(scheduledEnd.getTime()) || scheduledEnd <= scheduledStart) {
     throw new AppError('Choose a valid start and end time.', 422);
   }
-  const provider = req.body.provider === 'external' ? 'external' : 'careerz_jitsi';
+  const provider = course.studyMode !== 'physical' && req.body.provider === 'external' ? 'external' : 'careerz_jitsi';
   if (provider === 'external' && !/^https:\/\//i.test(req.body.externalMeetingUrl || '')) {
     throw new AppError('A secure external meeting URL is required.', 422);
   }
@@ -55,6 +55,7 @@ const schedule = asyncHandler(async (req, res) => {
     course: course._id,
     classSection: course.classSection,
     teacher: teacherId,
+    mode: ['physical','hybrid'].includes(course.studyMode) ? course.studyMode : 'online',
     timetableEntry: req.body.timetableEntry || null,
     title: String(req.body.title || `${course.title} Live Class`).trim(),
     scheduledStart,
@@ -102,6 +103,7 @@ const start = asyncHandler(async (req, res) => {
 const join = asyncHandler(async (req, res) => {
   const session = await LiveClassSession.findById(req.params.id);
   if (!session || session.status !== 'live') throw new AppError('This live class has not started or has ended.', 409);
+  if (session.mode === 'physical') throw new AppError('Physical classes use on-campus attendance.', 409);
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: session.course, status: { $ne: 'dropped' } });
   if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
   await assertFeeAccessForCapability(req.user._id, session.institution, 'live_classes');
@@ -136,8 +138,10 @@ const end = asyncHandler(async (req, res) => {
   const session = await LiveClassSession.findById(req.params.id);
   if (!session) throw new AppError('Live class not found.', 404);
   if (String(session.teacher) !== String(req.user._id)) throw new AppError('Only the assigned teacher can end this class.', 403);
-  if (session.status !== 'live') throw new AppError('This class is not live.', 409);
-  const endedAt = new Date();
+  if (session.status === 'ended' && await Attendance.exists({liveClassSession:session._id})) return ok(res,session,'Attendance already recorded.');
+  if (!['live','ended'].includes(session.status)) throw new AppError('This class is not live.',409);
+  const wasLive = session.status === 'live';
+  const endedAt = session.endedAt || new Date();
   session.participants.forEach((participant) => {
     if (!participant.leftAt) {
       participant.leftAt = endedAt;
@@ -146,10 +150,13 @@ const end = asyncHandler(async (req, res) => {
   });
   session.status = 'ended';
   session.endedAt = endedAt;
-  await session.save();
+  const claimed = await LiveClassSession.findOneAndUpdate({_id:session._id,status:'live'},{$set:{status:'ended',endedAt,participants:session.participants}},{new:true});
+  if (!claimed && wasLive) throw new AppError('Class already ended.',409);
 
   const enrollments = await Enrollment.find({ course: session.course, status: { $ne: 'dropped' } }).select('student');
   const records = enrollments.map((row) => {
+    const physical = session.physicalAttendance?.find(r=>String(r.student)===String(row.student));
+    if (physical && (!['absent'].includes(physical.status) || !session.participants.some(p=>String(p.student)===String(row.student)))) return {student:row.student,status:physical.status,method:'manual',checkedInAt:endedAt,reason:'Physical attendance marked by assigned teacher.'};
     const participant = session.participants.find((item) => String(item.student) === String(row.student));
     return {
       student: row.student,
@@ -159,10 +166,15 @@ const end = asyncHandler(async (req, res) => {
       reason: participant ? `Joined live class for ${participant.durationMinutes} minute(s).` : 'Did not join the live class.'
     };
   });
-  await Attendance.create({ institution: session.institution, course: session.course, classSection: session.classSection, date: session.startedAt || session.scheduledStart, markedBy: req.user._id, records });
+  await Attendance.findOneAndUpdate({liveClassSession:session._id},{$setOnInsert:{liveClassSession:session._id,institution:session.institution,course:session.course,classSection:session.classSection,date:session.startedAt||session.scheduledStart,markedBy:req.user._id,records}},{upsert:true,new:true,runValidators:true});
+  await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(session.course);
   emitToLiveVideoRoom(session._id, 'live-video:ended', { sessionId: String(session._id), endedAt });
   await notifyCourseStudents(session.course, { title: `Live class ended: ${session.title}`, body: 'Your attendance has been recorded.' }, req.user._id);
   return ok(res, session, 'Live class ended and attendance recorded.');
 });
 
-module.exports = { schedule, institutionList, teacherList, studentList, start, join, leave, end };
+
+const physicalAttendance=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s)throw new AppError('Session not found.',404);if(String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);if(!['physical','hybrid'].includes(s.mode)||s.status!=='live')throw new AppError('Physical/hybrid live session required.',409);if(!Array.isArray(req.body.records)||req.body.records.length>500)throw new AppError('Attendance records required.',422);const ids=await Enrollment.find({course:s.course,status:{$ne:'dropped'}}).distinct('student');const allowed=new Set(ids.map(String));if(req.body.records.some(r=>!allowed.has(String(r.student))||!['present','late','absent','excused'].includes(r.status))||new Set(req.body.records.map(r=>String(r.student))).size!==req.body.records.length)throw new AppError('Valid, unique enrolled students required.',422);s.physicalAttendance=req.body.records;await s.save();return ok(res,s);});
+const roster=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s||String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);const rows=await Enrollment.find({course:s.course,status:{$ne:'dropped'}}).populate('student','fullName');return ok(res,{students:rows.map(e=>e.student),records:s.physicalAttendance,mode:s.mode,status:s.status});});
+const recording=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s||String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);if(!/^https:\/\//.test(req.body.url||''))throw new AppError('Upload recording to HTTPS storage first.',422);s.recordingUrl=req.body.url;await s.save();const Lesson=require('../models/Lesson');if(!await Lesson.exists({course:s.course,videoUrl:s.recordingUrl})){const staged=(await Course.findById(s.course)).approvalWorkflow==='staged';await Lesson.create({course:s.course,title:s.title+' — recording',videoUrl:s.recordingUrl,published:!staged,approvalStatus:staged?'draft':'approved'});await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(s.course);}return ok(res,s);});
+module.exports = { physicalAttendance,roster,recording,schedule, institutionList, teacherList, studentList, start, join, leave, end };

@@ -1,8 +1,11 @@
 const router = require('express').Router();
-const ctrl = require('../controllers/institutionEmployer.controller');
+const ctrl = require('../controllers/placement.controller');
 const { protect } = require('../middleware/auth');
 
 router.use(protect);
+router.get('/institutions', ctrl.institutions);
+router.patch('/institutions/:id/staff/:userId/permission', ctrl.permission);
+router.get('/institutions/:id/catalogue', ctrl.catalogue);
 
 router.post('/partnerships', ctrl.requestPartnership);
 router.patch('/partnerships/:id/respond', ctrl.respondPartnership);

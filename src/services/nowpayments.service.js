@@ -1,5 +1,5 @@
 // Real NOWPayments REST API — crypto wallet top-ups (USDT TRC20 / BTC / ETH). Same "empty key =
-// not configured" pattern as paddle.service.js. NOWPayments settles a payment
+// not configured" pattern as stripe.service.js/paddle.service.js. NOWPayments settles a payment
 // asynchronously (customer sends crypto, network confirms, IPN webhook fires "finished") — the
 // checkout call below never credits anything itself.
 const crypto = require('crypto');

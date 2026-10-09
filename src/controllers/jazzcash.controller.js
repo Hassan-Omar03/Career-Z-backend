@@ -214,9 +214,20 @@ const handleReturn = asyncHandler(async (req, res) => {
   let payment = null;
   try {
     payment = txnRefNo ? await JazzCashPayment.findOne({ txnRefNo }) : null;
-    if (payment && jazzCash.isJazzCashConfigured() && jazzCash.verifySecureHash(body)
-      && String(body.pp_Amount) === String(payment.amountPaisa)
-      && body.pp_MerchantID === env.jazzCash.merchantId && body.pp_TxnCurrency === 'PKR') {
+    const checks = {
+      paymentFound: Boolean(payment),
+      signatureValid: jazzCash.isJazzCashConfigured() && jazzCash.verifySecureHash(body),
+      amountMatches: Boolean(payment) && String(body.pp_Amount) === String(payment.amountPaisa),
+      merchantMatches: body.pp_MerchantID === env.jazzCash.merchantId,
+      currencyPKR: body.pp_TxnCurrency === 'PKR'
+    };
+    jazzCash.debugLog(`return checks ${txnRefNo} (JazzCash said ${body.pp_ResponseCode || '-'}: ${body.pp_ResponseMessage || '-'})`, checks);
+    if (payment) {
+      // Keep JazzCash's exact reply on the record (hash masked) so a failure can be diagnosed later.
+      const { pp_SecureHash, pp_Password, ...reply } = body;
+      await JazzCashPayment.updateOne({ _id: payment._id }, { $set: { gatewayReply: reply } });
+    }
+    if (Object.values(checks).every(Boolean)) {
       await applyOutcome(txnRefNo, { code: String(body.pp_ResponseCode || ''), message: String(body.pp_ResponseMessage || ''), rrn: String(body.pp_RetreivalReferenceNo || body.pp_RetrievalReferenceNo || '') });
       result = (await JazzCashPayment.findById(payment._id)).status;
     }

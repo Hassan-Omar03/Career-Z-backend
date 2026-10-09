@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const attendanceSchema = new mongoose.Schema(
   {
+    liveClassSession: {type:mongoose.Schema.Types.ObjectId,ref:'LiveClassSession'},
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
@@ -30,4 +31,5 @@ const attendanceSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+attendanceSchema.index({liveClassSession:1},{unique:true,partialFilterExpression:{liveClassSession:{$type:'objectId'}}});
 module.exports = mongoose.model('Attendance', attendanceSchema);

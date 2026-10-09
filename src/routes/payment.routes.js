@@ -4,6 +4,7 @@ const jazzcash = require('../controllers/jazzcash.controller');
 const { protect } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 
+router.get('/stripe/config', ctrl.getStripeConfig);
 router.get('/paddle/config', ctrl.getPaddleConfig);
 router.get('/nowpayments/config', ctrl.getNowPaymentsConfig);
 router.get('/jazzcash/config', jazzcash.getConfig);
@@ -13,6 +14,8 @@ router.post('/jazzcash/ipn', jazzcash.handleIpn);
 
 router.use(protect);
 router.post('/pending/sync', require('express-rate-limit')({ windowMs: 60000, max: 4, standardHeaders: true, legacyHeaders: false }), require('../controllers/paymentRecovery.controller').syncPendingPayments);
+router.post('/stripe/fees/:feeId/checkout', ctrl.createFeeCheckoutSession);
+router.post('/stripe/courses/:courseId/checkout', requirePermission('course:enroll:own'), ctrl.createStripeCourseCheckout);
 router.post('/paddle/fees/:feeId/checkout', ctrl.createPaddleTransaction);
 router.post('/paddle/courses/:courseId/checkout', requirePermission('course:enroll:own'), ctrl.createPaddleCourseCheckout);
 router.get('/paddle/fees/:feeId/sync', ctrl.syncPaddleFeeStatus);

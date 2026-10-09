@@ -130,7 +130,7 @@ const getCourse = asyncHandler(async (req, res) => {
   let canSeeLessons = Boolean(isOwner);
   if (!canSeeLessons && req.user) {
     const enrollment = await Enrollment.findOne({ student: req.user._id, course: course._id });
-    canSeeLessons = Boolean(enrollment);
+    canSeeLessons = Boolean(enrollment && enrollment.status !== 'dropped');
     if (canSeeLessons && course.institution) await assertFeeAccessForCapability(req.user._id, course.institution._id || course.institution, 'materials');
   }
 
@@ -164,6 +164,7 @@ const updateCourse = asyncHandler(async (req, res) => {
     rulesChanged = true;
   }
 
+  if (course.approvalWorkflow === 'staged') { course.published = false; course.approvalStatus = 'draft'; }
   await course.save();
   // Changing the rules can move students in either direction (stricter rules reopen someone who
   // was done under the old ones; looser rules complete someone who was blocked under the old ones).
@@ -182,7 +183,7 @@ const addLesson = asyncHandler(async (req, res) => {
   const { title, content, videoUrl, resources, order } = req.body;
   if (!title) throw new AppError('Lesson title is required.', 422);
 
-  const lesson = await Lesson.create({ course: course._id, title, content, videoUrl, resources, order: order || 0 });
+  const lesson = await Lesson.create({ course: course._id, title, content, videoUrl, resources, order: order || 0, published: course.approvalWorkflow !== 'staged', approvalStatus: course.approvalWorkflow === 'staged' ? 'draft' : 'approved' });
   // A new lesson changes the lesson-progress denominator for every enrolled student — anyone
   // previously at 100%/completed needs to be re-evaluated against the new total.
   await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
@@ -210,7 +211,8 @@ const shareAiResource = asyncHandler(async (req, res) => {
     content: content || '',
     kind: cleanDeck ? 'slide_deck' : 'lesson',
     deck: cleanDeck,
-    published: true,
+    published: course.approvalWorkflow !== 'staged',
+    approvalStatus: course.approvalWorkflow === 'staged' ? 'draft' : 'approved',
     order: (lastLesson?.order || 0) + 1
   });
   await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
@@ -225,6 +227,7 @@ const shareAiResource = asyncHandler(async (req, res) => {
   const enrollments = await Enrollment.find({ course: course._id, status: { $ne: 'dropped' } }).populate('student', 'email fullName');
   const notifiable = [];
   for (const e of enrollments) {
+    if (!lesson.published) continue;
     if (!e.student) continue;
     if (course.institution) {
       const blockingFee = await getBlockingInstitutionFee(e.student._id, course.institution);
@@ -258,6 +261,7 @@ const updateLesson = asyncHandler(async (req, res) => {
     lesson.deck = sanitizeSlideDeck(req.body.deck);
     lesson.kind = 'slide_deck';
   }
+  if (course.approvalWorkflow === 'staged') { lesson.published = false; lesson.approvalStatus = 'draft'; }
   await lesson.save();
   await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   return ok(res, lesson);
@@ -270,6 +274,7 @@ const deleteLesson = asyncHandler(async (req, res) => {
   const course = await Course.findById(lesson.course);
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
+  await require('../services/learningBackup.service').capture(course._id);
   await lesson.deleteOne();
   await Enrollment.updateMany({ course: course._id }, { $pull: { completedLessons: lesson._id } });
   await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
@@ -285,10 +290,11 @@ const completeLesson = asyncHandler(async (req, res) => {
   if (lesson.published === false) throw new AppError('This lesson is not published.', 404);
 
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: lesson.course });
-  if (!enrollment) throw new AppError('You are not enrolled in this course.', 403);
+  if (!enrollment || enrollment.status === 'dropped') throw new AppError('You are not enrolled in this course.', 403);
   const course = await Course.findById(lesson.course);
   await assertFeeAccessForCapability(req.user._id, course?.institution, 'materials');
 
+  if(course.approvalWorkflow==='staged'&&!course.published)throw new AppError('Course is awaiting approval.',409);
   enrollment.completedLessons.addToSet(lesson._id);
   await enrollment.save();
 

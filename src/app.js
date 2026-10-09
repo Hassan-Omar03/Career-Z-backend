@@ -13,7 +13,7 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { maintenanceGate } = require('./middleware/maintenance');
 const { metricsMiddleware } = require('./services/platformMetrics');
 const { emergencyControls } = require('./middleware/emergencyControls');
-const { handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
+const { handleStripeWebhook, handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
 
@@ -26,6 +26,19 @@ app.use(
     credentials: true
   })
 );
+// Stripe webhook signature verification needs the exact raw request bytes, so this route is
+// registered with express.raw() BEFORE the global express.json() below — a JSON-parsed-and-
+// restringified body would never match the signature Stripe sends. Connects the DB itself
+// (the /api-wide connectDB middleware below hasn't run yet at this point in the chain).
+app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res, next) => {
+  try {
+    await connectDB();
+    await handleStripeWebhook(req, res);
+  } catch (err) {
+    next(err);
+  }
+});
+
 // Paddle's HMAC signature is computed over the exact request bytes, so this route is
 // registered with express.raw() BEFORE the global express.json() below. Connects the DB itself
 // (the /api-wide connectDB middleware below hasn't run yet at this point in the chain).

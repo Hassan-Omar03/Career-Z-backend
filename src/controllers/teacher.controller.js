@@ -24,6 +24,8 @@ const { ok } = require('../utils/apiResponse');
 const { notify, notifyParentsOfStudent, notifyMany } = require('../services/notification.service');
 const { getBlockingInstitutionFee, assertInstitutionFeeAccess } = require('../utils/feeAccess');
 const { recalculateEnrollmentProgressForCourse } = require('../utils/courseProgress');
+const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
+const env = require('../config/env');
 
 const DOW_BY_JS_DAY = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
 
@@ -492,6 +494,47 @@ const getStudentTimeline = asyncHandler(async (req, res) => {
   });
 });
 
+// GET /api/teachers/me/payout-status — refreshes payoutsEnabled/detailsSubmitted straight from
+// Stripe (a teacher can finish/redo onboarding outside our app, e.g. re-verifying a bank account).
+const getMyPayoutStatus = asyncHandler(async (req, res) => {
+  const profile = await TeacherProfile.findOne({ user: req.user._id });
+  if (!profile?.payout?.stripeAccountId) return ok(res, { connected: false, payoutsEnabled: false });
+  if (isStripeConfigured()) {
+    try {
+      const account = await getStripeClient().accounts.retrieve(profile.payout.stripeAccountId);
+      profile.payout.payoutsEnabled = Boolean(account.payouts_enabled);
+      profile.payout.detailsSubmitted = Boolean(account.details_submitted);
+      await profile.save();
+    } catch { /* stale/local account id — surface whatever we have on file */ }
+  }
+  return ok(res, { connected: true, payoutsEnabled: profile.payout.payoutsEnabled, detailsSubmitted: profile.payout.detailsSubmitted });
+});
+
+// POST /api/teachers/me/payout-onboarding — creates (if needed) a Stripe Connect Express account
+// for this teacher and returns a Stripe-hosted onboarding link. Bank details are entered directly
+// on Stripe's own page and never touch our server.
+const startPayoutOnboarding = asyncHandler(async (req, res) => {
+  if (!isStripeConfigured()) throw new AppError('Real bank transfer is not available — Stripe is not configured on this platform yet.', 503);
+  const stripe = getStripeClient();
+  let profile = await TeacherProfile.findOne({ user: req.user._id });
+  if (!profile) profile = await TeacherProfile.create({ user: req.user._id });
+
+  if (!profile.payout?.stripeAccountId) {
+    const account = await stripe.accounts.create({ type: 'express', email: req.user.email, capabilities: { transfers: { requested: true } } });
+    profile.payout = { stripeAccountId: account.id, payoutsEnabled: false, detailsSubmitted: false };
+    await profile.save();
+  }
+
+  const base = env.clientUrl.split(',')[0].trim().replace(/\/+$/, '');
+  const link = await stripe.accountLinks.create({
+    account: profile.payout.stripeAccountId,
+    refresh_url: `${base}/dashboard?payoutRefresh=1`,
+    return_url: `${base}/dashboard?payoutComplete=1`,
+    type: 'account_onboarding'
+  });
+  return ok(res, { url: link.url });
+});
+
 // GET /api/teachers/me/engagement-history — real, persisted Class Energy Meter + poll outcomes
 // from this teacher's own past live classes (spec: "historical engagement analytics").
 const getMyEngagementHistory = asyncHandler(async (req, res) => {
@@ -504,5 +547,5 @@ module.exports = {
   createQrSession, getQrSession, setAttendanceLocation,
   listFaceCheckInRequests, reviewFaceCheckInRequest,
   checkInMyAttendance, getMySelfAttendance, getMyPayslips, verifyMyPayslipPayment, getMyDashboard,
-  getStudentTimeline, getMyEngagementHistory
+  getStudentTimeline, getMyPayoutStatus, startPayoutOnboarding, getMyEngagementHistory
 };

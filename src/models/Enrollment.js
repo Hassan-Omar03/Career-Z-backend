@@ -8,6 +8,7 @@ const enrollmentSchema = new mongoose.Schema(
     // Lesson/content progress only — "how much of the material has this student gone through."
     // Deliberately NOT the same thing as course completion (see overallScore/completionStatus):
     // a 1-lesson course would otherwise hit 100% the instant that one lesson is marked done.
+    videoProgress: [{lesson:{type:mongoose.Schema.Types.ObjectId,ref:'Lesson'},seconds:{type:Number,min:0},duration:{type:Number,min:0},updatedAt:Date}],
     progressPercent: { type: Number, default: 0 },
     completedLessons: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Lesson' }],
     // Weighted composite of lessons + graded assignments + graded tests + attendance, per the

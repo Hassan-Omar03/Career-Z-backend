@@ -25,6 +25,11 @@ async function runFeeAutomation() {
 
 function startFeeAutomation() {
   if (timer || process.env.NODE_ENV === 'test') return;
+  // A local server pointed at the shared live database must not run these jobs a second time.
+  if (process.env.DISABLE_FEE_AUTOMATION === 'true') {
+    console.log('[SERVER] Fee, hostel/transport and payroll automation is disabled (DISABLE_FEE_AUTOMATION=true).');
+    return;
+  }
   const intervalMinutes = Math.max(1, Number(process.env.FEE_AUTOMATION_INTERVAL_MINUTES) || 15);
   runFeeAutomation().catch((error) => console.error('[FEE AUTOMATION]', error));
   timer = setInterval(() => runFeeAutomation().catch((error) => console.error('[FEE AUTOMATION]', error)), intervalMinutes * 60 * 1000);

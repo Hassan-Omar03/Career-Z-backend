@@ -13,6 +13,7 @@ router.put('/institutions/:id/config', ctrl.saveInstitutionConfig);
 router.delete('/institutions/:id/config/:purpose', ctrl.removeInstitutionConfig);
 
 router.post('/generate', ctrl.generate);
+router.post('/teaching-insights', require('../controllers/aiOperations.controller').teachingInsights);
 router.post('/image', ctrl.image);
 router.post('/3d-model', ctrl.create3DModel);
 router.get('/3d-model/:taskId', ctrl.get3DModelStatus);

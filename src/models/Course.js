@@ -3,6 +3,12 @@ const mongoose = require('mongoose');
 const courseSchema = new mongoose.Schema(
   {
     title: { type: String, required: true, trim: true },
+    studyMode: { type: String, enum: ['online','physical','hybrid','recorded','self_paced','ai'], default: 'online' },
+    approvalWorkflow: { type: String, enum: ['direct','staged'], default: 'direct' },
+    offlineDownloadAllowed: {type:Boolean,default:true},
+    copyrightNotice: {type:String,default:''},
+    contentLicense: {type:String,enum:['internal','copyright','creative_commons','commercial'],default:'internal'},
+    courseCode: String, duration: String, category: String, tags: [String], coverImage: String,
     description: { type: String, default: '' },
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
@@ -62,4 +68,5 @@ const courseSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+require('../utils/contentVersioning')(courseSchema,'course');
 module.exports = mongoose.model('Course', courseSchema);

@@ -1,0 +1,2 @@
+
+const mongoose=require('mongoose');const schema=new mongoose.Schema({course:{type:mongoose.Schema.Types.ObjectId,ref:'Course',required:true,index:true},type:{type:String,enum:['module','chapter'],required:true},parent:{type:mongoose.Schema.Types.ObjectId,ref:'LearningUnit',default:null},title:{type:String,required:true,trim:true},order:{type:Number,default:0}},{timestamps:true});module.exports=mongoose.model('LearningUnit',schema);

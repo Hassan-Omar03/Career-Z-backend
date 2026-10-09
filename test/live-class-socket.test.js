@@ -193,3 +193,21 @@ test('ending the class invalidates further join and message attempts', async () 
 
   teacherSocket.close(); studentSocket.close(); lateStudentSocket.close();
 });
+
+test('scheduled video classroom connects peers, isolates breakout rooms and rejects signaling after end',async()=>{
+ const Session=require('../src/models/LiveClassSession');await Session.deleteMany({});await Enrollment.create({student:unrelatedStudent._id,course:course._id});
+ const s=await Session.create({institution:course.institution,course:course._id,classSection:new mongoose.Types.ObjectId(),teacher:teacher._id,title:'Breakout session',scheduledStart:new Date(),scheduledEnd:new Date(Date.now()+3600000),roomName:'breakout-socket-test',status:'live',createdBy:teacher._id,breakoutGroups:[{name:'Group A',students:[student._id]},{name:'Group B',students:[unrelatedStudent._id]}]});
+ const teacherSocket=await connect(teacher),studentSocket=await connect(student),otherSocket=await connect(unrelatedStudent);const sessionId=String(s._id);
+ try{
+  const joined=await emitAck(studentSocket,'live-video:join',{sessionId,group:'Group B'});assert.equal(joined.ok,true);assert.equal(joined.group,'Group A');
+  assert.equal((await emitAck(otherSocket,'live-video:join',{sessionId})).group,'Group B');
+  const teacherJoined=await emitAck(teacherSocket,'live-video:join',{sessionId,group:'Group A'});assert.equal(teacherJoined.ok,true);assert.equal(teacherJoined.participants[0].userId,String(student._id));
+  assert.equal((await emitAck(studentSocket,'live-video:signal',{sessionId,targetUserId:String(unrelatedStudent._id),signal:{candidate:'test'}})).ok,false);
+  assert.equal((await emitAck(studentSocket,'live-video:signal',{sessionId,targetUserId:String(teacher._id),signal:{candidate:'test'}})).ok,true);
+  const received=new Promise((resolve,reject)=>{const timer=setTimeout(()=>reject(new Error('chat timeout')),1500);teacherSocket.once('live-video:message',m=>{clearTimeout(timer);resolve(m);});});
+  await emitAck(studentSocket,'live-video:message',{sessionId,text:'Group message'});assert.equal((await received).text,'Group message');
+  await Session.updateOne({_id:s._id},{$set:{'classroomPolicy.chatAllowed':false}});assert.equal((await emitAck(studentSocket,'live-video:message',{sessionId,text:'Blocked'})).ok,false);
+  await Session.updateOne({_id:s._id},{$set:{status:'ended'}});require('../src/realtime/socket').emitToLiveVideoRoom(sessionId,'live-video:ended',{sessionId});
+  assert.equal((await emitAck(studentSocket,'live-video:signal',{sessionId,targetUserId:String(teacher._id),signal:{}})).ok,false);
+ }finally{teacherSocket.close();studentSocket.close();otherSocket.close();}
+});

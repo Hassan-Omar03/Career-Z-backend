@@ -1,0 +1,2 @@
+
+const mongoose=require('mongoose');const schema=new mongoose.Schema({kind:{type:String,enum:['course','lesson'],required:true},item:{type:mongoose.Schema.Types.ObjectId,required:true},revision:{type:Number,required:true},snapshot:{type:mongoose.Schema.Types.Mixed,required:true}},{timestamps:true});schema.index({kind:1,item:1,revision:1},{unique:true});module.exports=mongoose.model('ContentVersion',schema);
