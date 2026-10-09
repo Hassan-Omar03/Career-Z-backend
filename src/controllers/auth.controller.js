@@ -6,6 +6,9 @@ const tokenService = require('../services/token.service');
 const otpService = require('../services/otp.service');
 const LoginAttempt = require('../models/LoginAttempt');
 const BlockedIp = require('../models/BlockedIp');
+const RoleRequest = require('../models/RoleRequest');
+const VerificationHistory = require('../models/VerificationHistory');
+const verificationConfig = require('../config/accountVerification');
 
 // POST /api/auth/register
 const register = asyncHandler(async (req, res) => {
@@ -21,15 +24,26 @@ const register = asyncHandler(async (req, res) => {
   const existing = await User.findOne({ email: email.toLowerCase() });
   if (existing) throw new AppError('An account with this email already exists.', 409);
 
+  // Every new account picks exactly one account type; it stays locked until its documents are
+  // approved by an admin and its mandatory profile is complete (see accountGate.service).
+  const accountType = req.body.accountType || 'student';
+  const role = verificationConfig.roleFor(accountType);
+  if (!role) throw new AppError('Choose a valid account type.', 422);
+  const subtype = String(req.body.subtype || verificationConfig.SUBTYPES[role]?.[0] || '');
+  if (verificationConfig.SUBTYPES[role] && !verificationConfig.SUBTYPES[role].includes(subtype)) throw new AppError('Choose a valid account kind.', 422);
+
   const passwordHash = await User.hashPassword(password);
   const user = await User.create({
     fullName,
     email: email.toLowerCase(),
     phone,
     passwordHash,
+    roles: [role],
     country: country || null,
     language: language || 'en'
   });
+  const request = await RoleRequest.create({ user: user._id, requestedRole: role, subtype, status: 'awaiting_documents' });
+  await VerificationHistory.create({ user: user._id, role, request: request._id, previousStatus: '', newStatus: 'awaiting_documents', remarks: 'Account registered.' });
 
   await otpService.issueOtp(user, 'email_verify');
 

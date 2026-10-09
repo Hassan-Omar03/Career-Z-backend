@@ -13,6 +13,7 @@
     "test": "node --test --test-concurrency=2 test/*.test.js",
     "jazzcash:simulate": "node scripts/jazzcash-simulate.js",
     "seed:mohammad-active": "node src/seed/seedMohammadActive.js",
+    "seed:complete-test-profiles": "node src/seed/completeTestProfiles.js",
     "seed:remove-institution-test-quiz": "node src/seed/removeInstitutionTestQuiz.js"
   },
   "dependencies": {

@@ -2,6 +2,7 @@ const router = require('express').Router();
 const ctrl = require('../controllers/admin.controller');
 const staffCtrl = require('../controllers/staff.controller');
 const backupCtrl = require('../controllers/backup.controller');
+const verificationCtrl = require('../controllers/verificationAdmin.controller');
 const { protect } = require('../middleware/auth');
 const { requireRole, requireDepartment } = require('../middleware/rbac');
 
@@ -25,6 +26,11 @@ router.get('/reports', ctrl.getPlatformReports);
 router.get('/dashboard', ctrl.getDashboard);
 router.get('/world-map', ctrl.getWorldMap);
 router.post('/ai-insights', ctrl.getAiInsights);
+
+// Account verification & approval — admins, or platform_staff in the verification department.
+router.get('/verifications', requireDepartment('verification'), verificationCtrl.list);
+router.get('/verifications/:id', requireDepartment('verification'), verificationCtrl.detail);
+router.post('/verifications/:id/decision', requireDepartment('verification'), verificationCtrl.decision);
 
 // Staff team management — Super Admin only.
 router.get('/staff', requireRole('super_admin'), staffCtrl.listStaff);

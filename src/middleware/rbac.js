@@ -16,7 +16,9 @@ function requirePermission(...permissions) {
 function requireRole(...roles) {
   return (req, res, next) => {
     if (!req.user) throw new AppError('Authentication required.', 401);
-    const ok = req.user.roles.includes('super_admin') || roles.some((r) => req.user.roles.includes(r));
+    // Only roles that are verified and profile-complete count (see middleware/auth applyAccountGate).
+    const held = req.accessibleRoles || req.user.roles;
+    const ok = req.user.roles.includes('super_admin') || roles.some((r) => held.includes(r));
     if (!ok) throw new AppError('This action requires a different role.', 403);
     next();
   };

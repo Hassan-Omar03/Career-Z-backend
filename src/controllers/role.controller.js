@@ -6,6 +6,9 @@ const { ok, created } = require('../utils/apiResponse');
 const { ROLES, APPROVAL_REQUIRED_ROLES } = require('../config/rbac');
 const { emitToUser } = require('../realtime/socket');
 const { notify, notifyAdmins } = require('../services/notification.service');
+const VerificationHistory = require('../models/VerificationHistory');
+const { VERIFIED_ROLES, SUBTYPES } = require('../config/accountVerification');
+const verification = require('../services/accountVerification.service');
 
 // POST /api/roles/request
 // The role (and its dashboard) is granted immediately so the user isn't stuck
@@ -22,6 +25,17 @@ const requestRole = asyncHandler(async (req, res) => {
   }
   if (req.user.roles.includes(requestedRole)) {
     throw new AppError('You already have this role.', 400);
+  }
+
+  // Account types under mandatory verification go through documents → admin approval → profile;
+  // the role is held but grants nothing until then (accountGate.service).
+  if (VERIFIED_ROLES.includes(requestedRole)) {
+    req.user.roles = Array.from(new Set([...req.user.roles, requestedRole]));
+    await req.user.save();
+    const request = await RoleRequest.create({ user: req.user._id, requestedRole, subtype: SUBTYPES[requestedRole]?.[0] || '', status: 'awaiting_documents', notes: notes || '' });
+    await VerificationHistory.create({ user: req.user._id, role: requestedRole, request: request._id, previousStatus: '', newStatus: 'awaiting_documents', remarks: 'Account type added.' });
+    emitToUser(req.user._id, 'dashboard:update', { reason: 'role-request-created' });
+    return created(res, { user: req.user.toSafeJSON(), request }, 'Account type added. Upload the required documents to submit it for verification.');
   }
 
   req.user.roles = Array.from(new Set([...req.user.roles, requestedRole]));
@@ -72,6 +86,9 @@ const submitMyDocuments = asyncHandler(async (req, res) => {
 
   const request = await RoleRequest.findOne({ user: req.user._id, requestedRole: req.params.role }).sort({ createdAt: -1 });
   if (!request) throw new AppError('No verification request found for this role.', 404);
+  // Verified account types upload private files through /api/onboarding and are submitted there,
+  // so a bare list of URLs can't put them back in the approval queue.
+  if (VERIFIED_ROLES.includes(request.requestedRole)) throw new AppError('Upload your documents from the verification page.', 409);
 
   request.documents = documents;
   request.status = 'pending';
@@ -88,7 +105,7 @@ const submitMyDocuments = asyncHandler(async (req, res) => {
 
 // GET /api/roles/pending (admin)
 const pendingRequests = asyncHandler(async (req, res) => {
-  const requests = await RoleRequest.find({ status: { $in: ['pending', 'under_review'] } })
+  const requests = await RoleRequest.find({ status: { $in: ['pending', 'pending_approval', 'under_review'] } })
     .populate('user', 'fullName email roles')
     .sort({ createdAt: 1 });
   return ok(res, requests);
@@ -103,6 +120,10 @@ const reviewRequest = asyncHandler(async (req, res) => {
 
   const request = await RoleRequest.findById(req.params.id);
   if (!request) throw new AppError('Role request not found.', 404);
+  if (VERIFIED_ROLES.includes(request.requestedRole)) {
+    const decided = await verification.decide({ requestId: request._id, admin: req.user, action: decision === 'approved' ? 'approve' : 'reject', reason: reviewNotes, meta: { method: req.method, path: req.originalUrl, ip: req.ip } });
+    return ok(res, decided, `Role request ${decision}.`);
+  }
   if (request.status === 'approved' || request.status === 'rejected') {
     throw new AppError('This request has already been reviewed.', 400);
   }
