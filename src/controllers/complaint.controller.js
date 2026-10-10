@@ -29,7 +29,12 @@ const createComplaint = asyncHandler(async (req, res) => {
     if (!targetUser) throw new AppError('The selected person could not be found.', 404);
   }
 
-  const complaint = await Complaint.create({
+  const ids=req.body.messageIds||[],groupIds=req.body.groupMessageIds||[];
+  if(!Array.isArray(ids)||!Array.isArray(groupIds)||ids.length+groupIds.length>20||[...ids,...groupIds].some(id=>!require('mongoose').isValidObjectId(id)))throw new AppError('Choose up to 20 valid messages as complaint evidence.',422);
+  const evidence=[];
+  if(ids.length){const messages=await require('../models/Message').find({_id:{$in:ids},$or:[{from:req.user._id},{to:req.user._id}]});if(messages.length!==new Set(ids).size)throw new AppError('You can only report messages from your own conversation.',403);for(const m of messages){if(targetType==='user'&&targetId&&![String(m.from),String(m.to)].includes(String(targetId)))throw new AppError('Evidence does not belong to the reported person.',422);evidence.push({messageId:m._id,kind:'direct',from:m.from,to:m.to,text:m.text,attachments:m.attachments,sentAt:m.createdAt});}}
+  if(groupIds.length){const messages=await require('../models/GroupMessage').find({_id:{$in:groupIds}});if(messages.length!==new Set(groupIds).size)throw new AppError('Message evidence not found.',404);for(const m of messages){const group=await require('../models/GroupConversation').findById(m.conversation);if(!group||!await require('../services/guardianGroupAccess.service').eligible(group,req.user._id))throw new AppError('This is not your accessible group conversation.',403);if(targetType==='user'&&targetId&&String(m.from)!==String(targetId))throw new AppError('Evidence does not belong to the reported person.',422);evidence.push({messageId:m._id,kind:'group',from:m.from,conversation:m.conversation,text:m.text,attachments:m.attachments,sentAt:m.createdAt});}}
+  const complaint = await Complaint.create({messageEvidence:evidence,
     submittedBy: req.user._id,
     subject,
     category: category || 'other',

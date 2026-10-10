@@ -56,6 +56,7 @@ async function recordLeave(studentUserId, institutionId, status, reason) {
     }
     await StudentProfile.findOneAndUpdate({ user: studentUserId }, { $set: { primaryInstitution: next ? next.institution : null } });
   }
+  await require('../realtime/socket').revokeStudentObservers(studentUserId,institutionId);
   return membership;
 }
 

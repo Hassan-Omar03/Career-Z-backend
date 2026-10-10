@@ -1,0 +1,1 @@
+const mongoose=require('mongoose');const schema=new mongoose.Schema({currency:{type:String,unique:true,required:true},available:{type:Number,default:0}},{timestamps:true});module.exports=mongoose.model('FamilyPlatformBalance',schema);

@@ -12,6 +12,8 @@ const userSchema = new mongoose.Schema(
     roles: { type: [String], default: DEFAULT_ROLES },
 
     country: { type: String, default: null }, // Country.code
+    city: { type: String, default: null },
+    termsAcceptedAt: { type: Date, default: null }, // Terms & Conditions + Privacy Policy accepted at signup
     language: { type: String, default: 'en' }, // Language.code
     currency: { type: String, default: null }, // Currency.code
 

@@ -5,7 +5,7 @@ const messageSchema = new mongoose.Schema(
     from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     to: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     text: { type: String, required: true },
-    attachments: [{ name: String, url: String, type: String }],
+    attachments: [new mongoose.Schema({name:String,url:String,type:{type:String}},{_id:false})],
     // Delivered = the recipient had an active connection at send time (proxy for "reached a live
     // device"). Read is a separate, stronger signal — the recipient actually opened the thread.
     deliveredAt: { type: Date, default: null },

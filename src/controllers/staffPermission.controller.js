@@ -6,6 +6,8 @@ const { ok } = require('../utils/apiResponse');
 // Staff permissions the owner can grant from Staff Management. AI permissions keep their own
 // dedicated endpoint (ai-permissions), so they are preserved untouched here.
 const GRANTABLE = {
+  'cafeteria:manage':'Manage cafeteria menu, stock and orders',
+  'parents:manage': 'Manage guardian links and permission requests',
   'communication:send': 'Send broadcasts / notifications',
   'fee:manage': 'Manage fees',
   'application:approve': 'Approve admissions',

@@ -1,0 +1,1 @@
+const mongoose=require('mongoose');const schema=new mongoose.Schema({teacher:{type:mongoose.Schema.Types.ObjectId,ref:'User',required:true,unique:true},slots:[{meeting:{type:mongoose.Schema.Types.ObjectId,ref:'ParentTeacherMeeting'},token:String,start:Date,end:Date}]},{timestamps:true});module.exports=mongoose.model('TeacherMeetingCalendar',schema);

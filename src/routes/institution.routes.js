@@ -20,6 +20,8 @@ router.get('/:id/campus-buildings', ctrl.listCampusBuildings);
 router.get('/:id/programs', ctrl.listPrograms);
 
 router.use(protect);
+const familyPolicy=require('../controllers/familyPolicy.controller');router.get('/:id/family/policy',familyPolicy.get);router.put('/:id/family/policy',familyPolicy.save);
+const cafeteria=require('../controllers/cafeteria.controller');router.get('/:id/cafeteria',cafeteria.schoolMenu);router.post('/:id/cafeteria/items',cafeteria.saveItem);router.put('/:id/cafeteria/items/:itemId',cafeteria.saveItem);router.patch('/cafeteria/orders/:orderId',cafeteria.updateOrder);
 
 router.post('/', ctrl.registerInstitution);
 router.get('/mine/list', ctrl.myInstitutions);
@@ -92,6 +94,13 @@ router.patch('/:id/membership-requests/:membershipId', ctrl.reviewMembershipRequ
 router.patch('/students/:profileId/status', ctrl.updateStudentStatus);
 router.get('/:id/attendance', ctrl.listInstitutionAttendance);
 
+const familyCtrl=require('../controllers/family.controller');
+router.get('/:institutionId/family/observation-policy',familyCtrl.observationPolicy);
+router.put('/:institutionId/family/observation-policy',familyCtrl.observationPolicy);
+router.get('/:institutionId/family/consent-requests',familyCtrl.institutionRequests);
+router.post('/:institutionId/family/consent-requests',familyCtrl.requestConsent);
+router.post('/:institutionId/family/observations',familyCtrl.observation);
+router.patch('/family/consent-requests/:id/cancel',familyCtrl.cancelConsent);
 router.get('/:id/parents', ctrl.listInstitutionParents);
 router.patch('/:id/parents/:linkId/verify', ctrl.verifyParentLink);
 router.get('/:id/feedback', ctrl.getInstitutionFeedback);

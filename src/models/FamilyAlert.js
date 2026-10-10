@@ -1,0 +1,1 @@
+const mongoose=require('mongoose');const schema=new mongoose.Schema({key:{type:String,unique:true},student:{type:mongoose.Schema.Types.ObjectId,ref:'User'},kind:String,lockedUntil:Date,delivered:{type:Boolean,default:false}},{timestamps:true});module.exports=mongoose.model('FamilyAlert',schema);

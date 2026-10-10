@@ -52,6 +52,7 @@ const publishedForMyInstitution = asyncHandler(async (req, res) => {
     institutionId = profile?.primaryInstitution;
   }
   if (!institutionId) return ok(res, []);
+  await require('../services/familyAccess.service').assertInstitutionAccess(req.user._id,institutionId);
 
   const list = await Newsletter.find({ institution: institutionId, status: 'published' }).sort({ publishedAt: -1 });
   return ok(res, list);

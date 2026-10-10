@@ -72,7 +72,7 @@ function validValue(field) {
 }
 
 async function register(accountType, subtype, email = `${accountType}-${subtype || 'x'}@verify.test`) {
-  const res = await call('POST', '/auth/register', { body: { fullName: `${accountType} user`, email, password: 'Password123!', accountType, subtype } });
+  const res = await call('POST', '/auth/register', { body: { fullName: `${accountType} user`, email, password: 'Password123!', country: 'Pakistan', city: 'Lahore', acceptedTerms: true, accountType, subtype } });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return { token: res.body.data.accessToken, user: res.body.data.user };
 }
@@ -303,8 +303,17 @@ test('accounts created before mandatory verification are approved automatically 
 });
 
 test('register rejects unknown account types and subtypes; requirements are public', async () => {
-  assert.equal((await call('POST', '/auth/register', { body: { fullName: 'X', email: 'x@verify.test', password: 'Password123!', accountType: 'admin' } })).status, 422);
-  assert.equal((await call('POST', '/auth/register', { body: { fullName: 'X', email: 'y@verify.test', password: 'Password123!', accountType: 'donor', subtype: 'bank' } })).status, 422);
+  const base = { fullName: 'X', email: 'z@verify.test', password: 'Password123!', accountType: 'student', country: 'Pakistan', city: 'Lahore', acceptedTerms: true };
+  assert.equal((await call('POST', '/auth/register', { body: { ...base, city: '' } })).status, 422, 'city required');
+  assert.equal((await call('POST', '/auth/register', { body: { ...base, country: undefined } })).status, 422, 'country required');
+  assert.equal((await call('POST', '/auth/register', { body: { ...base, acceptedTerms: false } })).status, 422, 'terms required');
+  const ok = await call('POST', '/auth/register', { body: base });
+  assert.equal(ok.status, 201);
+  const saved = await User.findOne({ email: 'z@verify.test' });
+  assert.equal(saved.city, 'Lahore');
+  assert.ok(saved.termsAcceptedAt);
+  assert.equal((await call('POST', '/auth/register', { body: { ...base, email: 'x@verify.test', accountType: 'admin' } })).status, 422);
+  assert.equal((await call('POST', '/auth/register', { body: { ...base, email: 'y@verify.test', accountType: 'donor', subtype: 'bank' } })).status, 422);
   const req = await call('GET', '/onboarding/requirements');
   assert.equal(req.status, 200);
   assert.equal(req.body.data.accountTypes.length, 7);

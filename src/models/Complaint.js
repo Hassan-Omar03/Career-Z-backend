@@ -2,6 +2,7 @@ const mongoose = require('mongoose');
 
 const complaintSchema = new mongoose.Schema(
   {
+    messageEvidence:[{messageId:mongoose.Schema.Types.ObjectId,kind:{type:String,enum:['direct','group']},from:{type:mongoose.Schema.Types.ObjectId,ref:'User'},to:{type:mongoose.Schema.Types.ObjectId,ref:'User'},conversation:{type:mongoose.Schema.Types.ObjectId,ref:'GroupConversation'},text:String,attachments: [new mongoose.Schema({name:String,url:String,type:{type:String}},{_id:false})],sentAt:Date}],
     submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     subject: { type: String, required: true, trim: true },
     category: {

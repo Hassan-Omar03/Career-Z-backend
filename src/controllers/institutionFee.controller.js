@@ -196,7 +196,7 @@ const reportManualPayment = asyncHandler(async (req, res) => {
   if (institution) {
     await notify(institution.owner, { title: `Payment reported: ${fee.title}`, body: `${fee.currency} ${payAmount} — awaiting your verification.`, sentBy: req.user._id }).catch(() => {});
   }
-  return ok(res, fee, 'Payment reported — awaiting institution verification.');
+  return ok(res, require('../services/familyAccess.service').safeFee(fee), 'Payment reported — awaiting institution verification.');
 });
 
 // PATCH /api/institution-fees/fees/:feeId/verify-payment  body:{decision:'verify'|'reject', paymentIndex}
@@ -245,6 +245,7 @@ const verifyManualPayment = asyncHandler(async (req, res) => {
     fee.escrowStatus = fee.escrowStatus === 'none' ? 'held' : fee.escrowStatus;
   }
   await fee.save();
+  await require('../services/notification.service').notifyParentsOfStudent(fee.student,{title:'Child fee payment verified',body:fee.currency+' '+pending.amount+' confirmed for '+fee.title,sentBy:req.user._id},{email:true}).catch(()=>{});
   await notify(fee.student, { title: `Payment verified: ${fee.title}`, body: `${fee.currency} ${pending.amount} confirmed. ${fee.status === 'paid' ? 'Fully paid.' : `Remaining: ${fee.currency} ${fee.outstandingAmount}`}`, sentBy: req.user._id }, { email: true }).catch(() => {});
   return ok(res, fee, 'Payment verified.');
 });

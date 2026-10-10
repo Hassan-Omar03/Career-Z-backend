@@ -432,6 +432,7 @@ const createAssignment = asyncHandler(async (req, res) => {
     const enrollments = await Enrollment.find({ course: course._id, status: 'active' }).populate('student', 'email');
     await Promise.all(enrollments.map(async (entry) => {
       if (course.institution && await getBlockingInstitutionFee(entry.student._id, course.institution)) return;
+      await require('../services/notification.service').notifyParentsOfStudent(entry.student._id,{title:'New child '+assignment.type+': '+assignment.title,body:assignment.dueDate?'Due '+new Date(assignment.dueDate).toLocaleString():'No deadline set.',sentBy:req.user._id},{email:true}).catch(()=>{});
       await notify(entry.student._id, { title: `New ${assignment.type}: ${assignment.title}`, body: assignment.dueDate ? `Due ${new Date(assignment.dueDate).toLocaleString()}` : 'No deadline set.', sentBy: req.user._id }, { email: true, toAddress: entry.student.email }).catch(() => {});
     }));
   }

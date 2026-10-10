@@ -6,7 +6,7 @@ const parentChildLinkSchema = new mongoose.Schema(
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     relationship: { type: String, enum: ['father', 'mother', 'guardian', 'sponsor'], default: 'guardian' },
-    status: { type: String, enum: ['pending', 'approved', 'rejected'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'approved', 'rejected', 'revoked'], default: 'pending' },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     approvedAt: { type: Date, default: null },
     // Extra institution-side check on top of student consent — e.g. matches admission records —
@@ -18,7 +18,11 @@ const parentChildLinkSchema = new mongoose.Schema(
     // consents to being linked at all, so they're also the one who can narrow what a specific
     // guardian can do beyond the relationship-type default. A 'sponsor' defaults more restricted
     // (matches the existing GUARDIAN_RELATIONSHIPS rule); father/mother/guardian default to full.
+    institutionVerifications: [{ institution: {type:mongoose.Schema.Types.ObjectId,ref:'Institution'}, verified:Boolean, actor:{type:mongoose.Schema.Types.ObjectId,ref:'User'}, at:Date }],
+    lifecycleHistory:[{action:String,actor:{type:mongoose.Schema.Types.ObjectId,ref:'User'},at:{type:Date,default:Date.now}}],
+    permissionHistory: [{ actor:{type:mongoose.Schema.Types.ObjectId,ref:'User'}, at:Date, changes:mongoose.Schema.Types.Mixed }],
     permissions: {
+      observeClassroom:{type:Boolean,default:true},
       payFees: { type: Boolean, default: true },
       viewHealth: { type: Boolean, default: true },
       giveConsent: { type: Boolean, default: true }

@@ -24,7 +24,7 @@ async function computeReputation(institutionId, parentId) {
   const excludedSet = new Set(excludedIds.map((id) => id.toString()));
 
   const childIds = await ParentChildLink.find({ parent: parentId, status: 'approved' }).distinct('student');
-  const childIdsAtInstitution = await StudentProfile.find({ user: { $in: childIds }, primaryInstitution: institutionId }).distinct('user');
+  const enrolled=new Set(await require('../services/familyAccess.service').students(institutionId));const childIdsAtInstitution=childIds.filter(id=>enrolled.has(String(id)));
 
   // 30% — PTM attendance: completed vs. every PTM that actually reached a real outcome
   // (declined/completed), excluding ones still pending/upcoming (not yet a real signal).
@@ -93,7 +93,7 @@ async function computeReputation(institutionId, parentId) {
 function assertOwnerOrStaff(institution, userId) {
   const isOwner = institution.owner.toString() === userId.toString();
   if (isOwner) return true;
-  return institution.staff.some((s) => s.user.toString() === userId.toString());
+  return institution.staff.some((s) => s.user.toString() === userId.toString()&&(s.permissions||[]).includes('parents:manage'));
 }
 
 // GET /api/parent-reputation/:institutionId/:parentId — visible only to the institution
@@ -115,7 +115,7 @@ const getReputation = asyncHandler(async (req, res) => {
 // children are enrolled at.
 const myReputationSummary = asyncHandler(async (req, res) => {
   const childIds = await ParentChildLink.find({ parent: req.user._id, status: 'approved' }).distinct('student');
-  const institutionIds = await StudentProfile.find({ user: { $in: childIds } }).distinct('primaryInstitution');
+  const institutionIds=[...new Set((await Promise.all(childIds.map(id=>require('../services/familyAccess.service').institutions(id)))).flat())];
   const results = await Promise.all(institutionIds.filter(Boolean).map(async (instId) => {
     const institution = await Institution.findById(instId).select('name');
     return { institution: { _id: instId, name: institution?.name }, ...(await computeReputation(instId, req.user._id)) };
@@ -126,11 +126,19 @@ const myReputationSummary = asyncHandler(async (req, res) => {
 // POST /api/parent-reputation/disputes — parent disputes one specific input.
 const submitDispute = asyncHandler(async (req, res) => {
   const { institutionId, category, referenceId, reason } = req.body;
-  if (!institutionId || !category || !referenceId || !reason?.trim()) {
+  if (!require('mongoose').isValidObjectId(institutionId) || !category || !require('mongoose').isValidObjectId(referenceId) || typeof reason!=='string' || !reason.trim() || reason.length>2000) {
     throw new AppError('institutionId, category, referenceId and reason are required.', 422);
   }
   if (!['ptm', 'consent', 'notifications', 'fees'].includes(category)) throw new AppError('Invalid category.', 422);
 
+  const school=await Institution.findById(institutionId);if(!school)throw new AppError('Institution not found.',404);
+  const children=await ParentChildLink.find({parent:req.user._id,status:'approved'}).distinct('student');
+  let own=false;
+  if(category==='ptm')own=await ParentTeacherMeeting.exists({_id:referenceId,parent:req.user._id,institution:institutionId});
+  if(category==='fees')own=await Fee.exists({_id:referenceId,student:{$in:children},institution:institutionId});
+  if(category==='notifications')own=await Notification.exists({_id:referenceId,user:req.user._id,sentBy:{$in:[school.owner,...school.staff.map(s=>s.user)]}});
+  if(category==='consent'){const row=await ParentChildLink.findOne({_id:referenceId,parent:req.user._id});own=row&&(await require('../services/familyAccess.service').institutions(row.student)).includes(String(institutionId));}
+  if(!own)throw new AppError('You can dispute only your own activity at this institution.',403);
   const dispute = await ReputationDispute.create({ parent: req.user._id, institution: institutionId, category, referenceId, reason: reason.trim() });
   const institution = await Institution.findById(institutionId);
   if (institution) await notify(institution.owner, { title: 'Reputation score dispute submitted', body: reason.trim(), sentBy: req.user._id }).catch(() => {});

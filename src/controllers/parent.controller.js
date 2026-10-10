@@ -1,3 +1,5 @@
+require('../models/FeeSchedule');
+const family=require('../services/familyAccess.service');
 const ParentChildLink = require('../models/ParentChildLink');
 const User = require('../models/User');
 const Attendance = require('../models/Attendance');
@@ -33,25 +35,19 @@ function ageFromDob(dob) {
 }
 
 // POST /api/parents/link-requests - parent requests to link a student by email
-const requestLink = asyncHandler(async (req, res) => {
-  const { studentEmail, relationship } = req.body;
-  if (!studentEmail) throw new AppError('studentEmail is required.', 422);
-
-  const student = await User.findOne({ email: studentEmail.toLowerCase() });
-  if (!student) throw new AppError('No user found with that email.', 404);
-  if (!student.roles.includes('student')) throw new AppError('That account is not a student account.', 400);
-
-  const existing = await ParentChildLink.findOne({ parent: req.user._id, student: student._id });
-  if (existing) throw new AppError('A link request already exists for this student.', 409);
-
-  const link = await ParentChildLink.create({
-    parent: req.user._id,
-    student: student._id,
-    relationship: relationship || 'guardian',
-    requestedBy: req.user._id
-  });
-
-  return created(res, link, 'Link request sent. Awaiting student/institution approval.');
+const requestLink = asyncHandler(async (req,res)=>{
+ const studentSide=Boolean(req.body.parentEmail||req.body.parentMobile);const actorRole=studentSide?'student':'parent';
+ if(!(req.accessibleRoles||req.user.roles).includes(actorRole))throw new AppError('A verified '+actorRole+' role is required.',403);
+ const relationship=req.body.relationship||'guardian';if(!['father','mother','guardian','sponsor'].includes(relationship))throw new AppError('Invalid relationship.',422);
+ let target;if(studentSide){const phone=String(req.body.parentMobile||'').trim();const email=String(req.body.parentEmail||'').trim().toLowerCase();if(!phone&&!email)throw new AppError('Parent email or mobile required.',422);target=await User.findOne(email?{email}:{phone});if(!target&&phone){const Profile=require('../models/UserProfile');const p=await Profile.findOne({'fields.contactNumber':phone,role:'parent'});if(p)target=await User.findById(p.user);}}else target=await User.findOne({email:String(req.body.studentEmail||'').trim().toLowerCase()});
+ if(!target||target.status!=='active'||!target.roles.includes(studentSide?'parent':'student'))throw new AppError('Matching active '+(studentSide?'parent':'student')+' account not found.',404);
+ if(family.same(target,req.user))throw new AppError('You cannot link yourself.',422);
+ const parent=studentSide?target._id:req.user._id,student=studentSide?req.user._id:target._id;
+ let row=await ParentChildLink.findOne({parent,student});if(row&&!['rejected','revoked'].includes(row.status))throw new AppError('A link already exists. Check your connections.',409);
+ if(row){row.status='pending';row.requestedBy=req.user._id;row.relationship=relationship;row.approvedAt=null;row.institutionVerifications=[];row.institutionVerified=false;await row.save();}else row=await ParentChildLink.create({parent,student,requestedBy:req.user._id,relationship,permissions:{payFees:true,viewHealth:relationship!=='sponsor',giveConsent:relationship!=='sponsor',observeClassroom:relationship!=='sponsor'}});
+ row.lifecycleHistory.push({action:'requested',actor:req.user._id,at:new Date()});await row.save();
+ await notify(target._id,{title:'Family connection request',body:req.user.fullName+' requested a '+relationship+' connection.',sentBy:req.user._id},{email:true}).catch(()=>{});
+ return created(res,row,'Connection request sent. The other account must approve.');
 });
 
 // GET /api/parents/children - approved links only
@@ -63,23 +59,25 @@ const myChildren = asyncHandler(async (req, res) => {
   const StudentProfile = require('../models/StudentProfile');
   const profiles = await StudentProfile.find({ user: { $in: links.map((l) => l.student._id) } }).select('user primaryInstitution');
   const institutionByStudent = new Map(profiles.map((p) => [p.user.toString(), p.primaryInstitution]));
-  const withInstitution = links.map((l) => {
+  const withInstitution = await Promise.all(links.map(async (l) => {
     const obj = l.toObject();
-    obj.student.primaryInstitution = institutionByStudent.get(l.student._id.toString()) || null;
+    obj.student.institutions = await Institution.find({_id:{$in:await family.institutions(l.student._id)}}).select('name logo phone email address website');
+    obj.student.primaryInstitution = obj.student.institutions[0]?._id || null;
     return obj;
-  });
+  }));
   return ok(res, withInstitution);
 });
 
 // GET /api/parents/link-requests - all of my requests (any status)
 const myLinkRequests = asyncHandler(async (req, res) => {
-  const links = await ParentChildLink.find({ parent: req.user._id }).populate('student', 'fullName email');
-  return ok(res, links);
+  const links = await ParentChildLink.find({ $or:[{parent:req.user._id},{student:req.user._id}] }).populate('student', 'fullName email profilePhoto').populate('parent','fullName email');
+  const rows=await Promise.all(links.map(async l=>{const row=l.toObject();if(l.status==='approved'&&l.student){const profile=await StudentProfile.findOne({user:l.student._id}).select('dateOfBirth rollNumber program classSection').populate('classSection','name');row.childDetails={age:ageFromDob(profile?.dateOfBirth),rollNumber:profile?.rollNumber,program:profile?.program,className:profile?.classSection?.name,institutions:await Institution.find({_id:{$in:await family.institutions(l.student._id)}}).select('name')};}return row;}));
+  return ok(res, rows);
 });
 
 // GET /api/parents/incoming-requests - requests where the current user is the student being linked
 const incomingRequests = asyncHandler(async (req, res) => {
-  const links = await ParentChildLink.find({ student: req.user._id, status: 'pending' })
+  const links = await ParentChildLink.find({ $or:[{student:req.user._id},{parent:req.user._id}], requestedBy:{$ne:req.user._id}, status:'pending' })
     .populate('parent', 'fullName email');
   return ok(res, links);
 });
@@ -91,12 +89,14 @@ const respondToLink = asyncHandler(async (req, res) => {
 
   const link = await ParentChildLink.findById(req.params.id);
   if (!link) throw new AppError('Link request not found.', 404);
-  if (link.student.toString() !== req.user._id.toString()) {
-    throw new AppError('Only the student can respond to this request.', 403);
+  const recipient=family.same(link.requestedBy,link.parent)?link.student:link.parent;
+  if (!family.same(recipient,req.user._id)) {
+    throw new AppError('Only the invited account can respond to this request.', 403);
   }
   if (link.status !== 'pending') throw new AppError('This request has already been responded to.', 400);
 
   link.status = decision;
+  link.lifecycleHistory.push({action:decision,actor:req.user._id,at:new Date()});
   if (decision === 'approved') {
     link.approvedAt = new Date();
     // A sponsor is a financial supporter, not a legal guardian — defaults reflect that from the
@@ -105,10 +105,12 @@ const respondToLink = asyncHandler(async (req, res) => {
     if (link.relationship === 'sponsor') {
       link.permissions.viewHealth = false;
       link.permissions.giveConsent = false;
+      link.permissions.observeClassroom=false;
     }
   }
   await link.save();
 
+  await notify(link.requestedBy,{title:'Family connection '+decision,sentBy:req.user._id},{email:true}).catch(()=>{});
   return ok(res, link, `Link request ${decision}.`);
 });
 
@@ -121,11 +123,16 @@ const updateLinkPermissions = asyncHandler(async (req, res) => {
   if (link.status !== 'approved') throw new AppError('This link is not approved yet.', 400);
 
   const { payFees, viewHealth, giveConsent } = req.body;
+  for(const key of ['payFees','viewHealth','giveConsent','observeClassroom'])if(req.body[key]!==undefined&&typeof req.body[key]!=='boolean')throw new AppError('Permissions must be boolean.',422);
+  if(link.relationship==='sponsor'&&(viewHealth===true||giveConsent===true||req.body.observeClassroom===true))throw new AppError('Sponsors cannot receive health or consent access.',422);
+  link.permissionHistory.push({actor:req.user._id,at:new Date(),changes:{payFees,viewHealth,giveConsent,observeClassroom:req.body.observeClassroom}});
+  if(req.body.observeClassroom!==undefined)link.permissions.observeClassroom=req.body.observeClassroom;
   if (payFees !== undefined) link.permissions.payFees = Boolean(payFees);
   if (viewHealth !== undefined) link.permissions.viewHealth = Boolean(viewHealth);
   if (giveConsent !== undefined) link.permissions.giveConsent = Boolean(giveConsent);
   await link.save();
 
+  if(req.body.observeClassroom===false)await require('../realtime/socket').revokeGuardianObservers(link.parent,link.student);
   await notify(link.parent, { title: 'Your guardian permissions were updated', sentBy: req.user._id }).catch(() => {});
   return ok(res, link, 'Permissions updated.');
 });
@@ -138,7 +145,9 @@ const unlinkChild = asyncHandler(async (req, res) => {
   const isParty = link.parent.toString() === req.user._id.toString() || link.student.toString() === req.user._id.toString();
   if (!isParty) throw new AppError('You are not part of this connection.', 403);
 
-  await ParentChildLink.deleteOne({ _id: link._id });
+  if(link.status==='revoked')throw new AppError('Connection already removed.',409);
+  link.status='revoked';link.lifecycleHistory.push({action:'revoked',actor:req.user._id,at:new Date()});await link.save();
+  await require('../realtime/socket').revokeGuardianObservers(link.parent,link.student);
   const other = link.parent.toString() === req.user._id.toString() ? link.student : link.parent;
   await notify(other, { title: 'A parent-child connection was removed', sentBy: req.user._id }).catch(() => {});
   return ok(res, null, 'Connection removed.');
@@ -194,7 +203,7 @@ const childFees = asyncHandler(async (req, res) => {
   assertApprovedLink(links, req.params.studentId);
 
   const fees = await Fee.find({ student: req.params.studentId }).populate('institution', 'name').populate('schedule', 'billingFrequency').sort({ createdAt: -1 });
-  return ok(res, fees);
+  return ok(res, fees.map(family.safeFee));
 });
 
 // GET /api/parents/children/:studentId/timetable
@@ -218,8 +227,8 @@ const childHomework = asyncHandler(async (req, res) => {
 
   const courseIds = await Enrollment.find({ student: req.params.studentId, status: { $ne: 'dropped' } }).distinct('course');
   const [assignments, submissions] = await Promise.all([
-    Assignment.find({ course: { $in: courseIds }, published: { $ne: false } }).select('title dueDate maxMarks course type').sort({ dueDate: 1 }),
-    Submission.find({ student: req.params.studentId }).populate('assignment', 'title dueDate maxMarks course type').sort({ createdAt: -1 })
+    Assignment.find({ course: { $in: courseIds }, published: { $ne: false } }).select('title description dueDate maxMarks course type').sort({ dueDate: 1 }),
+    Submission.find({ student: req.params.studentId }).populate('assignment', 'title description dueDate maxMarks course type').sort({ createdAt: -1 })
   ]);
   const byAssignment = new Map(submissions.map((submission) => [String(submission.assignment?._id), submission]));
   const rows = assignments.map((assignment) => byAssignment.get(String(assignment._id)) || { assignment, student: req.params.studentId, status: assignment.dueDate && assignment.dueDate < new Date() ? 'overdue' : 'pending', marksObtained: null, submittedAt: null });
@@ -232,8 +241,8 @@ const childExams = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
-  const courseIds = await Enrollment.find({ student: req.params.studentId }).distinct('course');
-  const exams = await Exam.find({ course: { $in: courseIds }, published: true })
+  const courseIds = await Enrollment.find({ student: req.params.studentId,status:{$ne:'dropped'} }).distinct('course');
+  const exams = await Exam.find({ course: { $in: courseIds }, published: true }).select('title type course institution classSection subject scheduledDate closesAt durationMinutes venue instructions academicSession term')
     .populate('course', 'title subject')
     .sort({ scheduledDate: 1 });
   return ok(res, exams);
@@ -387,7 +396,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
     const myRecord = todayAttendance?.records.find((r) => r.student.toString() === student._id.toString());
 
     // Upcoming exams across every course this child is enrolled in.
-    const courseIds = await Enrollment.find({ student: student._id }).distinct('course');
+    const courseIds = await Enrollment.find({ student: student._id,status:{$ne:'dropped'} }).distinct('course');
     const upcomingExams = await Exam.find({
       course: { $in: courseIds }, published: true, scheduledDate: { $gte: new Date() }
     }).populate('course', 'title subject').sort({ scheduledDate: 1 }).limit(3);
@@ -396,18 +405,18 @@ const getMyDashboard = asyncHandler(async (req, res) => {
     const fees = await Fee.find({ student: student._id }).populate('institution', 'name').sort({ dueDate: 1 });
     const byInstitution = {};
     fees.forEach((f) => {
-      const key = f.institution?._id?.toString() || 'unknown';
+      const key = (f.institution?._id?.toString() || 'unknown')+':'+f.currency;
       if (!byInstitution[key]) {
         byInstitution[key] = { institution: f.institution?.name || 'Unknown institution', currency: f.currency, total: 0, paid: 0, dueDate: null, status: 'paid' };
       }
       const g = byInstitution[key];
-      g.total += f.amount;
-      if (f.status === 'paid') g.paid += f.amount;
+      g.total += ['waived','cancelled','refunded'].includes(f.status)?0:f.amount;
+      g.paid += ['waived','cancelled','refunded'].includes(f.status)?0:(f.status==='paid'?f.amount:(f.paidAmount||0));
       if (f.status !== 'paid' && (!g.dueDate || (f.dueDate && f.dueDate < g.dueDate))) g.dueDate = f.dueDate;
       if (f.status === 'overdue') g.status = 'overdue';
       else if (f.status === 'pending' && g.status !== 'overdue') g.status = 'pending';
     });
-    const feesByInstitution = Object.values(byInstitution).map((g) => ({ ...g, remaining: g.total - g.paid }));
+    const feesByInstitution = Object.values(byInstitution).map((g) => ({ ...g, remaining: Math.max(0,g.total - g.paid) }));
 
     // Latest message with this child's class teacher (the model has no per-child tagging,
     // so we key off the class teacher relationship, which is the parent's real point of contact).
@@ -428,6 +437,8 @@ const getMyDashboard = asyncHandler(async (req, res) => {
       }
     }
 
+    const currentSchools=await Institution.find({_id:{$in:await family.institutions(student._id)}}).select('name logo address phone email website');
+    const currentSchool=currentSchools.find(i=>family.same(i,profile?.primaryInstitution))||currentSchools[0];
     return {
       id: student._id,
       name: student.fullName,
@@ -436,8 +447,9 @@ const getMyDashboard = asyncHandler(async (req, res) => {
       class: profile?.classSection?.name || '',
       program: profile?.program || '',
       currentTerm: profile?.currentTerm || '',
-      school: profile?.primaryInstitution?.name || '',
-      institutionId: profile?.primaryInstitution?._id || null,
+      school: currentSchool?.name || '',
+      institutionId: currentSchool?._id || null,
+      institutions: currentSchools,
       rollNumber: profile?.rollNumber || '',
       classTeacher: profile?.classSection?.classTeacher?.fullName || '',
       todayAttendance: myRecord ? { status: myRecord.status, reason: myRecord.reason || '' } : null,
@@ -463,7 +475,11 @@ const getMyDashboard = asyncHandler(async (req, res) => {
 const getAiAssistantInsights = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
-  const { question } = req.body;
+  const { question,institutionId,dataConsent } = req.body;
+  if(dataConsent!==true)throw new AppError('Consent to share this education summary with the selected AI provider is required.',422);
+  let aiUser=req.user._id,schoolFilter={};
+  if(institutionId){if(!(await family.institutions(req.params.studentId)).includes(String(institutionId)))throw new AppError('Your child is not currently connected to this institution.',403);const policy=await require('../models/InstitutionSettings').findOne({institution:institutionId});if(policy?.family?.parentAiEnabled!==true)throw new AppError('This institution has not authorized parent AI.',403);const key=await require('../models/AiCredential').exists({institution:institutionId,scope:'institution',purpose:'text'});if(!key)throw new AppError('Institution AI provider is not connected.',409);const school=await require('../models/Institution').findById(institutionId);aiUser=school.owner;schoolFilter={institution:institutionId};}
+  if(typeof question!=='string')throw new AppError('Use a text question.',422);
   if (!question || !question.trim()) throw new AppError('question is required.', 422);
   if (question.length > 1000) throw new AppError('Question too long — max 1000 characters.', 422);
 
@@ -471,10 +487,10 @@ const getAiAssistantInsights = asyncHandler(async (req, res) => {
   const profile = await StudentProfile.findOne({ user: req.params.studentId }).populate('primaryInstitution', 'name');
 
   const [attendanceRecords, results, fees, upcomingExams] = await Promise.all([
-    Attendance.find({ 'records.student': req.params.studentId }).sort({ date: -1 }).limit(30).lean(),
-    Result.find({ student: req.params.studentId }).sort({ createdAt: -1 }).limit(10),
-    Fee.find({ student: req.params.studentId }),
-    Exam.find({ course: { $in: await Enrollment.find({ student: req.params.studentId }).distinct('course') }, published: true, scheduledDate: { $gte: new Date() } }).limit(5)
+    Attendance.find({ 'records.student': req.params.studentId,...schoolFilter }).sort({ date: -1 }).limit(30).lean(),
+    Result.find({ student: req.params.studentId,...schoolFilter }).sort({ createdAt: -1 }).limit(10),
+    Fee.find({ student: req.params.studentId,...schoolFilter }),
+    Exam.find({ course: { $in: await Enrollment.find({ student: req.params.studentId,status:{$ne:'dropped'} }).distinct('course') }, ...schoolFilter,published: true, scheduledDate: { $gte: new Date() } }).limit(5)
   ]);
 
   const presentCount = attendanceRecords.filter((a) => a.records.find((r) => r.student.toString() === req.params.studentId)?.status === 'present').length;
@@ -483,7 +499,7 @@ const getAiAssistantInsights = asyncHandler(async (req, res) => {
   const pendingFees = fees.filter((f) => f.status === 'pending').length;
 
   const dataSummary = `Student: ${student?.fullName || 'Unknown'}
-Institution: ${profile?.primaryInstitution?.name || 'Unknown'}
+Institution: ${institutionId?(await require('../models/Institution').findById(institutionId)).name:'All connected education records'}
 Attendance (last ${attendanceRecords.length} sessions): ${attendanceRate === null ? 'no data' : `${attendanceRate}% present`}
 Recent results: ${results.map((r) => `${r.subject || r.term || 'Result'}: ${r.marksObtained}/${r.totalMarks}${r.grade ? ` (${r.grade})` : ''}`).join('; ') || 'none recorded'}
 Fees: ${fees.length} total, ${overdueFees} overdue, ${pendingFees} pending
@@ -493,10 +509,11 @@ Parent's question: ${question.trim()}`;
   const aiService = require('../services/ai.service');
   try {
     const result = await aiService.generate(
-      req.user._id,
+      aiUser,
       'You are a helpful assistant for a parent tracking their child\'s education. Given real, structured data about the child (attendance, results, fees, upcoming exams) and the parent\'s specific question, answer clearly and concretely using only the data given — never invent numbers, grades or dates not provided. If the data doesn\'t answer the question, say so plainly. Keep it to a short, warm, practical response.',
-      dataSummary
+      dataSummary,institutionId||undefined
     );
+    await require('../models/FamilyAiUsage').create({parent:req.user._id,student:req.params.studentId,institution:institutionId||null,success:true,dataConsentAt:new Date()});
     return ok(res, { answer: result, dataSummary });
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);
@@ -514,7 +531,7 @@ const submitInstitutionFeedback = asyncHandler(async (req, res) => {
   const childIds = links.map((l) => l.student);
   if (childIds.length === 0) throw new AppError('You have no linked children.', 403);
 
-  const enrolledHere = await StudentProfile.exists({ user: { $in: childIds }, primaryInstitution: req.params.institutionId });
+  const enrolledHere = (await Promise.all(childIds.map(id=>family.institutions(id)))).flat().includes(req.params.institutionId);
   if (!enrolledHere) throw new AppError('You can only rate an institution one of your linked children is actually enrolled at.', 403);
 
   const InstitutionFeedback = require('../models/InstitutionFeedback');

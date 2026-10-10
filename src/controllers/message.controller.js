@@ -10,17 +10,19 @@ const { ok, created } = require('../utils/apiResponse');
 
 const sendMessage = asyncHandler(async (req, res) => {
   const { to, text, attachments = [] } = req.body;
-  if (!to || !text?.trim()) throw new AppError('to and text are required.', 422);
+  await require('../services/chatSafety.service').validate(text);
+  if (!to || (!text?.trim()&&!Array.isArray(attachments))) throw new AppError('to and text are required.', 422);
   if (to === req.user._id.toString()) throw new AppError('You cannot message yourself.', 422);
   const recipient = await User.findById(to);
   if (!recipient) throw new AppError('Recipient not found.', 404);
   if (!(await canCommunicate(req.user._id, to))) throw new AppError('You can only message an approved student, teacher, parent or institution contact.', 403);
-  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5).map((item) => ({ name: String(item.name || 'Attachment').slice(0, 150), url: String(item.url || ''), type: String(item.type || '').slice(0, 100) })).filter((item) => /^https:\/\//i.test(item.url)) : [];
-  const message = await Message.create({ from: req.user._id, to, text: text.trim(), attachments: safeAttachments, deliveredAt: isUserOnline(to) ? new Date() : null });
+  const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5).map((item) => ({ name: String(item?.name || 'Attachment').slice(0, 150), url: String(item?.url || ''), type: String(item?.type || '').slice(0, 100) })).filter((item) => /^https:\/\//i.test(item.url)) : [];
+  if(!text?.trim()&&!safeAttachments.length)throw new AppError('A message or valid attachment is required.',422);
+  const message = await Message.create({ from: req.user._id, to, text: text?.trim()||'[Attachment]', attachments: safeAttachments, deliveredAt: isUserOnline(to) ? new Date() : null });
   const populated = await Message.findById(message._id).populate('from', 'fullName email roles profilePhoto').populate('to', 'fullName email roles profilePhoto');
   emitToUser(to, 'message:new', populated);
   emitToUser(req.user._id, 'message:new', populated);
-  notify(to, { title: `New message from ${req.user.fullName}`, body: text.trim().slice(0, 140), sentBy: req.user._id }, { email: true }).catch(() => {});
+  // Private chat uses message socket events and unread counts; no routine email/push alert.
   return created(res, populated, 'Message sent.');
 });
 

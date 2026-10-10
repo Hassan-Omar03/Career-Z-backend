@@ -1,4 +1,5 @@
 const router = require('express').Router();
+router.get('/internal/family-automation',require('../utils/asyncHandler')(async(req,res)=>{const secret=process.env.CRON_SECRET,token=String(req.headers.authorization||'');if(!secret||token.length!==('Bearer '+secret).length||!require('crypto').timingSafeEqual(Buffer.from(token),Buffer.from('Bearer '+secret)))throw new (require('../utils/AppError'))('Scheduler authorization required.',401);const result=await require('../services/familyAutomation.service').runFamilyAutomation();return res.json({success:true,data:result});}));
 
 router.use('/auth', require('./auth.routes'));
 router.use('/roles', require('./role.routes'));

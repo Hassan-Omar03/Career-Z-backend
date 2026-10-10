@@ -6,6 +6,7 @@ const mongoose = require('mongoose');
 // TimetableEntry), the teacher confirms/reschedules/declines.
 const parentTeacherMeetingSchema = new mongoose.Schema(
   {
+    bookingKey:{type:String,unique:true,sparse:true},
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -17,7 +18,7 @@ const parentTeacherMeetingSchema = new mongoose.Schema(
     location: { type: String, default: '' },
     meetingLink: { type: String, default: '' },
     notes: { type: String, default: '' },
-    status: { type: String, enum: ['pending', 'confirmed', 'declined', 'completed', 'cancelled'], default: 'pending' },
+    status: { type: String, enum: ['pending', 'confirmed', 'declined', 'completed', 'cancelled', 'expired'], default: 'pending' },
     cancelledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     // Set by the teacher when a confirmed meeting's time passed and the parent never showed —
     // the real, explicit signal behind "parent repeatedly misses PTMs" escalation, not a guess.
@@ -38,7 +39,7 @@ const parentTeacherMeetingSchema = new mongoose.Schema(
       }
     ]
   },
-  { timestamps: true }
+  { timestamps: true, optimisticConcurrency:true }
 );
 
 module.exports = mongoose.model('ParentTeacherMeeting', parentTeacherMeetingSchema);

@@ -33,7 +33,7 @@ async function resolvePaddleAmount(amount, currency) {
 async function assertCanPayFee(fee, user) {
   if (fee.student.toString() === user._id.toString()) return;
   const link = await ParentChildLink.findOne({ parent: user._id, student: fee.student, status: 'approved' });
-  if (!link) throw new AppError('You are not authorized to pay this fee.', 403);
+  if (!link || link.permissions?.payFees === false) throw new AppError('You are not authorized to pay this fee.', 403);
 }
 
 async function loadPayableCourse(courseId, userId) {
@@ -130,7 +130,7 @@ const syncPaddleFeeStatus = asyncHandler(async (req, res) => {
   if (!fee) throw new AppError('Fee record not found.', 404);
   await assertCanPayFee(fee, req.user);
 
-  if (fee.status === 'paid') return ok(res, fee);
+  if (fee.status === 'paid') return ok(res,require('../services/familyAccess.service').safeFee(fee));
   if (!fee.paddleTransactionId) throw new AppError('No Paddle transaction found for this fee yet.', 400);
 
   const transaction = await paddleService.getTransaction(fee.paddleTransactionId);
@@ -140,7 +140,7 @@ const syncPaddleFeeStatus = asyncHandler(async (req, res) => {
   }
 
   const refreshed = await Fee.findById(fee._id);
-  return ok(res, refreshed);
+  return ok(res,require('../services/familyAccess.service').safeFee(refreshed));
 });
 
 // POST /api/payments/paddle/wallet/topup — creates a real Paddle transaction for a wallet

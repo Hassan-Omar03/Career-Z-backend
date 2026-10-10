@@ -1,3 +1,4 @@
+const family=require('../services/familyAccess.service');
 ﻿const Course = require('../models/Course');
 const Enrollment = require('../models/Enrollment');
 const Institution = require('../models/Institution');
@@ -62,6 +63,8 @@ async function canCommunicate(fromId, toId) {
     Course.find({ teacher: toId }).distinct('_id'),
     ParentChildLink.exists({ status: 'approved', $or: [{ parent: fromId, student: toId }, { parent: toId, student: fromId }] })
   ]);
+  if(await family.related(fromId,toId)||await family.related(toId,fromId))return true;
+  if((await family.groupContacts(fromId)).some(c=>idsEqual(c.user,toId)))return true;
   if ([...fromInstitutions].some((id) => toInstitutions.has(id))) return true;
   const directCourse = await Enrollment.exists({ status: { $ne: 'dropped' }, $or: [{ student: toId, course: { $in: fromTaughtIds } }, { student: fromId, course: { $in: toTaughtIds } }] });
   return Boolean(directCourse || parentLink);
@@ -117,6 +120,8 @@ async function communicationContacts(userId) {
   const childLinks = await ParentChildLink.find({ parent: userId, status: 'approved' }).populate('student', 'fullName email roles profilePhoto');
   childLinks.forEach((link) => add(link.student, 'student', 'Linked child'));
 
+  for(const c of [...await family.contacts(userId),...await family.groupContacts(userId)])add(c.user,c.relationship,c.context);
+  for(const id of institutionIds){const ids=await family.students(id);const i=await Institution.findById(id);if(i&&(idsEqual(i.owner,userId)||i.staff.some(s=>idsEqual(s.user,userId)&&s.role!=='teacher'))){const parents=await ParentChildLink.find({student:{$in:ids},status:'approved'}).populate('parent','fullName email roles profilePhoto');parents.forEach(l=>add(l.parent,'parent',i.name));}}
   return [...contactMap.values()].sort((a, b) => String(a.user.fullName).localeCompare(String(b.user.fullName)));
 }
 

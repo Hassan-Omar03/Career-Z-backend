@@ -1,3 +1,4 @@
+const calendar=require('../services/teacherMeetingCalendar.service');
 const ParentTeacherMeeting = require('../models/ParentTeacherMeeting');
 const ParentChildLink = require('../models/ParentChildLink');
 const StudentProfile = require('../models/StudentProfile');
@@ -21,22 +22,7 @@ async function assertApprovedParentOfStudent(parentId, studentId) {
 // Real teachers for a child — derived from the class's actual timetable, same source the
 // student/parent Timetable pages already use. A parent can only request a PTM with one of
 // these, never an arbitrary teacher.
-async function getChildTeachers(studentId) {
-  const profile = await StudentProfile.findOne({ user: studentId });
-  if (!profile || !profile.classSection) return [];
-
-  const entries = await TimetableEntry.find({ classSection: profile.classSection })
-    .populate('teacher', 'fullName profilePhoto');
-
-  const byTeacher = {};
-  entries.forEach((e) => {
-    if (!e.teacher) return;
-    const key = e.teacher._id.toString();
-    if (!byTeacher[key]) byTeacher[key] = { teacher: e.teacher, subjects: new Set(), institution: e.institution };
-    if (e.subject) byTeacher[key].subjects.add(e.subject);
-  });
-  return Object.values(byTeacher).map((t) => ({ teacher: t.teacher, subjects: Array.from(t.subjects), institution: t.institution }));
-}
+async function getChildTeachers(studentId){return require('../services/familyAccess.service').teachers(studentId);}
 
 // Spec: "Automatic escalation — parent baar baar PTM miss/no-respond kare to institution ko
 // automatically flag ho." Fires reactively right when a no-show or a parent-side cancellation is
@@ -83,6 +69,7 @@ const requestMeeting = asyncHandler(async (req, res) => {
   const { studentId, teacherId, requestedDate, mode, notes } = req.body;
   if (!studentId || !teacherId || !requestedDate) throw new AppError('studentId, teacherId and requestedDate are required.', 422);
 
+  if(!Number.isFinite(new Date(requestedDate).getTime())||new Date(requestedDate)<=new Date())throw new AppError('Choose a future meeting time.',422);
   await assertApprovedParentOfStudent(req.user._id, studentId);
 
   const childTeachers = await getChildTeachers(studentId);
@@ -130,12 +117,17 @@ const respondToMeeting = asyncHandler(async (req, res) => {
   if (!['confirmed', 'declined'].includes(decision)) throw new AppError('decision must be confirmed or declined.', 422);
 
   if (decision === 'confirmed') {
+    await assertApprovedParentOfStudent(meeting.parent,meeting.student);
+    if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
     meeting.confirmedDate = confirmedDate ? new Date(confirmedDate) : meeting.requestedDate;
-    if (meeting.mode === 'video') meeting.meetingLink = meetingLink || '';
-    else meeting.location = location || '';
+    if(!Number.isFinite(meeting.confirmedDate.getTime())||meeting.confirmedDate<=new Date())throw new AppError('Choose a future confirmation time.',422);
+    const conflict=await ParentTeacherMeeting.exists({_id:{$ne:meeting._id},teacher:meeting.teacher,status:'confirmed',confirmedDate:{$gt:new Date(meeting.confirmedDate.getTime()-30*60000),$lt:new Date(meeting.confirmedDate.getTime()+30*60000)}});if(conflict)throw new AppError('Teacher already has a meeting near this time.',409);
+    if (meeting.mode === 'video') { if(meetingLink&&!meetingLink.startsWith('https://'))throw new AppError('Use an HTTPS meeting link.',422);meeting.meetingLink=meetingLink||'https://meet.jit.si/careerz-ptm-'+require('crypto').randomBytes(18).toString('hex'); }
+    else {if(!String(location||'').trim())throw new AppError('Physical meeting location required.',422);meeting.location=location.trim();}
   }
   meeting.status = decision;
-  await meeting.save();
+  if(decision==='confirmed')meeting.bookingKey=String(meeting.teacher)+':'+meeting.confirmedDate.toISOString();
+  const token=decision==='confirmed'?await calendar.reserve(meeting):null;try{await meeting.save();}catch(e){if(token)await calendar.release(meeting,token);if(e.code===11000||e.name==='VersionError')throw new AppError('This meeting was booked or updated by another request.',409);throw e;}
 
   await notify(meeting.parent, {
     title: decision === 'confirmed' ? 'Parent-Teacher Meeting confirmed' : 'Parent-Teacher Meeting declined',
@@ -155,8 +147,10 @@ const cancelMeeting = asyncHandler(async (req, res) => {
   if (!['pending', 'confirmed'].includes(meeting.status)) throw new AppError('This meeting can no longer be cancelled.', 400);
 
   meeting.status = 'cancelled';
+  meeting.bookingKey=undefined;
   meeting.cancelledBy = req.user._id;
   await meeting.save();
+  await calendar.release(meeting);
 
   const other = meeting.parent.toString() === req.user._id.toString() ? meeting.teacher : meeting.parent;
   await notify(other, { title: 'Parent-Teacher Meeting cancelled', body: '', sentBy: req.user._id }).catch(() => {});
@@ -174,6 +168,8 @@ const completeMeeting = asyncHandler(async (req, res) => {
   if (!meeting) throw new AppError('Meeting request not found.', 404);
   const isParty = [meeting.parent.toString(), meeting.teacher.toString()].includes(req.user._id.toString());
   if (!isParty) throw new AppError('You are not part of this meeting.', 403);
+  await assertApprovedParentOfStudent(meeting.parent,meeting.student);
+  if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
   if (meeting.status !== 'confirmed') throw new AppError('Only a confirmed meeting can be marked completed.', 400);
 
   meeting.status = 'completed';
@@ -189,6 +185,7 @@ const markNoShow = asyncHandler(async (req, res) => {
   if (meeting.teacher.toString() !== req.user._id.toString()) throw new AppError('Only the teacher can mark a no-show.', 403);
   if (meeting.status !== 'confirmed') throw new AppError('Only a confirmed meeting can be marked as a no-show.', 400);
 
+  if(meeting.confirmedDate&&meeting.confirmedDate>new Date())throw new AppError('A future meeting cannot be marked missed.',422);
   meeting.status = 'completed';
   meeting.noShow = true;
   await meeting.save();
@@ -203,6 +200,8 @@ const updateMinutes = asyncHandler(async (req, res) => {
   if (!meeting) throw new AppError('Meeting request not found.', 404);
   const isParty = [meeting.parent.toString(), meeting.teacher.toString()].includes(req.user._id.toString());
   if (!isParty) throw new AppError('You are not part of this meeting.', 403);
+  await assertApprovedParentOfStudent(meeting.parent,meeting.student);
+  if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
   if (meeting.status !== 'completed') throw new AppError('Minutes can only be added once the meeting is completed.', 400);
 
   meeting.minutes = req.body.minutes || '';
@@ -220,6 +219,8 @@ const addActionItem = asyncHandler(async (req, res) => {
   if (!meeting) throw new AppError('Meeting request not found.', 404);
   const isParty = [meeting.parent.toString(), meeting.teacher.toString()].includes(req.user._id.toString());
   if (!isParty) throw new AppError('You are not part of this meeting.', 403);
+  await assertApprovedParentOfStudent(meeting.parent,meeting.student);
+  if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
   if (meeting.status !== 'completed') throw new AppError('Action items can only be added once the meeting is completed.', 400);
 
   const { text, assignedTo } = req.body;
@@ -239,10 +240,13 @@ const toggleActionItem = asyncHandler(async (req, res) => {
   if (!meeting) throw new AppError('Meeting request not found.', 404);
   const isParty = [meeting.parent.toString(), meeting.teacher.toString()].includes(req.user._id.toString());
   if (!isParty) throw new AppError('You are not part of this meeting.', 403);
+  await assertApprovedParentOfStudent(meeting.parent,meeting.student);
+  if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
 
   const item = meeting.actionItems.id(req.params.itemId);
   if (!item) throw new AppError('Action item not found.', 404);
-  item.done = req.body.done !== false;
+  if(typeof req.body.done!=='boolean')throw new AppError('Task completion must be boolean.',422);
+  item.done = req.body.done;
   await meeting.save();
   return ok(res, meeting, 'Updated.');
 });
@@ -275,13 +279,17 @@ const createRecurringSchedule = asyncHandler(async (req, res) => {
   if (!title?.trim() || !['weekly', 'monthly'].includes(frequency) || !time) {
     throw new AppError('title, frequency (weekly/monthly) and time are required.', 422);
   }
-  if (frequency === 'weekly' && (dayOfWeek === undefined || dayOfWeek < 0 || dayOfWeek > 6)) {
+  if (frequency === 'weekly' && (!Number.isInteger(dayOfWeek) || dayOfWeek < 0 || dayOfWeek > 6)) {
     throw new AppError('dayOfWeek (0-6) is required for a weekly schedule.', 422);
   }
-  if (frequency === 'monthly' && (!dayOfMonth || dayOfMonth < 1 || dayOfMonth > 28)) {
+  if (frequency === 'monthly' && (!Number.isInteger(dayOfMonth) || dayOfMonth < 1 || dayOfMonth > 28)) {
     throw new AppError('dayOfMonth (1-28) is required for a monthly schedule.', 422);
   }
 
+  if(!/^([01]\d|2[0-3]):[0-5]\d$/.test(time))throw new AppError('Use a valid HH:mm meeting time.',422);
+  if(mode==='physical'&&!String(location||'').trim())throw new AppError('Physical meeting location required.',422);
+  if(meetingLink&&!(typeof meetingLink==='string'&&meetingLink.startsWith('https://')))throw new AppError('Use an HTTPS meeting link.',422);
+  if(institutionId){const school=await Institution.findById(institutionId);if(!school||!school.staff.some(s=>String(s.user)===String(req.user._id))&&String(school.owner)!==String(req.user._id))throw new AppError('You are not a teacher at this institution.',403);}
   const schedule = await PtmRecurringSchedule.create({
     teacher: req.user._id, institution: institutionId || null, title: title.trim(),
     frequency, dayOfWeek: frequency === 'weekly' ? dayOfWeek : null, dayOfMonth: frequency === 'monthly' ? dayOfMonth : null,
@@ -301,7 +309,8 @@ const setRecurringScheduleActive = asyncHandler(async (req, res) => {
   const schedule = await PtmRecurringSchedule.findById(req.params.id);
   if (!schedule) throw new AppError('Schedule not found.', 404);
   if (schedule.teacher.toString() !== req.user._id.toString()) throw new AppError('This is not your schedule.', 403);
-  schedule.active = req.body.active !== false;
+  if(typeof req.body.active!=='boolean')throw new AppError('active must be true or false.',422);
+  schedule.active = req.body.active;
   await schedule.save();
   return ok(res, schedule, schedule.active ? 'Schedule activated.' : 'Schedule deactivated.');
 });
@@ -313,7 +322,8 @@ const childRecurringSchedules = asyncHandler(async (req, res) => {
   const childTeachers = await getChildTeachers(req.params.studentId);
   const teacherIds = childTeachers.map((t) => t.teacher._id);
 
-  const schedules = await PtmRecurringSchedule.find({ teacher: { $in: teacherIds }, active: true }).populate('teacher', 'fullName');
+  const schools=await require('../services/familyAccess.service').institutions(req.params.studentId);
+  const schedules = await PtmRecurringSchedule.find({ teacher: { $in: teacherIds }, active: true,$or:[{institution:null},{institution:{$in:schools}}] }).populate('teacher', 'fullName');
   const booked = await ParentTeacherMeeting.find({ recurringSchedule: { $in: schedules.map((s) => s._id) }, status: { $in: ['confirmed', 'completed'] } }).select('recurringSchedule confirmedDate');
 
   return ok(res, schedules.map((s) => {
@@ -340,6 +350,7 @@ const bookRecurringOccurrence = asyncHandler(async (req, res) => {
   const match = childTeachers.find((t) => t.teacher._id.toString() === schedule.teacher.toString());
   if (!match) throw new AppError('That teacher does not teach this student.', 403);
 
+  if(schedule.institution&&!(await require('../services/familyAccess.service').institutions(studentId)).includes(String(schedule.institution)))throw new AppError('This recurring slot belongs to another institution.',403);
   const upcoming = computeUpcomingOccurrences(schedule);
   const target = new Date(occurrenceDate);
   if (!upcoming.some((d) => d.getTime() === target.getTime())) {
@@ -348,14 +359,15 @@ const bookRecurringOccurrence = asyncHandler(async (req, res) => {
   const alreadyBooked = await ParentTeacherMeeting.findOne({ recurringSchedule: schedule._id, confirmedDate: target, status: { $in: ['confirmed', 'completed'] } });
   if (alreadyBooked) throw new AppError('That slot was just booked by someone else.', 409);
 
-  const meeting = await ParentTeacherMeeting.create({
+  let meeting;try{meeting = await ParentTeacherMeeting.create({
     parent: req.user._id, teacher: schedule.teacher, student: studentId,
     institution: schedule.institution || match.institution || null,
     subject: match.subjects[0] || '', requestedDate: target, confirmedDate: target,
-    mode: schedule.mode, meetingLink: schedule.meetingLink, location: schedule.location,
-    status: 'confirmed', recurringSchedule: schedule._id
-  });
+    mode: schedule.mode, meetingLink: schedule.meetingLink || (schedule.mode==='video'?'https://meet.jit.si/careerz-ptm-'+require('crypto').randomBytes(18).toString('hex'):''), location: schedule.location,
+    status: 'pending', recurringSchedule: schedule._id
+  });}catch(e){if(e.code===11000)throw new AppError('That slot was just booked by someone else.',409);throw e;}
 
+  const token=await calendar.reserve(meeting).catch(async e=>{await ParentTeacherMeeting.deleteOne({_id:meeting._id,status:'pending'});throw e;});meeting.status='confirmed';meeting.bookingKey=String(schedule.teacher)+':'+target.toISOString();try{await meeting.save();}catch(e){await calendar.release(meeting,token);await ParentTeacherMeeting.deleteOne({_id:meeting._id,status:'pending'});if(e.code===11000||e.name==='VersionError')throw new AppError('This slot was booked by another request.',409);throw e;}
   await notify(schedule.teacher, { title: `Recurring PTM booked: ${schedule.title}`, body: target.toLocaleString(), sentBy: req.user._id }).catch(() => {});
   return created(res, meeting, 'Booked.');
 });
@@ -364,7 +376,7 @@ const bookRecurringOccurrence = asyncHandler(async (req, res) => {
 
 function assertOwnerOrStaff(institution, userId) {
   if (institution.owner.toString() === userId.toString()) return true;
-  return institution.staff.some((s) => s.user.toString() === userId.toString());
+  return institution.staff.some((s) => s.user.toString() === userId.toString()&&(s.permissions||[]).includes('parents:manage'));
 }
 
 // GET /api/ptm/escalations/:institutionId

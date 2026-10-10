@@ -5,7 +5,7 @@ const groupMessageSchema = new mongoose.Schema(
     conversation: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupConversation', required: true, index: true },
     from: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     text: { type: String, required: true },
-    attachments: [{ name: String, url: String, type: String }]
+    attachments: [new mongoose.Schema({name:String,url:String,type:{type:String}},{_id:false})]
   },
   { timestamps: true }
 );

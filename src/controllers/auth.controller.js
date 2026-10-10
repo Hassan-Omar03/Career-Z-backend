@@ -12,13 +12,19 @@ const verificationConfig = require('../config/accountVerification');
 
 // POST /api/auth/register
 const register = asyncHandler(async (req, res) => {
-  const { fullName, email, password, phone, country, language } = req.body;
+  const { fullName, email, password, phone, country, city, language, acceptedTerms } = req.body;
 
   if (!fullName || !email || !password) {
     throw new AppError('Full name, email and password are required.', 422);
   }
   if (password.length < 8) {
     throw new AppError('Password must be at least 8 characters.', 422);
+  }
+  if (!String(country || '').trim() || !String(city || '').trim()) {
+    throw new AppError('Select your country and city.', 422);
+  }
+  if (acceptedTerms !== true) {
+    throw new AppError('Please accept the Terms & Conditions and the Privacy Policy to continue.', 422);
   }
 
   const existing = await User.findOne({ email: email.toLowerCase() });
@@ -39,7 +45,9 @@ const register = asyncHandler(async (req, res) => {
     phone,
     passwordHash,
     roles: [role],
-    country: country || null,
+    country: String(country).trim().slice(0, 100),
+    city: String(city).trim().slice(0, 100),
+    termsAcceptedAt: new Date(),
     language: language || 'en'
   });
   const request = await RoleRequest.create({ user: user._id, requestedRole: role, subtype, status: 'awaiting_documents' });

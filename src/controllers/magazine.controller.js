@@ -162,6 +162,7 @@ const published = asyncHandler(async (req, res) => {
     institutionId = profile?.primaryInstitution;
   }
   if (!institutionId) return ok(res, []);
+  await require('../services/familyAccess.service').assertInstitutionAccess(req.user._id,institutionId);
 
   const list = await MagazineSubmission.find({ institution: institutionId, status: 'published' })
     .populate('student', 'fullName')

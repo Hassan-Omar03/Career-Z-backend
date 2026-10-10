@@ -132,12 +132,14 @@ function initSocket(httpServer) {
       bySender.forEach((count, senderId) => io.to(`user:${senderId}`).emit('message:delivered', { to: socket.data.userId, at: now, count }));
     })().catch(() => {});
 
-    socket.on('live-video:join', async ({ sessionId, group }  = {}, reply = () => {}) => {
+    socket.on('live-video:join', async ({ sessionId, group, observeStudentId }  = {}, reply = () => {}) => {
       try {
         const session = await LiveClassSession.findById(sessionId).populate('teacher', 'fullName');
         if (!session || session.status !== 'live') throw new Error('This class is not live.');
         const isTeacher = String(session.teacher._id) === socket.data.userId;
-        if (!isTeacher) {
+        const isObserver=!!observeStudentId&&!isTeacher;
+        if(isObserver)await require('../services/guardianObservation.service').authorize(socket.data.userId,session,observeStudentId);
+        if (!isTeacher&&!isObserver) {
           const course = await Course.findById(session.course);
           await authorizeStudent(socket.data.userId, course);
         }
@@ -151,10 +153,10 @@ function initSocket(httpServer) {
         if (previous) socket.to(baseRoom + ':group:' + (previous.group || 'main')).emit('live-video:participant-left', previous);
         for (const joinedRoom of socket.rooms) if (joinedRoom.startsWith(baseRoom + ':group:')) socket.leave(joinedRoom);
         socket.join(baseRoom);
-        if(!isTeacher)await LiveClassSession.updateOne({_id:sessionId,status:'live','participants.student':{$ne:socket.data.userId}},{$push:{participants:{student:socket.data.userId,joinedAt:new Date(),attendanceStatus:'present'}}});
+        if(!isTeacher&&!isObserver)await LiveClassSession.updateOne({_id:sessionId,status:'live','participants.student':{$ne:socket.data.userId}},{$push:{participants:{student:socket.data.userId,joinedAt:new Date(),attendanceStatus:'present'}}});
         const members = videoRoomMembers.get(sessionId) || new Map();
         const existing = Array.from(members.values()).filter(m=>m.group===groupName&&m.userId!==socket.data.userId);
-        const member = { userId: socket.data.userId, name: user?.fullName || (isTeacher ? 'Teacher' : 'Student'), role: isTeacher ? 'teacher' : 'student', group:groupName };
+        const member = { userId: socket.data.userId, name: user?.fullName || (isTeacher ? 'Teacher' : 'Student'), role: isTeacher ? 'teacher' : isObserver?'observer':'student',observedStudentId:isObserver?String(observeStudentId):null,institution:String(session.institution),group:groupName };
         members.set(socket.data.userId, member); videoRoomMembers.set(sessionId, members);
         socket.join(room); socket.data.videoSessionIds.add(sessionId);
         socket.to(room).emit('live-video:participant-joined', member);
@@ -162,17 +164,18 @@ function initSocket(httpServer) {
       } catch (error) { reply({ ok: false, message: error.message }); }
     });
 
-    socket.on('live-video:signal', ({ sessionId, targetUserId, signal } = {}, reply = () => {}) => {
-      const members = videoRoomMembers.get(sessionId);
-      if (!members?.has(socket.data.userId) || !members.has(String(targetUserId)) || members.get(socket.data.userId).group !== members.get(String(targetUserId)).group) return reply({ ok: false, message: 'Classroom signaling rejected.' });
-      io.to(`user:${targetUserId}`).emit('live-video:signal', { sessionId, fromUserId: socket.data.userId, signal });
-      reply({ ok: true });
+    socket.on('live-video:signal',async({sessionId,targetUserId,signal}={},reply=()=>{})=>{
+      try{const members=videoRoomMembers.get(sessionId),sender=members?.get(socket.data.userId),target=members?.get(String(targetUserId));if(!sender||!target||sender.group!==target.group)throw new Error('Classroom signaling rejected.');
+      for(const member of [sender,target])if(member.role==='observer')await require('../services/guardianObservation.service').authorize(member.userId,sessionId,member.observedStudentId);
+      if(sender.role==='observer'&&!require('../services/guardianObservation.service').receiveOnly(signal?.description))throw new Error('Observers may only receive classroom media.');
+      io.to(`user:${targetUserId}`).emit('live-video:signal',{sessionId,fromUserId:socket.data.userId,signal});reply({ok:true});}catch(e){reply({ok:false,message:e.message});}
     });
 
     socket.on('live-video:message', async ({ sessionId, text } = {}, reply = () => {}) => {
       try {
         const members = videoRoomMembers.get(sessionId);
         if (!members?.has(socket.data.userId)) throw new Error('Join the classroom first.');
+        if(members.get(socket.data.userId).role==='observer')throw new Error('Observation is read-only.');
         const session=await LiveClassSession.findById(sessionId);
         if(!session||session.status!=='live')throw new Error('Class ended.');
         if(members.get(socket.data.userId).role!=='teacher'&&session.classroomPolicy?.chatAllowed===false)throw new Error('Teacher disabled student chat.');
@@ -186,14 +189,14 @@ function initSocket(httpServer) {
 
     socket.on('live-video:hand', ({ sessionId, raised } = {}, reply = () => {}) => {
       const members = videoRoomMembers.get(sessionId);
-      if (!members?.has(socket.data.userId)) return reply({ ok: false, message: 'Join the classroom first.' });
+      if (!members?.has(socket.data.userId)||members.get(socket.data.userId).role==='observer') return reply({ ok: false, message: 'Observation is read-only.' });
       const member = members.get(socket.data.userId);
       io.to(`live-video:${sessionId}`).emit('live-video:hand', { ...member, raised: Boolean(raised) }); reply({ ok: true });
     });
 
     socket.on('live-video:energy-report', ({ sessionId, attentive, score } = {}, reply = () => {}) => {
       const members = videoRoomMembers.get(sessionId); const member = members?.get(socket.data.userId);
-      if (!member || member.role === 'teacher') return reply({ ok: false, message: 'Student energy report rejected.' });
+      if (!member || member.role !== 'student') return reply({ ok: false, message: 'Student energy report rejected.' });
       const readings = liveVideoEnergy.get(sessionId) || new Map();
       readings.set(socket.data.userId, { userId: socket.data.userId, name: member.name, attentive: Boolean(attentive), score: Math.max(0, Math.min(100, Number(score) || 0)), at: new Date().toISOString() });
       liveVideoEnergy.set(sessionId, readings);
@@ -216,7 +219,7 @@ function initSocket(httpServer) {
 
     socket.on('live-video:poll-vote', ({ sessionId, optionIndex } = {}, reply = () => {}) => {
       const members = videoRoomMembers.get(sessionId); const poll = liveVideoPolls.get(sessionId);
-      if (!members?.has(socket.data.userId) || !poll || poll.status !== 'open') return reply({ ok: false, message: 'No open poll is available.' });
+      if (!members?.has(socket.data.userId) || members.get(socket.data.userId).role!=='student' || !poll || poll.status !== 'open') return reply({ ok: false, message: 'No open poll is available.' });
       const index = Number(optionIndex); if (!poll.options[index]) return reply({ ok: false, message: 'Invalid poll option.' });
       const previous = poll.voters[socket.data.userId]; if (previous !== undefined) poll.options[previous].votes -= 1;
       poll.voters[socket.data.userId] = index; poll.options[index].votes += 1;
@@ -268,8 +271,8 @@ function initSocket(httpServer) {
     socket.on('group:join', async ({ groupId } = {}, reply = () => {}) => {
       try {
         const GroupConversation = require('../models/GroupConversation');
-        const group = await GroupConversation.findById(groupId).select('participants');
-        if (!group || !group.participants.some((p) => p.toString() === socket.data.userId)) {
+        const group = await GroupConversation.findById(groupId);
+        if (!group || !await require('../services/guardianGroupAccess.service').eligible(group,socket.data.userId)) {
           throw new Error('You are not a member of this group.');
         }
         socket.join(`group:${groupId}`);
@@ -539,8 +542,11 @@ function broadcastStudyGroupPost(groupId, post) {
 }
 
 // Push a freshly-sent group message to every online participant.
-function broadcastGroupMessage(groupId, message) {
-  if (io && groupId) io.to(`group:${groupId}`).emit('group:message', message);
+async function broadcastGroupMessage(groupId,message){
+ if(!io||!groupId)return;const group=await require('../models/GroupConversation').findById(groupId);if(!group)return;
+ for(const user of group.participants){if(!await require('../services/guardianGroupAccess.service').eligible(group,user))continue;
+ if(await require('../models/BlockedUser').exists({$or:[{blocker:user,blocked:message.from._id||message.from},{blocker:message.from._id||message.from,blocked:user}]}))continue;
+ emitToUser(user,'group:message',message);}
 }
 
 // Whether a user currently has at least one open tab connected — used as the "delivered" signal
@@ -551,4 +557,8 @@ function isUserOnline(userId) {
   return Boolean(room && room.size > 0);
 }
 
-module.exports = { initSocket, emitToUser, emitToLiveVideoRoom, broadcastStudyGroupPost, isUserOnline, broadcastGroupMessage };
+async function revokeObservers(predicate){for(const [sessionId,members] of videoRoomMembers){for(const [id,member] of members){if(member.role!=='observer'||!predicate(member))continue;members.delete(id);emitToUser(id,'live-video:ended',{sessionId});if(io){io.to(`live-video:${sessionId}`).emit('live-video:participant-left',member);for(const socket of await io.in(`user:${id}`).fetchSockets()){socket.leave(`live-video:${sessionId}`);socket.leave(`live-video:${sessionId}:group:main`);}}}}}
+async function revokeGuardianObservers(parent,student){await revokeObservers(m=>String(m.userId)===String(parent)&&String(m.observedStudentId)===String(student));}
+async function revokeInstitutionObservers(institution){await revokeObservers(m=>String(m.institution)===String(institution));}
+async function revokeStudentObservers(student,institution){await revokeObservers(m=>String(m.observedStudentId)===String(student)&&(!institution||String(m.institution)===String(institution)));}
+module.exports = {revokeStudentObservers,revokeGuardianObservers,revokeInstitutionObservers, initSocket, emitToUser, emitToLiveVideoRoom, broadcastStudyGroupPost, isUserOnline, broadcastGroupMessage };

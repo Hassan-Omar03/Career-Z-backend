@@ -11,7 +11,7 @@ const attendanceSchema = new mongoose.Schema(
     records: [
       {
         student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
-        status: { type: String, enum: ['present', 'absent', 'late', 'excused'], required: true },
+        status: { type: String, enum: ['present', 'absent', 'late', 'excused', 'half_day'], required: true },
         reason: { type: String, default: '' },
         // How this record was captured (spec: online-only methods for a remote-study platform —
         // no RFID/NFC/physical-fingerprint/retina hardware).

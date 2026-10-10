@@ -11,7 +11,9 @@ const pageSchema = new mongoose.Schema({
 
 const institutionSettingsSchema = new mongoose.Schema({
   institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, unique: true },
+  family:{parentAiEnabled:{type:Boolean,default:false},dropoutAbsenceDays:{type:Number,default:10,min:5,max:30}},
   classroom: {
+    guardianObservationEnabled:{type:Boolean,default:false},
     // disabled: nobody records; teacher_choice: the teacher may record; always_allowed: same, and
     // recording is on by default for every live class.
     recordingPolicy: { type: String, enum: ['disabled', 'teacher_choice', 'always_allowed'], default: 'teacher_choice' },

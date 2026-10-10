@@ -1,0 +1,4 @@
+const Calendar=require('../models/TeacherMeetingCalendar'),AppError=require('../utils/AppError');
+async function reserve(meeting){await Calendar.init();const start=new Date(meeting.confirmedDate),end=new Date(start.getTime()+30*60000),token=require('crypto').randomUUID();try{const row=await Calendar.findOneAndUpdate({teacher:meeting.teacher,slots:{$not:{$elemMatch:{start:{$lt:end},end:{$gt:start}}}}},{$push:{slots:{meeting:meeting._id,token,start,end}}},{upsert:true,new:true});if(!row)throw new AppError('Teacher already has an overlapping meeting.',409);return token;}catch(e){if(e.code===11000)throw new AppError('Teacher already has an overlapping meeting.',409);throw e;}}
+async function release(meeting,token){await Calendar.updateOne({teacher:meeting.teacher},{$pull:{slots:token?{token}:{meeting:meeting._id}}});}
+module.exports={reserve,release};

@@ -7,6 +7,7 @@ const parentPermissionSchema = new mongoose.Schema(
   {
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     parent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    request:{type:mongoose.Schema.Types.ObjectId,ref:'FamilyConsentRequest'}, institution:{type:mongoose.Schema.Types.ObjectId,ref:'Institution'}, history:[{decision:String,signedName:String,at:Date}],
     type: { type: String, enum: ['trip', 'event', 'competition', 'photo', 'medical', 'other'], required: true },
     title: { type: String, required: true, trim: true },
     details: { type: String, default: '' },
@@ -18,4 +19,5 @@ const parentPermissionSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+parentPermissionSchema.index({request:1,parent:1},{unique:true,partialFilterExpression:{request:{$type:'objectId'}}});
 module.exports = mongoose.model('ParentPermission', parentPermissionSchema);

@@ -18,7 +18,7 @@ async function determineRaterContext(teacherId, user) {
   const teacherCourses = await Course.find({ teacher: teacherId }).select('_id');
   const courseIds = teacherCourses.map((c) => c._id);
 
-  if (courseIds.length && await Enrollment.exists({ student: user._id, course: { $in: courseIds } })) {
+  if (courseIds.length && await Enrollment.exists({ student: user._id, course: { $in: courseIds },status:{$ne:'dropped'} })) {
     return { fromRole: 'student', institution: null };
   }
 
@@ -45,7 +45,7 @@ async function determineRaterContext(teacherId, user) {
 // same relationship updates the existing rating instead of creating a duplicate.
 const submitFeedback = asyncHandler(async (req, res) => {
   const { rating, comment } = req.body;
-  if (!rating || rating < 1 || rating > 5) throw new AppError('rating must be between 1 and 5.', 422);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new AppError('rating must be between 1 and 5.', 422);
 
   const teacher = await User.findById(req.params.teacherId);
   if (!teacher || !teacher.roles.includes('teacher')) throw new AppError('Teacher not found.', 404);
