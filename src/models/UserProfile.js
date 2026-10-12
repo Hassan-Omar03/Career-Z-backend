@@ -11,6 +11,7 @@ const userProfileSchema = new mongoose.Schema({
   sensitive: { type: mongoose.Schema.Types.Mixed, default: {} }, // key -> { encrypted, last4 }
   completed: { type: Boolean, default: false },
   completedAt: { type: Date, default: null },
+  lastSavedAt: { type: Date, default: null },
   percent: { type: Number, default: 0 }
 }, { timestamps: true, minimize: false });
 

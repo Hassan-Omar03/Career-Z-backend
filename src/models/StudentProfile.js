@@ -17,6 +17,9 @@ const studentProfileSchema = new mongoose.Schema(
 
     dateOfBirth: { type: Date, default: null },
     guardianContact: { type: String, default: '' },
+    parentEmail: {type:String,trim:true,lowercase:true,default:'',validate:{validator:v=>!v||/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(v),message:'Invalid guardian email'}},
+    parentName: {type:String,trim:true,default:'',maxlength:150},
+    parentRelationship: {type:String,enum:['father','mother','guardian'],default:'guardian'},
     // Structured Emergency Contact (spec Part 10.3) — distinct from guardianContact, which is
     // the parent/guardian linking contact number, not necessarily who to call in an emergency.
     emergencyContact: {

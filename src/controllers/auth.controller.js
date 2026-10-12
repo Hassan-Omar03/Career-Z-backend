@@ -38,6 +38,7 @@ const register = asyncHandler(async (req, res) => {
   const subtype = String(req.body.subtype || verificationConfig.SUBTYPES[role]?.[0] || '');
   if (verificationConfig.SUBTYPES[role] && !verificationConfig.SUBTYPES[role].includes(subtype)) throw new AppError('Choose a valid account kind.', 422);
 
+  const guardian=role==='student'?require('../services/studentGuardianContact.service').normalize(req.body,{email},{required:true}):null;
   const passwordHash = await User.hashPassword(password);
   const user = await User.create({
     fullName,
@@ -50,6 +51,7 @@ const register = asyncHandler(async (req, res) => {
     termsAcceptedAt: new Date(),
     language: language || 'en'
   });
+  if(guardian)await require('../services/studentGuardianContact.service').sync(user,guardian);
   const request = await RoleRequest.create({ user: user._id, requestedRole: role, subtype, status: 'awaiting_documents' });
   await VerificationHistory.create({ user: user._id, role, request: request._id, previousStatus: '', newStatus: 'awaiting_documents', remarks: 'Account registered.' });
 

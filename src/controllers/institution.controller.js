@@ -882,6 +882,7 @@ const verifyParentLink = asyncHandler(async (req, res) => {
   link.institutionVerifiedBy = req.user._id;
   link.institutionVerifiedAt = new Date();
   await link.save();
+  if(!link.institutionVerified)await require('../realtime/socket').revokeGuardianObservers(link.parent,link.student);
   return ok(res, link, link.institutionVerified ? 'Guardian link verified.' : 'Guardian verification removed.');
 });
 

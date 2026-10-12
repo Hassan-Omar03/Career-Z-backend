@@ -78,12 +78,14 @@ function evaluateProfile(role, subtype, profile) {
 async function statusFor(user, gate) {
   const roles = await Promise.all(gate.roles.map(async (r) => {
     const [docs, profile] = await Promise.all([activeDocuments(user._id, r.role), UserProfile.findOne({ user: user._id, role: r.role }).lean()]);
+    if(r.role==='student'&&profile){const academic=await require('../models/StudentProfile').findOne({user:user._id}).lean();const fallback={fullName:user.fullName,contactNumber:user.phone,profilePhoto:user.profilePhoto,dateOfBirth:academic?.dateOfBirth?new Date(academic.dateOfBirth).toISOString().slice(0,10):'',parentEmail:academic?.parentEmail,parentName:academic?.parentName,parentRelationship:academic?.parentRelationship,program:academic?.program,currentTerm:academic?.currentTerm,careerGoal:academic?.careerGoal,skills:academic?.skills?.join(', '),languages:academic?.languages?.join(', ')};profile.fields={...profile.fields};for(const [key,value] of Object.entries(fallback))if(!profile.fields[key]&&value)profile.fields[key]=value;}
     const documentState = evaluateDocuments(r.role, r.subtype, docs);
     const profileState = evaluateProfile(r.role, r.subtype, profile);
     return {
       ...r, label: cfg.ROLE_LABEL[r.role] || r.role, subtypes: cfg.SUBTYPES[r.role] || [],
       documents: documentState,
       profile: {
+        saved: Boolean(profile?.lastSavedAt || profile?.completedAt || profile?.completed),
         percent: profileState.percent, complete: profileState.complete, missing: profileState.missing,
         fields: profileState.fields.map((f) => ({ ...f, value: fieldValue(profile, f), last4: f.sensitive ? profile?.sensitive?.[f.key]?.last4 || '' : undefined }))
       }
@@ -171,6 +173,7 @@ async function saveProfile(user, role, input = {}, { complete = false } = {}) {
   if (normalize(request.status) !== 'approved') throw new AppError('Your account must be approved before you complete the profile.', 403);
   let profile = await UserProfile.findOne({ user: user._id, role });
   if (!profile) profile = new UserProfile({ user: user._id, role, subtype: request.subtype });
+  if(role==='student'){const academic=await require('../models/StudentProfile').findOne({user:user._id}).lean();input={...input,...require('./studentGuardianContact.service').normalize({...academic,...profile.fields,...input},user,{required:true})};}
   const fields = cfg.profileFields(role, request.subtype);
   const errors = {};
   const sensitiveChanged = [];
@@ -178,7 +181,8 @@ async function saveProfile(user, role, input = {}, { complete = false } = {}) {
     if (!(f.key in input)) continue;
     let value = typeof input[f.key] === 'string' ? input[f.key].trim() : input[f.key];
     if (value === null || value === undefined) value = '';
-    value = String(value).slice(0, f.type === 'textarea' ? 2000 : 200);
+    value = String(value).slice(0,f.type==='image'?600000:f.type === 'textarea' ? 2000 : 200);
+    if(f.type==='image'&&value&&!/^data:image\/(png|jpeg|webp);base64,[A-Za-z0-9+/=]+$/.test(value)&&!/^https:\/\/[^\s]+$/.test(value)){errors[f.key]='Choose a valid image or HTTPS photo URL.';continue;}
     if (f.sensitive && value === '••••') continue; // masked placeholder — unchanged
     if (value) {
       if (f.pattern && PATTERNS[f.pattern] && !PATTERNS[f.pattern][0].test(value)) { errors[f.key] = PATTERNS[f.pattern][1]; continue; }
@@ -206,13 +210,22 @@ async function saveProfile(user, role, input = {}, { complete = false } = {}) {
   profile.percent = evaluation.percent;
   const wasComplete = profile.completed;
   if (complete && !evaluation.complete) {
-    await profile.save();
+    if(role!=='student')await profile.save();
     throw new AppError('Some required fields are still missing.', 422, { missing: evaluation.missing });
   }
   // Completion is recalculated on every save: removing a required value makes it incomplete again.
   profile.completed = evaluation.complete && (complete || wasComplete);
   if (profile.completed && !wasComplete) profile.completedAt = new Date();
+  profile.lastSavedAt = new Date();
   await profile.save();
+  if(role==='student'){
+    const fields=profile.fields;await require('./studentGuardianContact.service').sync(user,{parentEmail:fields.parentEmail,parentName:fields.parentName,parentRelationship:fields.parentRelationship});
+    const academic={};for(const key of ['program','currentTerm','careerGoal','dateOfBirth'])if(fields[key]!==undefined)academic[key]=fields[key]||null;
+    for(const key of ['skills','languages'])if(fields[key]!==undefined)academic[key]=String(fields[key]).split(',').map(v=>v.trim()).filter(Boolean);
+    if(fields.parentContactNumber!==undefined)academic.guardianContact=fields.parentContactNumber;
+    await require('../models/StudentProfile').updateOne({user:user._id},{$set:academic},{runValidators:true});
+    if(fields.fullName)user.fullName=fields.fullName;if(fields.contactNumber!==undefined)user.phone=fields.contactNumber;if(fields.profilePhoto!==undefined)user.profilePhoto=fields.profilePhoto;await user.save();
+  }
   if (profile.completed && !wasComplete) await notifyUser(user._id, 'Your profile is complete.', 'Your profile is complete. You can now access your dashboard.');
   // Changing verified identity details after approval sends the account back to the admin.
   if (sensitiveChanged.length) {

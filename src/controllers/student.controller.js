@@ -66,17 +66,20 @@ const getMyProfile = asyncHandler(async (req, res) => {
 
 // PATCH /api/students/me
 const updateMyProfile = asyncHandler(async (req, res) => {
-  const allowed = ['dateOfBirth', 'guardianContact', 'emergencyContact', 'skills', 'languages', 'interests', 'hobbies', 'careerGoal', 'program', 'currentTerm'];
-  const update = {};
+  const allowed = ['parentEmail','parentName','parentRelationship','dateOfBirth', 'guardianContact', 'emergencyContact', 'skills', 'languages', 'interests', 'hobbies', 'careerGoal', 'program', 'currentTerm'];
+  const existing=await StudentProfile.findOne({user:req.user._id}).lean();
+  const update = {...require('../services/studentGuardianContact.service').normalize({...existing,...req.body},req.user,{required:true})};
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) update[f] = req.body[f];
   });
 
+  Object.assign(update,require('../services/studentGuardianContact.service').normalize(req.body,req.user));
   const profile = await StudentProfile.findOneAndUpdate(
     { user: req.user._id },
     { $set: update },
     { new: true, upsert: true, runValidators: true }
   );
+  await require('../services/studentGuardianContact.service').sync(req.user,update);
   await notifySponsorsOfProgress(req.user._id, req.user.fullName);
   return ok(res, profile);
 });

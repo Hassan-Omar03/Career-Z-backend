@@ -23,4 +23,22 @@ async function assertInstitutionAccess(user,institution){
  for(const child of children)if((await institutions(child)).includes(String(institution)))return;
  throw new AppError('You are not connected to this institution.',403);
 }
-module.exports={groupContacts,assertInstitutionAccess,institutions,students,link,teachers,contacts,related,safeFee,same};
+
+// School identity approval is separate from consent to connect accounts.
+async function verifiedInstitutions(row){
+ const ids=await institutions(row.student);
+ if(row.status!=='approved'||row.relationship==='sponsor')return [];
+ const flags=ids.filter(id=>row.institutionVerifications.some(v=>same(v.institution,id)&&v.verified===true));
+ if(!flags.length)return [];
+ const proofs=await require('../models/GuardianProof').find({link:row._id,institution:{$in:flags},status:'approved',updatedAt:{$gte:row.approvedAt||row.createdAt}}).distinct('institution');
+ return proofs.map(String);
+}
+async function requireSchoolVerification(parent,student,institution){
+ const row=await link(parent,student),ids=await institutions(student),verified=await verifiedInstitutions(row);
+ const required=institution?[String(institution)]:ids;
+ if(required.some(id=>!ids.includes(id)||!verified.includes(id)))throw new AppError('School guardian verification is pending. Open My Children, submit guardian documents and ask the school to approve them before viewing private records.',403);
+ return row;
+}
+async function canReadSchoolRecords(row){try{await requireSchoolVerification(row.parent,row.student);return true;}catch(e){if(e.statusCode===403)return false;throw e;}}
+
+module.exports={verifiedInstitutions,requireSchoolVerification,canReadSchoolRecords,groupContacts,assertInstitutionAccess,institutions,students,link,teachers,contacts,related,safeFee,same};

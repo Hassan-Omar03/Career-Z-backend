@@ -95,6 +95,7 @@ router.patch('/students/:profileId/status', ctrl.updateStudentStatus);
 router.get('/:id/attendance', ctrl.listInstitutionAttendance);
 
 const familyCtrl=require('../controllers/family.controller');
+router.post('/:institutionId/family/invitations',require('../controllers/schoolFamilyInvitation.controller'));
 router.get('/:institutionId/family/observation-policy',familyCtrl.observationPolicy);
 router.put('/:institutionId/family/observation-policy',familyCtrl.observationPolicy);
 router.get('/:institutionId/family/consent-requests',familyCtrl.institutionRequests);

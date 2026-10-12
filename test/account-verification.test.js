@@ -68,11 +68,14 @@ function validValue(field) {
   if (field.sensitive) return '35202-1234567-1';
   if (field.type === 'select') return field.options[0];
   if (field.type === 'date') return '1990-05-01';
+  if (field.type === 'image') return 'https://example.test/photo.jpg';
   return { phone: '+923001234567', email: 'person@verify.test', year: '2015', url: 'https://example.test' }[field.pattern] || `${field.label} value`;
 }
 
 async function register(accountType, subtype, email = `${accountType}-${subtype || 'x'}@verify.test`) {
-  const res = await call('POST', '/auth/register', { body: { fullName: `${accountType} user`, email, password: 'Password123!', country: 'Pakistan', city: 'Lahore', acceptedTerms: true, accountType, subtype } });
+  // Students must name a parent/guardian at signup (studentGuardianContact.service).
+  const guardian = accountType === 'student' ? { parentName: 'Guardian Person', parentEmail: `guardian-${email}`, parentRelationship: 'guardian' } : {};
+  const res = await call('POST', '/auth/register', { body: { fullName: `${accountType} user`, email, password: 'Password123!', country: 'Pakistan', city: 'Lahore', acceptedTerms: true, accountType, subtype, ...guardian } });
   assert.equal(res.status, 201, JSON.stringify(res.body));
   return { token: res.body.data.accessToken, user: res.body.data.user };
 }
@@ -303,7 +306,7 @@ test('accounts created before mandatory verification are approved automatically 
 });
 
 test('register rejects unknown account types and subtypes; requirements are public', async () => {
-  const base = { fullName: 'X', email: 'z@verify.test', password: 'Password123!', accountType: 'student', country: 'Pakistan', city: 'Lahore', acceptedTerms: true };
+  const base = { fullName: 'X', email: 'z@verify.test', password: 'Password123!', accountType: 'student', country: 'Pakistan', city: 'Lahore', acceptedTerms: true, parentName: 'Guardian Person', parentEmail: 'guardian-z@verify.test', parentRelationship: 'guardian' };
   assert.equal((await call('POST', '/auth/register', { body: { ...base, city: '' } })).status, 422, 'city required');
   assert.equal((await call('POST', '/auth/register', { body: { ...base, country: undefined } })).status, 422, 'country required');
   assert.equal((await call('POST', '/auth/register', { body: { ...base, acceptedTerms: false } })).status, 422, 'terms required');

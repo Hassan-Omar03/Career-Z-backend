@@ -9,6 +9,9 @@ const parentChildLinkSchema = new mongoose.Schema(
     status: { type: String, enum: ['pending', 'approved', 'rejected', 'revoked'], default: 'pending' },
     requestedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     approvedAt: { type: Date, default: null },
+    invitationInstitution: {type:mongoose.Schema.Types.ObjectId,ref:'Institution',default:null},
+    schoolParentAccepted: {type:Boolean,default:false},
+    schoolStudentAccepted: {type:Boolean,default:false},
     // Extra institution-side check on top of student consent — e.g. matches admission records —
     // settable only by the student's institution (spec: Institution<->Parent "guardian verification").
     institutionVerified: { type: Boolean, default: false },

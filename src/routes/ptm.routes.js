@@ -5,7 +5,10 @@ const { protect } = require('../middleware/auth');
 router.use(protect);
 
 router.post('/', ctrl.requestMeeting);
+router.post('/schedule',ctrl.scheduleMeeting);
 router.get('/mine', ctrl.myMeetings);
+router.get('/:id/video',ctrl.video);
+router.get('/teaching-roster',ctrl.teachingRoster);
 router.patch('/:id/respond', ctrl.respondToMeeting);
 router.patch('/:id/cancel', ctrl.cancelMeeting);
 router.patch('/:id/complete', ctrl.completeMeeting);

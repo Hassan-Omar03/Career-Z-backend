@@ -44,7 +44,7 @@ const requestLink = asyncHandler(async (req,res)=>{
  if(family.same(target,req.user))throw new AppError('You cannot link yourself.',422);
  const parent=studentSide?target._id:req.user._id,student=studentSide?req.user._id:target._id;
  let row=await ParentChildLink.findOne({parent,student});if(row&&!['rejected','revoked'].includes(row.status))throw new AppError('A link already exists. Check your connections.',409);
- if(row){row.status='pending';row.requestedBy=req.user._id;row.relationship=relationship;row.approvedAt=null;row.institutionVerifications=[];row.institutionVerified=false;await row.save();}else row=await ParentChildLink.create({parent,student,requestedBy:req.user._id,relationship,permissions:{payFees:true,viewHealth:relationship!=='sponsor',giveConsent:relationship!=='sponsor',observeClassroom:relationship!=='sponsor'}});
+ if(row){row.status='pending';row.invitationInstitution=null;row.schoolParentAccepted=false;row.schoolStudentAccepted=false;row.requestedBy=req.user._id;row.relationship=relationship;row.approvedAt=null;row.institutionVerifications=[];row.institutionVerified=false;await row.save();}else row=await ParentChildLink.create({parent,student,requestedBy:req.user._id,relationship,permissions:{payFees:true,viewHealth:relationship!=='sponsor',giveConsent:relationship!=='sponsor',observeClassroom:relationship!=='sponsor'}});
  row.lifecycleHistory.push({action:'requested',actor:req.user._id,at:new Date()});await row.save();
  await notify(target._id,{title:'Family connection request',body:req.user.fullName+' requested a '+relationship+' connection.',sentBy:req.user._id},{email:true}).catch(()=>{});
  return created(res,row,'Connection request sent. The other account must approve.');
@@ -79,7 +79,7 @@ const myLinkRequests = asyncHandler(async (req, res) => {
 const incomingRequests = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ $or:[{student:req.user._id},{parent:req.user._id}], requestedBy:{$ne:req.user._id}, status:'pending' })
     .populate('parent', 'fullName email');
-  return ok(res, links);
+  return ok(res, links.filter(l=>!l.invitationInstitution||(family.same(l.parent,req.user._id)?!l.schoolParentAccepted:!l.schoolStudentAccepted)));
 });
 
 // PATCH /api/parents/link-requests/:id/respond - the student approves/rejects
@@ -89,6 +89,16 @@ const respondToLink = asyncHandler(async (req, res) => {
 
   const link = await ParentChildLink.findById(req.params.id);
   if (!link) throw new AppError('Link request not found.', 404);
+  if(link.invitationInstitution){
+    if(!family.same(link.parent,req.user._id)&&!family.same(link.student,req.user._id))throw new AppError('Only the invited parent or student can respond.',403);
+    const key=family.same(link.parent,req.user._id)?'schoolParentAccepted':'schoolStudentAccepted';
+    if(link.status!=='pending'||link[key])throw new AppError('Your invitation has already been answered.',409);
+    const change=decision==='rejected'?{status:'rejected'}:{[key]:true};
+    let updated=await ParentChildLink.findOneAndUpdate({_id:link._id,status:'pending',[key]:false},{$set:change,$push:{lifecycleHistory:{action:decision==='rejected'?'rejected':key,actor:req.user._id,at:new Date()}}},{new:true,runValidators:true});
+    if(!updated)throw new AppError('Invitation changed. Refresh and try again.',409);
+    if(updated.schoolParentAccepted&&updated.schoolStudentAccepted)updated=await ParentChildLink.findOneAndUpdate({_id:link._id,status:'pending',schoolParentAccepted:true,schoolStudentAccepted:true},{$set:{status:'approved',approvedAt:new Date()},$push:{lifecycleHistory:{action:'approved',actor:req.user._id,at:new Date()}}},{new:true})||await ParentChildLink.findById(link._id);
+    return ok(res,updated,updated.status==='approved'?'Both accounts accepted. Submit guardian documents for school verification.':'Your response was recorded.');
+  }
   const recipient=family.same(link.requestedBy,link.parent)?link.student:link.parent;
   if (!family.same(recipient,req.user._id)) {
     throw new AppError('Only the invited account can respond to this request.', 403);
@@ -178,6 +188,7 @@ function assertGuardianLink(links, studentId, permissionKey) {
 
 // GET /api/parents/children/:studentId/attendance
 const childAttendance = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -190,6 +201,7 @@ const childAttendance = asyncHandler(async (req, res) => {
 
 // GET /api/parents/children/:studentId/results
 const childResults = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -208,6 +220,7 @@ const childFees = asyncHandler(async (req, res) => {
 
 // GET /api/parents/children/:studentId/timetable
 const childTimetable = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -222,6 +235,7 @@ const childTimetable = asyncHandler(async (req, res) => {
 
 // GET /api/parents/children/:studentId/homework
 const childHomework = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -238,6 +252,7 @@ const childHomework = asyncHandler(async (req, res) => {
 // GET /api/parents/children/:studentId/exams — Exam Schedule page (every published exam,
 // not just the home page's next-3 preview).
 const childExams = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -289,6 +304,7 @@ const payChildFee = asyncHandler(async (req, res) => {
 // linked parent and authorized institution staff can see this; it never appears anywhere public.
 // Guardian-only (father/mother/guardian) — a sponsor link cannot view medical information.
 const getChildHealth = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
@@ -311,6 +327,7 @@ const getChildHealth = asyncHandler(async (req, res) => {
 
 // PATCH /api/parents/children/:studentId/health — guardian-only.
 const updateChildHealth = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertGuardianLink(links, req.params.studentId, 'viewHealth');
 
@@ -329,6 +346,7 @@ const updateChildHealth = asyncHandler(async (req, res) => {
 // GET /api/parents/children/:studentId/permissions — digital permission slips (spec 11.14).
 // Listing is fine for a sponsor to see what's on file, but only a guardian can create one.
 const listChildPermissions = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -340,6 +358,7 @@ const listChildPermissions = asyncHandler(async (req, res) => {
 // e-signature (full name), for a specific activity (trip, event, photo use, medical, etc.).
 // Guardian-only — legal consent cannot be signed by a sponsor link.
 const grantChildPermission = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertGuardianLink(links, req.params.studentId, 'giveConsent');
 
@@ -363,6 +382,7 @@ const grantChildPermission = asyncHandler(async (req, res) => {
 
 // GET /api/parents/children/:studentId/certificates — Digital Portfolio page.
 const childCertificates = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
@@ -377,7 +397,10 @@ const childCertificates = asyncHandler(async (req, res) => {
 // teacher message), plus a recent-notifications preview. Full per-module detail lives
 // on the separate My Children/Attendance/Fees/etc. pages, same pattern as the student dashboard.
 const getMyDashboard = asyncHandler(async (req, res) => {
-  const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' }).populate('student', 'fullName profilePhoto');
+  const allLinks = await ParentChildLink.find({ parent: req.user._id, status: 'approved' }).populate('student', 'fullName profilePhoto');
+  const permitted=await Promise.all(allLinks.map(l=>family.canReadSchoolRecords(l)));
+  const links=allLinks.filter((l,index)=>permitted[index]);
+  const pendingVerification=allLinks.filter((l,index)=>!permitted[index]).map(l=>({id:l.student._id,name:l.student.fullName}));
 
   const startOfDay = new Date(); startOfDay.setHours(0, 0, 0, 0);
   const endOfDay = new Date(); endOfDay.setHours(23, 59, 59, 999);
@@ -464,7 +487,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
 
   const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(8);
 
-  return ok(res, { children, notifications });
+  return ok(res, { children, notifications, pendingVerification });
 });
 
 // POST /api/parents/children/:studentId/ai-assistant — spec Part 11.10 "AI Parent Assistant".
@@ -473,6 +496,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
 // never decides anything here — same "summarize, don't decide" pattern as the Institution and
 // Teacher AI assistants.
 const getAiAssistantInsights = asyncHandler(async (req, res) => {
+  await family.requireSchoolVerification(req.user._id,req.params.studentId);
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
   const { question,institutionId,dataConsent } = req.body;

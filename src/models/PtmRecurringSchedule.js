@@ -7,6 +7,13 @@ const mongoose = require('mongoose');
 // into one creates one real, normal ParentTeacherMeeting for that exact date.
 const ptmRecurringScheduleSchema = new mongoose.Schema(
   {
+    course:{type:mongoose.Schema.Types.ObjectId,ref:'Course',default:null},
+    timetable:{type:mongoose.Schema.Types.ObjectId,ref:'TimetableEntry',default:null},
+    className:{type:String,default:''},
+    rollNumber:{type:String,default:''},
+    program:{type:String,default:''},
+    student:{type:mongoose.Schema.Types.ObjectId,ref:'User',default:null},
+    subject:{type:String,default:''},
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     title: { type: String, required: true, trim: true },

@@ -4,6 +4,7 @@ const ptmCtrl = require('../controllers/ptm.controller');
 const { protect } = require('../middleware/auth');
 
 router.use(protect);
+router.get('/students/:studentId/guardians',require('../controllers/studentGuardians.controller')); 
 const proof=require('../controllers/guardianProof.controller');
 router.get('/links/:linkId/schools/:institutionId/proof',proof.get);
 router.put('/links/:linkId/schools/:institutionId/proof',proof.submit);
@@ -13,6 +14,10 @@ router.get('/student/teachers',require('../utils/asyncHandler')(async(req,res)=>
 router.post('/student/ptm-invitation',require('../controllers/familyStudent.controller').invite);
 const cafeteria=require('../controllers/cafeteria.controller');router.get('/children/:studentId/cafeteria',cafeteria.menu);router.post('/children/:studentId/cafeteria/orders',cafeteria.purchase);router.patch('/cafeteria/orders/:orderId',cafeteria.updateOrder);
 const family=require('../controllers/family.controller');
+router.get('/me/updates',family.updates);
+const observations=require('../controllers/familyObservation.controller');
+router.get('/observations/staff',observations.staffList);
+router.post('/observations/:id/respond',observations.respond);
 const privateFamily=require('../controllers/familyPrivate.controller');
 router.get('/private-profile',privateFamily.get);
 router.put('/private-profile',privateFamily.save);

@@ -8,8 +8,15 @@ require('../models/LibraryBook');
 const model=n=>require('../models/'+n);
 const {notify}=require('../services/notification.service');
 async function manager(institution,user){const i=await model('Institution').findById(institution);if(!i)throw new AppError('Institution not found.',404);if(!family.same(i.owner,user._id)&&!i.staff.some(s=>family.same(s.user,user._id)&&(s.permissions||[]).includes('parents:manage')))throw new AppError('Parent management permission required.',403);return i;}
+const updates=asyncHandler(async(req,res)=>{
+ const links=await model('ParentChildLink').find({parent:req.user._id,status:'approved'});
+ const scopes=await Promise.all(links.map(async l=>({student:l.student,institution:{$in:await family.verifiedInstitutions(l)}})));
+ if(!scopes.length)return ok(res,[]);
+ const rows=await model('FamilyObservation').find({$or:scopes}).populate('student','fullName profilePhoto').populate('actor','fullName').populate('institution','name').populate('history.actor','fullName').sort({createdAt:-1,_id:-1}).limit(200);
+ return ok(res,await require('./familyObservation.controller').decorate(rows,req.user._id));
+});
 const overview=asyncHandler(async(req,res)=>{
- await family.link(req.user._id,req.params.studentId);
+ await family.requireSchoolVerification(req.user._id,req.params.studentId);
  const student=req.params.studentId;
  const month=String(req.query.month||new Date().toISOString().slice(0,7));if(!/^\d{4}-(0[1-9]|1[0-2])$/.test(month))throw new AppError('Choose a valid month.',422);
  const start=new Date(month+'-01T00:00:00Z'),end=new Date(start);end.setUTCMonth(end.getUTCMonth()+1);
@@ -40,11 +47,11 @@ const requestConsent=asyncHandler(async(req,res)=>{
  if(event&&!await model('InstitutionEvent').exists({_id:event,institution:req.params.institutionId}))throw new AppError('Invalid institution event.',422);
  const row=await model('FamilyConsentRequest').create({institution:req.params.institutionId,student:req.body.studentId,type,title:String(title).trim(),details,expiresAt:expiresAt||null,event:event||null,createdBy:req.user._id});
  const links=await model('ParentChildLink').find({student:row.student,status:'approved',relationship:{$in:['father','mother','guardian']},'permissions.giveConsent':{$ne:false}});
- await Promise.all(links.map(l=>notify(l.parent,{title:'Permission requested: '+row.title,sentBy:req.user._id},{email:true}).catch(()=>{})));return created(res,row);
+ await Promise.all(links.map(async l=>{if((await family.verifiedInstitutions(l)).includes(String(row.institution)))await notify(l.parent,{title:'Permission requested: '+row.title,sentBy:req.user._id},{email:true}).catch(()=>{});}));return created(res,row);
 });
 const respondConsent=asyncHandler(async(req,res)=>{
  const request=await model('FamilyConsentRequest').findById(req.params.id);if(!request||request.status!=='open')throw new AppError('Request is not open.',409);
- const link=await family.link(req.user._id,request.student,'giveConsent');if(!['father','mother','guardian'].includes(link.relationship))throw new AppError('A guardian must sign.',403);
+ await family.requireSchoolVerification(req.user._id,request.student,request.institution);const link=await family.link(req.user._id,request.student,'giveConsent');if(!['father','mother','guardian'].includes(link.relationship))throw new AppError('A guardian must sign.',403);
  if(!(await family.institutions(request.student)).includes(String(request.institution)))throw new AppError('Institution connection ended.',403);
  if(request.expiresAt&&request.expiresAt<=new Date())throw new AppError('Permission request expired.',409);
  const {decision,signedName}=req.body;if(!['granted','denied'].includes(decision)||!String(signedName||'').trim())throw new AppError('Decision and signature required.',422);
@@ -54,21 +61,26 @@ const respondConsent=asyncHandler(async(req,res)=>{
 const institutionRequests=asyncHandler(async(req,res)=>{await manager(req.params.institutionId,req.user);const rows=await model('FamilyConsentRequest').find({institution:req.params.institutionId}).populate('student','fullName').sort({createdAt:-1});const responses=await model('ParentPermission').find({request:{$in:rows.map(r=>r._id)}}).populate('parent','fullName');return ok(res,rows.map(r=>({...r.toObject(),responses:responses.filter(c=>family.same(c.request,r._id))})));});
 const cancelConsent=asyncHandler(async(req,res)=>{const row=await model('FamilyConsentRequest').findById(req.params.id);if(!row)throw new AppError('Not found.',404);await manager(row.institution,req.user);row.status='cancelled';await row.save();return ok(res,row);});
 const observation=asyncHandler(async(req,res)=>{
- const {studentId,type,text}=req.body;if(!['progress','behavior','discipline','emergency','achievement'].includes(type)||!String(text||'').trim())throw new AppError('Type and notes required.',422);
+ const {studentId,type,text,courseId,timetableId}=req.body;if(!['progress','behavior','discipline','emergency','achievement'].includes(type)||!String(text||'').trim())throw new AppError('Type and notes required.',422);
  if(!(await family.institutions(studentId)).includes(req.params.institutionId))throw new AppError('Student not enrolled here.',403);
  const isTeacher=(await family.teachers(studentId)).some(r=>family.same(r.teacher,req.user._id)&&r.institutions.some(i=>family.same(i,req.params.institutionId)));if(!isTeacher)await manager(req.params.institutionId,req.user);
- const row=await model('FamilyObservation').create({institution:req.params.institutionId,student:studentId,type,text:String(text).trim(),actor:req.user._id});
- await require('../services/notification.service').notifyParentsOfStudent(studentId,{title:'Child '+type+' update',body:row.text,sentBy:req.user._id},{email:true}).catch(()=>{});return created(res,row);
+ let course=null,subject='';
+ if(courseId){const c=await model('Course').findOne({_id:courseId,institution:req.params.institutionId,teacher:req.user._id});if(!c||!await model('Enrollment').exists({student:studentId,course:c._id,status:{$ne:'dropped'}}))throw new AppError('Choose an actual course taught to this child.',403);course=c._id;subject=c.subject||c.title;}
+ else if(timetableId){const entry=await model('TimetableEntry').findOne({_id:timetableId,institution:req.params.institutionId,teacher:req.user._id});if(!entry||!await model('StudentProfile').exists({user:studentId,classSection:entry.classSection}))throw new AppError('Choose an actual timetable subject taught to this child.',403);course=entry.course;subject=entry.subject;}
+ else if(isTeacher)throw new AppError('Choose the child and teaching subject.',422);
+ if(String(text).trim().length>5000)throw new AppError('Maximum 5000 characters.',422);
+ const row=await model('FamilyObservation').create({institution:req.params.institutionId,student:studentId,type,text:String(text).trim(),actor:req.user._id,course,subject});
+ const links=await model('ParentChildLink').find({student:studentId,status:'approved'});for(const link of links)if((await family.verifiedInstitutions(link)).includes(String(row.institution)))await notify(link.parent,{title:'Child '+type+' update',body:row.text,sentBy:req.user._id},{email:true}).catch(()=>{});return created(res,row);
 });
 const wallet=asyncHandler(async(req,res)=>{const [balances,transactions]=await Promise.all([model('Wallet').find({user:req.user._id}),model('WalletTransaction').find({user:req.user._id}).select('type amount currency reference status note createdAt').sort({createdAt:-1}).limit(100)]);return ok(res,{balances,transactions});});
 const teachingRoster=asyncHandler(async(req,res)=>{
- const courses=await model('Course').find({teacher:req.user._id,institution:{$ne:null}}).select('institution title');
+ const courses=await model('Course').find({teacher:req.user._id,institution:{$ne:null}}).select('institution title subject');
  const rows=await model('Enrollment').find({course:{$in:courses.map(c=>c._id)},status:{$ne:'dropped'}}).populate('student','fullName').select('course student');
- const roster=rows.filter(r=>r.student).map(r=>({student:r.student,institution:courses.find(c=>family.same(c,r.course)).institution,course:courses.find(c=>family.same(c,r.course)).title}));
- const entries=await model('TimetableEntry').find({teacher:req.user._id,classSection:{$ne:null}}).select('classSection institution subject');
- for(const entry of entries){const profiles=await model('StudentProfile').find({classSection:entry.classSection}).populate('user','fullName');for(const p of profiles){if(p.user&&(await family.institutions(p.user._id)).includes(String(entry.institution)))roster.push({student:p.user,institution:entry.institution,course:entry.subject||'Class timetable'});}}
- return ok(res,[...new Map(roster.map(r=>[[r.student._id,r.institution,r.course].join(':'),r])).values()]);
+ const roster=rows.filter(r=>r.student).map(r=>({student:r.student,institution:courses.find(c=>family.same(c,r.course)).institution,course:courses.find(c=>family.same(c,r.course)).subject||courses.find(c=>family.same(c,r.course)).title,courseId:r.course}));
+ const entries=await model('TimetableEntry').find({teacher:req.user._id,classSection:{$ne:null}}).select('classSection institution subject course');
+ for(const entry of entries){const profiles=await model('StudentProfile').find({classSection:entry.classSection}).populate('user','fullName');for(const p of profiles){if(p.user&&(await family.institutions(p.user._id)).includes(String(entry.institution)))roster.push({student:p.user,institution:entry.institution,course:entry.subject||'Class timetable',timetableId:entry._id});}}
+ return ok(res,[...new Map(roster.map(r=>[[r.student._id,r.institution,r.courseId||r.timetableId].join(':'),r])).values()]);
 });
-const classrooms=asyncHandler(async(req,res)=>{await family.link(req.user._id,req.params.studentId,'observeClassroom');const courses=await model('Enrollment').find({student:req.params.studentId,status:{$ne:'dropped'}}).distinct('course');const sessions=await model('LiveClassSession').find({course:{$in:courses},status:{$in:['scheduled','live']}}).populate('course','title').populate('teacher','fullName').sort({scheduledStart:1});const rows=[];for(const session of sessions){try{await require('../services/guardianObservation.service').authorize(req.user._id,session,req.params.studentId);rows.push({_id:session._id,title:session.title,course:session.course,teacher:session.teacher,mode:session.mode,status:session.status,scheduledStart:session.scheduledStart,scheduledEnd:session.scheduledEnd});}catch(e){if(e.statusCode!==403&&e.statusCode!==422)throw e;}}return ok(res,rows);});
+const classrooms=asyncHandler(async(req,res)=>{await family.requireSchoolVerification(req.user._id,req.params.studentId);await family.link(req.user._id,req.params.studentId,'observeClassroom');const courses=await model('Enrollment').find({student:req.params.studentId,status:{$ne:'dropped'}}).distinct('course');const sessions=await model('LiveClassSession').find({course:{$in:courses},status:{$in:['scheduled','live']}}).populate('course','title').populate('teacher','fullName').sort({scheduledStart:1});const rows=[];for(const session of sessions){try{await require('../services/guardianObservation.service').authorize(req.user._id,session,req.params.studentId);rows.push({_id:session._id,title:session.title,course:session.course,teacher:session.teacher,mode:session.mode,status:session.status,scheduledStart:session.scheduledStart,scheduledEnd:session.scheduledEnd});}catch(e){if(e.statusCode!==403&&e.statusCode!==422)throw e;}}return ok(res,rows);});
 const observationPolicy=asyncHandler(async(req,res)=>{await manager(req.params.institutionId,req.user);if(req.method==='GET'){const row=await model('InstitutionSettings').findOne({institution:req.params.institutionId});return ok(res,{enabled:row?.classroom?.guardianObservationEnabled===true});}if(typeof req.body.enabled!=='boolean')throw new AppError('enabled must be boolean.',422);await model('InstitutionSettings').findOneAndUpdate({institution:req.params.institutionId},{$set:{'classroom.guardianObservationEnabled':req.body.enabled,updatedBy:req.user._id}},{upsert:true,runValidators:true});if(!req.body.enabled)await require('../realtime/socket').revokeInstitutionObservers(req.params.institutionId);return ok(res,{enabled:req.body.enabled});});
-module.exports={classrooms,observationPolicy,teachingRoster,overview,requestConsent,respondConsent,institutionRequests,cancelConsent,observation,wallet};
+module.exports={updates,classrooms,observationPolicy,teachingRoster,overview,requestConsent,respondConsent,institutionRequests,cancelConsent,observation,wallet};

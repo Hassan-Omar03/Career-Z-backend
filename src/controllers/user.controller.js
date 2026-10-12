@@ -6,6 +6,7 @@ const tokenService = require('../services/token.service');
 
 // PATCH /api/users/me
 const updateMe = asyncHandler(async (req, res) => {
+  if(req.user.roles.includes('student')&&['fullName','phone','profilePhoto'].some(k=>req.body[k]!==undefined)){const profile=await require('../models/StudentProfile').findOne({user:req.user._id}).lean();require('../services/studentGuardianContact.service').normalize(profile||{},req.user,{required:true});}
   const allowed = ['fullName', 'phone', 'country', 'language', 'currency', 'profilePhoto', 'coverImage', 'companyName', 'donorType', 'storeStatus', 'twoFactorEnabled'];
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) req.user[f] = req.body[f];

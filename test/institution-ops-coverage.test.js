@@ -134,7 +134,9 @@ test('a parent now sees vaccinations and incident history too, not just the four
     { bloodGroup: 'A+', vaccinations: [{ name: 'MMR', date: new Date() }] }
   );
   await HealthIncident.create({ institution: institution._id, student: student._id, description: 'Fever', severity: 'moderate', recordedBy: owner._id });
-  await ParentChildLink.create({ parent: parent._id, student: student._id, status: 'approved', requestedBy: parent._id, permissions: { viewHealth: true } });
+  // Private school records need the school's guardian verification (approved guardian proof).
+  const link = await ParentChildLink.create({ parent: parent._id, student: student._id, status: 'approved', requestedBy: parent._id, approvedAt: new Date(Date.now() - 60000), permissions: { viewHealth: true }, institutionVerifications: [{ institution: institution._id, verified: true }] });
+  await require('../src/models/GuardianProof').create({ link: link._id, institution: institution._id, submittedBy: parent._id, status: 'approved' });
 
   const res = await invoke(parentCtrl.getChildHealth, { user: parent, params: { studentId: student._id.toString() } });
   assert.equal(res.status, 200);

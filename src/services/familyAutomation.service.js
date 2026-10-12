@@ -28,7 +28,7 @@ async function runFamilyAutomation(now=new Date()){
  }
  const meetings=await Meeting.find({status:'confirmed',confirmedDate:{$gte:now,$lte:new Date(now.getTime()+24*3600000)}});
  for(const m of meetings){if(!await Link.exists({parent:m.parent,student:m.student,status:'approved'}))continue;if(!(await family.teachers(m.student)).some(t=>family.same(t.teacher,m.teacher)))continue;for(const user of [m.parent,m.teacher])sent+=await once(`ptm:${m._id}:${m.confirmedDate.toISOString()}:${user}`,m.student,'ptm_reminder',user,{title:'Parent–teacher meeting reminder',body:m.confirmedDate.toISOString()},now)?1:0;}
- const expired=await Meeting.find({status:{$in:['pending','expired']},requestedDate:{$lt:now}});for(const m of expired){const row=await Meeting.findOneAndUpdate({_id:m._id,status:'pending'},{$set:{status:'expired'}});if(!row&&m.status!=='expired')continue;for(const user of [m.parent,m.teacher])sent+=await once('ptm-expired:'+m._id+':'+user,m.student,'ptm_expired',user,{title:'Meeting request expired without confirmation',body:'Choose a new time with the teacher.'},now)?1:0;}
+ const expired=await Meeting.find({status:{$in:['pending','expired']},requestedDate:{$lt:now}});for(const m of expired){const row=await Meeting.findOneAndUpdate({_id:m._id,status:'pending'},{$set:{status:'expired'},$push:{history:{status:'expired',actor:null,at:now,scheduledFor:m.requestedDate}}});if(!row&&m.status!=='expired')continue;for(const user of [m.parent,m.teacher])sent+=await once('ptm-expired:'+m._id+':'+user,m.student,'ptm_expired',user,{title:'Meeting request expired without confirmation',body:'Choose a new time with the teacher.'},now)?1:0;}
  return {sent};
 }
 module.exports={runFamilyAutomation};

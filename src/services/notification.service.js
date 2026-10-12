@@ -47,7 +47,8 @@ async function notifyMany(userIds, payload, options) {
 async function notifyParentsOfStudent(studentId, payload, options) {
   const links = await ParentChildLink.find({ student: studentId, status: 'approved' });
   if (links.length === 0) return [];
-  return notifyMany(links.map((l) => l.parent), payload, options);
+  const allowed=await Promise.all(links.map(l=>require('./familyAccess.service').canReadSchoolRecords(l)));
+  return notifyMany(links.filter((l,i)=>allowed[i]).map(l=>l.parent),payload,options);
 }
 
 // Fans a notification (in-app + email) out to every Admin/Super Admin — used whenever a new
