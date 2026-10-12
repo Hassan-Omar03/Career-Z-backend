@@ -19,7 +19,7 @@ const updateMe = asyncHandler(async (req, res) => {
 const changePassword = asyncHandler(async (req, res) => {
   const { currentPassword, newPassword } = req.body;
   if (!currentPassword || !newPassword) throw new AppError('currentPassword and newPassword are required.', 422);
-  if (newPassword.length < 8) throw new AppError('Password must be at least 8 characters.', 422);
+  require('../utils/passwordPolicy').assertStrongPassword(newPassword, 'New password');
 
   const match = await req.user.comparePassword(currentPassword);
   if (!match) throw new AppError('Current password is incorrect.', 401);

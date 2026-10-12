@@ -100,7 +100,16 @@ const verifyCertificate = asyncHandler(async (req, res) => {
   const certificate = await Certificate.findOne({ verifyCode: req.params.code })
     .populate('student', 'fullName')
     .populate('institution', 'name');
-  if (!certificate) throw new AppError('Certificate not found.', 404);
+  if (!certificate) {
+    // Internship completion certificates share the same public verification page.
+    const internship = await require('../models/InternshipCertificate').findOne({ verifyCode: req.params.code }).populate('student', 'fullName').populate('institution', 'name');
+    if (!internship) throw new AppError('Certificate not found.', 404);
+    return ok(res, {
+      title: `${internship.role} Internship`, studentName: internship.student?.fullName, institutionName: internship.institution?.name || internship.organization,
+      organization: internship.organization, issuerType: internship.issuerType, startDate: internship.startDate, endDate: internship.endDate, hours: internship.hours,
+      issueDate: internship.createdAt, status: internship.status, verifyCode: internship.verifyCode, type: 'internship'
+    });
+  }
 
   return ok(res, {
     title: certificate.title,

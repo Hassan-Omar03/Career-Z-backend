@@ -90,6 +90,10 @@ function dueDateFor(schedule, period) {
   const due = new Date(period.startDate);
   due.setDate(Math.min(28, Number(schedule.dueDay) || 10));
   if (due < period.startDate) due.setMonth(due.getMonth() + 1);
+  // Monthly periods start on the 1st, so the computed day can fall before the agreed first due
+  // date (e.g. admitted on the 12th with first payment due the 19th → invoice "due on the 10th",
+  // already overdue, and class access locked on day one). Never bill earlier than firstDueDate.
+  if (schedule.firstDueDate && due < new Date(schedule.firstDueDate)) return new Date(schedule.firstDueDate);
   return due;
 }
 

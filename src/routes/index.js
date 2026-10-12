@@ -55,6 +55,7 @@ router.use('/lesson-metadata', require('./lessonMetadata.routes'));
 router.use('/library', require('./resources.routes'));
 router.use('/media-accessibility', require('./mediaAccessibility.routes'));
 router.use('/onboarding', require('./onboarding.routes'));
+router.use('/career-tools', require('./careerTools.routes'));
 router.use('/teacher-students', require('./teacherStudentLink.routes'));
 router.use('/parent-reputation', require('./parentReputation.routes'));
 router.use('/institution-employer', require('./institutionEmployer.routes'));

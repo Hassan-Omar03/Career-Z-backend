@@ -45,6 +45,7 @@ const schedule = asyncHandler(async (req, res) => {
   if (!Number.isFinite(scheduledStart.getTime()) || !Number.isFinite(scheduledEnd.getTime()) || scheduledEnd <= scheduledStart) {
     throw new AppError('Choose a valid start and end time.', 422);
   }
+  await require('../utils/workingHours').assertWithinWorkingHours(institution._id, scheduledStart, scheduledEnd, 'liveClasses', 'Live classes');
   const provider = course.studyMode !== 'physical' && req.body.provider === 'external' ? 'external' : 'careerz_jitsi';
   if (provider === 'external' && !/^https:\/\//i.test(req.body.externalMeetingUrl || '')) {
     throw new AppError('A secure external meeting URL is required.', 422);

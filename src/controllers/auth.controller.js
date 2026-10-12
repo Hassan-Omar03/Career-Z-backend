@@ -6,6 +6,7 @@ const tokenService = require('../services/token.service');
 const otpService = require('../services/otp.service');
 const LoginAttempt = require('../models/LoginAttempt');
 const BlockedIp = require('../models/BlockedIp');
+const { assertStrongPassword } = require('../utils/passwordPolicy');
 const RoleRequest = require('../models/RoleRequest');
 const VerificationHistory = require('../models/VerificationHistory');
 const verificationConfig = require('../config/accountVerification');
@@ -17,9 +18,7 @@ const register = asyncHandler(async (req, res) => {
   if (!fullName || !email || !password) {
     throw new AppError('Full name, email and password are required.', 422);
   }
-  if (password.length < 8) {
-    throw new AppError('Password must be at least 8 characters.', 422);
-  }
+  assertStrongPassword(password);
   if (!String(country || '').trim() || !String(city || '').trim()) {
     throw new AppError('Select your country and city.', 422);
   }
@@ -238,7 +237,7 @@ const resetPassword = asyncHandler(async (req, res) => {
   if (!email || !code || !newPassword) {
     throw new AppError('Email, code and new password are required.', 422);
   }
-  if (newPassword.length < 8) throw new AppError('Password must be at least 8 characters.', 422);
+  assertStrongPassword(newPassword, 'New password');
 
   const user = await User.findOne({ email: email.toLowerCase() });
   if (!user) throw new AppError('Invalid request.', 400);

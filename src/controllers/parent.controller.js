@@ -205,7 +205,8 @@ const childResults = asyncHandler(async (req, res) => {
   const links = await ParentChildLink.find({ parent: req.user._id, status: 'approved' });
   assertApprovedLink(links, req.params.studentId);
 
-  const results = await Result.find({ student: req.params.studentId }).sort({ createdAt: -1 });
+  // Exam/course names only — never the exam paper or answer key.
+  const results = await Result.find({ student: req.params.studentId }).populate('exam', 'title type').populate('course', 'title subject').sort({ createdAt: -1 });
   return ok(res, results);
 });
 

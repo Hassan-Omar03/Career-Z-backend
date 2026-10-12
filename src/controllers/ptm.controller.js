@@ -1,4 +1,5 @@
 const context=require('../services/ptmContext.service');
+const { assertWithinWorkingHours } = require('../utils/workingHours');
 const calendar=require('../services/teacherMeetingCalendar.service');
 const ParentTeacherMeeting = require('../models/ParentTeacherMeeting');
 const ParentChildLink = require('../models/ParentChildLink');
@@ -81,6 +82,7 @@ const requestMeeting = asyncHandler(async (req, res) => {
   let observation=null;
   if(req.body.observationId){observation=await require('../models/FamilyObservation').findById(req.body.observationId);if(!observation||String(observation.student)!==String(studentId)||String(observation.actor)!==String(teacherId))throw new AppError('Meeting must be with the reporting teacher for this child.',403);await require('../services/familyAccess.service').requireSchoolVerification(req.user._id,studentId,observation.institution);if(observation.status==='resolved')throw new AppError('Complaint is already resolved.',409);if(await ParentTeacherMeeting.exists({parent:req.user._id,observation:observation._id,status:{$in:['pending','confirmed']}}))throw new AppError('A meeting for this complaint is already pending or confirmed.',409);}
   const teaching=await context.resolve(teacherId,studentId,{courseId:req.body.courseId||observation?.course,timetableId:req.body.timetableId,institutionId:observation?.institution,subject:observation?.subject||undefined});
+  await assertWithinWorkingHours(teaching.institution, requestedDate, new Date(new Date(requestedDate).getTime() + 30 * 60000), 'ptm', 'Parent-teacher meetings');
   const meeting = await ParentTeacherMeeting.create({
     ...context.fields(teaching),
     observation:observation?._id||null,
@@ -127,6 +129,7 @@ const respondToMeeting = asyncHandler(async (req, res) => {
     if(!(await getChildTeachers(meeting.student)).some(t=>String(t.teacher._id)===String(meeting.teacher)))throw new AppError('Teacher relationship ended.',403);
     meeting.confirmedDate = confirmedDate ? new Date(confirmedDate) : meeting.requestedDate;
     if(!Number.isFinite(meeting.confirmedDate.getTime())||meeting.confirmedDate<=new Date())throw new AppError('Choose a future confirmation time.',422);
+    await assertWithinWorkingHours(meeting.institution, meeting.confirmedDate, new Date(meeting.confirmedDate.getTime() + 30 * 60000), 'ptm', 'Parent-teacher meetings');
     const conflict=await ParentTeacherMeeting.exists({_id:{$ne:meeting._id},teacher:meeting.teacher,status:'confirmed',confirmedDate:{$gt:new Date(meeting.confirmedDate.getTime()-30*60000),$lt:new Date(meeting.confirmedDate.getTime()+30*60000)}});if(conflict)throw new AppError('Teacher already has a meeting near this time.',409);
     if (meeting.mode === 'video') { meeting.meetingLink=''; }
     else {if(!String(location||'').trim())throw new AppError('Physical meeting location required.',422);meeting.location=location.trim();}
@@ -430,6 +433,7 @@ module.exports.scheduleMeeting=asyncHandler(async(req,res)=>{
  if(mode==='physical'&&!String(location).trim())throw new AppError('Physical meeting location required.',422);
  const teaching=await context.resolve(req.user._id,studentId,{courseId:req.body.courseId,timetableId:req.body.timetableId,institutionId:req.body.institutionId});
  if(!(await context.guardians(studentId,teaching.institution)).some(g=>String(g.parentId)===String(parentId)))throw new AppError('Choose this child’s approved and school-verified parent.',403);
+ await assertWithinWorkingHours(teaching.institution, date, new Date(date.getTime() + 30 * 60000), 'ptm', 'Parent-teacher meetings');
  const meeting=await ParentTeacherMeeting.create({...context.fields(teaching),parent:parentId,teacher:req.user._id,student:studentId,title:String(title).trim(),scheduledBy:req.user._id,requestedDate:date,confirmedDate:date,mode,location:String(location).trim(),notes:String(notes).trim(),status:'pending',meetingLink:mode==='video'?'':''});
  let token;try{token=await calendar.reserve(meeting);meeting.status='confirmed';meeting.bookingKey=String(meeting.teacher)+':'+date.toISOString();meeting.$locals.historyActor=req.user._id;await meeting.save();}catch(e){if(token)await calendar.release(meeting,token);await ParentTeacherMeeting.deleteOne({_id:meeting._id,status:'pending'});if(e.code===11000||e.name==='VersionError')throw new AppError('Teacher already has a meeting near this time.',409);throw e;}
  await context.notice(meeting,'Parent-Teacher Meeting scheduled',parentId,req.user._id);

@@ -21,6 +21,7 @@ function publicView(settings, institution) {
     timezone: settings.timezone,
     workingDays: settings.workingDays,
     schoolHours: settings.schoolHours,
+    workingHoursPolicy: { ptm: Boolean(settings.workingHoursPolicy?.ptm), liveClasses: Boolean(settings.workingHoursPolicy?.liveClasses) },
     classroom: { recordingPolicy: settings.classroom?.recordingPolicy, requireStudentConsent: settings.classroom?.requireStudentConsent }
   };
 }
@@ -102,6 +103,13 @@ const saveSettings = asyncHandler(async (req, res) => {
     if (start && end && start >= end) throw new AppError('School day must end after it starts.', 422);
     if (start) set['schoolHours.start'] = start;
     if (end) set['schoolHours.end'] = end;
+  }
+  if (b.workingHoursPolicy) {
+    for (const key of ['ptm', 'liveClasses']) {
+      if (b.workingHoursPolicy[key] === undefined) continue;
+      if (typeof b.workingHoursPolicy[key] !== 'boolean') throw new AppError('Working hours policy values must be true or false.', 422);
+      set[`workingHoursPolicy.${key}`] = b.workingHoursPolicy[key];
+    }
   }
   const unset = b.subdomain === '' || b.subdomain === null ? { subdomain: 1 } : undefined;
   await InstitutionSettings.findOneAndUpdate({ institution: institution._id }, { $set: set, ...(unset ? { $unset: unset } : {}) }, { upsert: true, new: true, setDefaultsOnInsert: true, runValidators: true });

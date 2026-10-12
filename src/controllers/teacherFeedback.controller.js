@@ -25,7 +25,7 @@ async function determineRaterContext(teacherId, user) {
   if (courseIds.length) {
     const links = await ParentChildLink.find({ parent: user._id, status: 'approved' }).select('student');
     const childIds = links.map((l) => l.student);
-    if (childIds.length && await Enrollment.exists({ student: { $in: childIds }, course: { $in: courseIds } })) {
+    if (childIds.length && await Enrollment.exists({ student: { $in: childIds }, course: { $in: courseIds }, status: { $ne: 'dropped' } })) {
       return { fromRole: 'parent', institution: null };
     }
   }

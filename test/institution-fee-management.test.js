@@ -453,3 +453,13 @@ test('a legacy Fee document created before this feature (no schedule/paidAmount/
   assert.equal(full.fee.status, 'paid');
   assert.equal(full.fee.outstandingAmount, 0, 'the payment engine correctly treats a null outstandingAmount as the full fee.amount');
 });
+
+test('an invoice is never due before the schedule first due date (no lock-out on admission day)', () => {
+  const firstDueDate = new Date(2026, 9, 19, 12);
+  const schedule = { billingFrequency: 'monthly', totalProgramFee: 12000, dueDay: 10, firstDueDate, academicYearStart: null };
+  const [first, second] = feeSchedule.buildPeriodPlan(schedule);
+  assert.equal(feeSchedule.dueDateFor(schedule, first).getTime(), firstDueDate.getTime());
+  const later = feeSchedule.dueDateFor(schedule, second);
+  assert.equal(later.getDate(), 10);
+  assert.ok(later > firstDueDate);
+});

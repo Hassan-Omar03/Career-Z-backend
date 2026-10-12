@@ -34,6 +34,11 @@ const institutionSettingsSchema = new mongoose.Schema({
     start: { type: String, default: '08:00', match: /^([01]\d|2[0-3]):[0-5]\d$/ },
     end: { type: String, default: '14:00', match: /^([01]\d|2[0-3]):[0-5]\d$/ }
   },
+  // Opt-in: when on, those activities can only be scheduled inside workingDays/schoolHours.
+  workingHoursPolicy: {
+    ptm: { type: Boolean, default: false },
+    liveClasses: { type: Boolean, default: false }
+  },
   updatedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
 }, { timestamps: true });
 

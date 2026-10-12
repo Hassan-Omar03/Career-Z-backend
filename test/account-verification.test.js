@@ -321,3 +321,21 @@ test('register rejects unknown account types and subtypes; requirements are publ
   assert.equal(req.status, 200);
   assert.equal(req.body.data.accountTypes.length, 7);
 });
+
+test('passwords must contain a capital letter, a small letter and a special character', async () => {
+  const base = { fullName: 'Pw', password: '', country: 'Pakistan', city: 'Lahore', acceptedTerms: true, accountType: 'parent' };
+  for (const [i, weak] of ['password1!', 'PASSWORD1!', 'Password123', 'Pa!1'].entries()) {
+    const res = await call('POST', '/auth/register', { body: { ...base, email: `weak${i}@verify.test`, password: weak } });
+    assert.equal(res.status, 422, `${weak} was accepted`);
+  }
+  const good = await call('POST', '/auth/register', { body: { ...base, email: 'strong@verify.test', password: 'Strong#Pass' } });
+  assert.equal(good.status, 201, JSON.stringify(good.body));
+  const user = await User.findOne({ email: 'strong@verify.test' });
+  assert.ok(user.passwordHash.startsWith('$2') && !user.passwordHash.includes('Strong#Pass'), 'password not hashed');
+  await RoleRequest.updateMany({ user: user._id }, { status: 'approved' });
+  await UserProfile.updateOne({ user: user._id, role: 'parent' }, { $set: { completed: true, percent: 100 } }, { upsert: true });
+  const weakChange = await call('PATCH', '/users/me/password', { token: good.body.data.accessToken, body: { currentPassword: 'Strong#Pass', newPassword: 'weakpassword' } });
+  assert.equal(weakChange.status, 422, JSON.stringify(weakChange.body));
+  const strongChange = await call('PATCH', '/users/me/password', { token: good.body.data.accessToken, body: { currentPassword: 'Strong#Pass', newPassword: 'Better#Pass2' } });
+  assert.equal(strongChange.status, 200, JSON.stringify(strongChange.body));
+});
