@@ -44,13 +44,13 @@ const listScholarships = asyncHandler(async (req, res) => {
   const { country } = req.query;
   const filter = { status: 'open' };
   if (country) filter.country = country;
-  const scholarships = await Scholarship.find(filter).populate('donor', 'fullName email').sort({ createdAt: -1 }).limit(100);
+  const scholarships = await Scholarship.find(filter).populate('donor', 'fullName').sort({ createdAt: -1 }).limit(100);
   return ok(res, scholarships);
 });
 
 // GET /api/scholarships/:id
 const getScholarship = asyncHandler(async (req, res) => {
-  const scholarship = await Scholarship.findById(req.params.id).populate('donor', 'fullName email');
+  const scholarship = await Scholarship.findById(req.params.id).populate('donor', 'fullName');
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
   return ok(res, scholarship);
 });
@@ -81,6 +81,14 @@ const applyToScholarship = asyncHandler(async (req, res) => {
   const scholarship = await Scholarship.findById(req.params.id);
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
   if (scholarship.status !== 'open') throw new AppError('This scholarship is closed.', 400);
+  if (scholarship.applicationDeadline && new Date(scholarship.applicationDeadline) < new Date()) throw new AppError('The application deadline has passed.', 400);
+  if (!(scholarship.seatsAvailable > 0)) throw new AppError('All seats for this scholarship are filled.', 400);
+  const roles = req.accessibleRoles || req.user.roles || [];
+  if (!roles.includes('student')) {
+    throw new AppError('Only student accounts can apply for scholarships. Sign in with a student account, or create one.', 403, { code: 'WRONG_ACCOUNT_TYPE', eligible: ['student'] });
+  }
+  // The donor must still be allowed to list it (approved and active).
+  if (!(await require('../services/publicListings.service').scholarshipDetail(scholarship._id))) throw new AppError('This scholarship is no longer accepting applications.', 400);
   if (!req.user.emailVerified) throw new AppError('Verify your email before applying to a scholarship (Profile tab).', 403);
 
   const existing = await ScholarshipApplication.findOne({ scholarship: scholarship._id, applicant: req.user._id });

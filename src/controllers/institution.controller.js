@@ -145,7 +145,7 @@ const listInstitutions = asyncHandler(async (req, res) => {
   const filter = { status: 'active', verificationStatus: 'approved' };
   if (country) filter.country = country;
   if (type) filter.type = type;
-  if (q) filter.name = { $regex: q, $options: 'i' };
+  if (typeof q === 'string' && q.trim()) filter.name = { $regex: q.trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), $options: 'i' };
 
   const institutions = await Institution.find(filter).select('-verificationDocuments -staff').sort({ name: 1 });
   return ok(res, institutions);

@@ -63,7 +63,8 @@ const listJobs = asyncHandler(async (req, res) => {
   const { q, country, city, type, minSalary } = req.query;
   const filter = { status: 'active' };
   if (country) filter.country = country;
-  if (city) filter.city = new RegExp(city, 'i');
+  // Searched as plain text: characters typed in the box must not change the query.
+  if (city) filter.city = new RegExp(String(city).slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i');
   if (type) filter.type = type;
   if (minSalary) filter.salaryMin = { $gte: Number(minSalary) };
   if (q) filter.$text = { $search: q };
@@ -71,13 +72,13 @@ const listJobs = asyncHandler(async (req, res) => {
   // A featured badge that outlived its paid window shouldn't keep jumping the queue.
   await Job.updateMany({ featured: true, featuredUntil: { $lt: new Date() } }, { featured: false, featuredUntil: null });
 
-  const jobs = await Job.find(filter).populate('postedBy', 'fullName email').sort({ featured: -1, createdAt: -1 }).limit(100);
+  const jobs = await Job.find(filter).populate('postedBy', 'fullName').sort({ featured: -1, createdAt: -1 }).limit(100);
   return ok(res, jobs);
 });
 
 // GET /api/jobs/:id
 const getJob = asyncHandler(async (req, res) => {
-  const job = await Job.findById(req.params.id).populate('postedBy', 'fullName email');
+  const job = await Job.findById(req.params.id).populate('postedBy', 'fullName');
   if (!job) throw new AppError('Job not found.', 404);
 
   // "Recently viewed jobs" — only for a signed-in viewer actually opening the job's own
@@ -197,6 +198,14 @@ const applyToJob = asyncHandler(async (req, res) => {
   if (job.applicationDeadline && new Date(job.applicationDeadline) < new Date()) {
     throw new AppError('The application deadline has passed.', 400);
   }
+  // Job seekers apply: an approved student or teacher account (the account gate has already
+  // required approval and a complete profile for that role).
+  const roles = req.accessibleRoles || req.user.roles || [];
+  if (!roles.some((r) => ['student', 'teacher'].includes(r))) {
+    throw new AppError('Only student or teacher accounts can apply for jobs. Sign in with one, or create a student account.', 403, { code: 'WRONG_ACCOUNT_TYPE', eligible: ['student', 'teacher'] });
+  }
+  // The publisher must still be allowed to list it (an approved, active employer or agent).
+  if (!(await require('../services/publicListings.service').jobDetail(job._id))) throw new AppError('This job is no longer accepting applications.', 400);
   if (!req.user.emailVerified) throw new AppError('Verify your email before applying to a job (Profile tab).', 403);
 
   const existing = await JobApplication.findOne({ job: job._id, applicant: req.user._id });
