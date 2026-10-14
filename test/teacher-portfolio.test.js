@@ -80,9 +80,10 @@ test('verified hours and badges come from real records only, with what the next 
 
   const course = await model('Course').create({ title: 'A-Level Physics', subject: 'Physics', teacher: u.Sana._id, published: true });
   const start = new Date('2026-09-01T10:00:00Z');
-  const sessions = Array.from({ length: 9 }, (_, i) => ({ course: course._id, teacher: u.Sana._id, title: `Class ${i}`, status: 'ended', startedAt: new Date(start.getTime() + i * 864e5), endedAt: new Date(start.getTime() + i * 864e5 + 36e5) }));
-  sessions.push({ course: course._id, teacher: u.Sana._id, title: 'Left open', status: 'ended', startedAt: new Date('2026-09-20T10:00:00Z'), endedAt: new Date('2026-09-21T10:00:00Z') });
-  sessions.push({ course: course._id, teacher: u.Sana._id, title: 'Never ran', status: 'scheduled' });
+  const sessions = Array.from({ length: 9 }, (_, i) => ({ course: course._id, teacher: u.Sana._id, title: `Class ${i}`, roomName: `portfolio-room-${i}`, status: 'ended', startedAt: new Date(start.getTime() + i * 864e5), endedAt: new Date(start.getTime() + i * 864e5 + 36e5) }));
+  sessions.push({ course: course._id, teacher: u.Sana._id, title: 'Left open', roomName: 'portfolio-room-open', status: 'ended', startedAt: new Date('2026-09-20T10:00:00Z'), endedAt: new Date('2026-09-21T10:00:00Z') });
+  sessions.push({ course: course._id, teacher: u.Sana._id, title: 'Never ran', roomName: 'portfolio-room-later', status: 'scheduled' });
+  await model('LiveClassSession').init();
   await model('LiveClassSession').insertMany(sessions, { lean: true });
   for (let i = 0; i < 6; i++) await model('Enrollment').create({ course: course._id, student: u[`Pupil${i}`]._id });
   for (let i = 0; i < 3; i++) await model('TeacherFeedback').create({ teacher: u.Sana._id, fromUser: u[`Pupil${i}`]._id, fromRole: 'student', rating: [4, 4, 5][i], comment: i === 0 ? 'Explains clearly' : '' });
