@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { CV_TEMPLATES } = require('../utils/cvTemplates');
 
 // Named CV versions (e.g. "Software internship", "Teaching assistant") alongside the main
 // Resume. A student keeps up to MAX_VARIANTS; one may be the default sent with applications.
@@ -18,7 +19,8 @@ const variantSchema = new mongoose.Schema(
     skills: [{ type: String }],
     languages: [{ type: String }],
     certifications: [{ type: String }],
-    portfolio: [{ title: String, url: String, description: String }]
+    portfolio: [{ title: String, url: String, description: String }],
+    template: { type: String, enum: CV_TEMPLATES, default: 'modern' }
   },
   { timestamps: true }
 );

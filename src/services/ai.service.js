@@ -210,7 +210,12 @@ async function callGemini(apiKey, model, systemPrompt, userPrompt) {
 }
 
 async function generate(userId, systemPrompt, userPrompt, institutionId) {
-  const { provider, apiKey, model } = await getDecryptedCredential(userId, 'text', institutionId);
+  return generateWith(await getDecryptedCredential(userId, 'text', institutionId), systemPrompt, userPrompt);
+}
+
+// Same text call with a credential the caller already holds (e.g. the platform's own homepage
+// assistant key, configured by the Super Admin).
+async function generateWith({ provider, apiKey, model }, systemPrompt, userPrompt) {
   switch (provider) {
     case 'openai': return callOpenAiCompatible('https://api.openai.com/v1/chat/completions', apiKey, model, systemPrompt, userPrompt);
     case 'deepseek': return callOpenAiCompatible('https://api.deepseek.com/chat/completions', apiKey, model, systemPrompt, userPrompt);
@@ -397,6 +402,7 @@ async function getAnimationTaskStatus(userId, taskId, institutionId) {
 }
 
 module.exports = {
+  generateWith, DEFAULT_MODEL, resolveModel,
   saveCredential, getCredentialStatus, getAllCredentialStatuses, removeCredential, generate,
   generateImage, create3DModelTask, get3DModelTaskStatus, generateSpeech,
   createAvatarVideoTask, getAvatarVideoTaskStatus, createAnimationTask, getAnimationTaskStatus,

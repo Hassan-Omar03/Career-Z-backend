@@ -13,6 +13,8 @@ router.get('/', optionalAuth, ctrl.listInstitutions);
 router.get('/by-subdomain/:subdomain', settingsCtrl.bySubdomain);
 router.get('/:id/settings', optionalAuth, settingsCtrl.getSettings);
 router.get('/:id/pages/:slug', settingsCtrl.getPage);
+// Before '/:id' so it is not read as an institution id; public catalogue, no private data.
+router.get('/staff-roles', ctrl.listStaffRoles);
 router.get('/:id', optionalAuth, ctrl.getInstitution);
 router.get('/:id/campuses', ctrl.listCampuses);
 router.get('/:id/class-sections', ctrl.listClassSections);
@@ -26,6 +28,16 @@ const cafeteria=require('../controllers/cafeteria.controller');router.get('/:id/
 router.post('/', ctrl.registerInstitution);
 router.get('/mine/list', ctrl.myInstitutions);
 router.get('/mine/staff-roles', ctrl.myStaffRoles);
+const people = require('../controllers/institutionPeople.controller');
+router.get('/teacher-reviews/mine', people.myReviews);
+router.post('/teacher-reviews/:reviewId/respond', people.respondToReview);
+router.get('/:id/promotions/preview', people.previewPromotion);
+router.get('/:id/promotions', people.listPromotions);
+router.post('/:id/promotions', people.promote);
+router.get('/:id/review-teachers', people.listReviewTeachers);
+router.get('/:id/teachers/:teacherId/review-data', people.reviewData);
+router.post('/:id/teachers/:teacherId/reviews', people.createReview);
+router.patch('/:id/reviews/:reviewId', people.updateReview);
 router.get('/mine/rep-dashboard', ctrl.getRepDashboard);
 router.get('/payroll/payout-profile/me', ctrl.getMyPayoutProfile);
 router.put('/payroll/payout-profile/me', ctrl.saveMyPayoutProfile);
@@ -114,6 +126,7 @@ router.get('/:id/payroll-tax-report', ctrl.getPayrollTaxReport);
 router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);
 
 router.get('/:id/reports', ctrl.getInstitutionReports);
+router.patch('/:id/staff/:userId', ctrl.updateStaff);
 router.post('/:id/ai-insights', require('../controllers/aiOperations.controller').insights);
 router.get('/:id/ai-insights/reports', require('../controllers/aiOperations.controller').listReports);
 router.get('/:id/ai-insights/reports/:reportId', require('../controllers/aiOperations.controller').getReport);

@@ -157,6 +157,11 @@ const reportManualPayment = asyncHandler(async (req, res) => {
     if (!link || link.permissions?.payFees === false) throw new AppError('You are not authorized to pay this fee.', 403);
   }
   if (['paid', 'cancelled', 'waived', 'refunded'].includes(fee.status)) throw new AppError(`This fee is already ${fee.status}.`, 400);
+  // Parent and student can both pay: once either reports a payment, nobody can report another until
+  // the institution has verified or rejected it, so the same fee is never paid twice.
+  if ((fee.paymentHistory || []).some((p) => p.verificationStatus === 'pending')) {
+    throw new AppError('A payment for this fee is already awaiting the institution’s verification.', 409);
+  }
 
   const { amount, method, reference, proofUrl, bankName, paidOn, notes } = req.body;
   const allowedMethods = ['bank_transfer', 'mobile_wallet', 'cash', 'other'];
@@ -221,7 +226,12 @@ const verifyManualPayment = asyncHandler(async (req, res) => {
     const fallbackStatus = fee.outstandingAmount != null && fee.outstandingAmount < fee.amount ? 'partially_paid' : (fee.dueDate && new Date(fee.dueDate) < new Date() ? 'overdue' : 'pending');
     fee.status = pending.previousFeeStatus && pending.previousFeeStatus !== 'processing' ? pending.previousFeeStatus : fallbackStatus;
     await fee.save();
-    await notify(fee.student, { title: `Payment rejected: ${fee.title}`, body: 'Your reported payment could not be verified. Please try again or contact the institution.', sentBy: req.user._id }, { email: true }).catch(() => {});
+    // The student, every parent and whoever reported it hear why, so they can pay again.
+    const reporter = await require('../services/feePayer.service').payerInfo(pending.recordedBy, fee.student);
+    const familyIds = [String(fee.student), ...(await ParentChildLink.find({ student: fee.student, status: 'approved' }).distinct('parent')).map(String)];
+    for (const userId of [...new Set(familyIds)]) {
+      await notify(userId, { title: `Payment rejected: ${fee.title}`, body: `${fee.currency} ${pending.amount}${reporter ? ` reported by ${reporter.name} (${reporter.role})` : ''} could not be verified: ${pending.rejectionReason}. Please pay again or contact the institution.`, sentBy: req.user._id }, { email: true }).catch(() => {});
+    }
     return ok(res, fee, 'Payment rejected.');
   }
   if (decision !== 'verify') throw new AppError('decision must be verify or reject.', 422);
@@ -245,8 +255,12 @@ const verifyManualPayment = asyncHandler(async (req, res) => {
     fee.escrowStatus = fee.escrowStatus === 'none' ? 'held' : fee.escrowStatus;
   }
   await fee.save();
-  await require('../services/notification.service').notifyParentsOfStudent(fee.student,{title:'Child fee payment verified',body:fee.currency+' '+pending.amount+' confirmed for '+fee.title,sentBy:req.user._id},{email:true}).catch(()=>{});
-  await notify(fee.student, { title: `Payment verified: ${fee.title}`, body: `${fee.currency} ${pending.amount} confirmed. ${fee.status === 'paid' ? 'Fully paid.' : `Remaining: ${fee.currency} ${fee.outstandingAmount}`}`, sentBy: req.user._id }, { email: true }).catch(() => {});
+  // Says who made the payment, so a parent knows when the student paid and vice versa.
+  const payer = await require('../services/feePayer.service').payerInfo(pending.recordedBy, fee.student);
+  const by = payer ? ` Paid by ${payer.name} (${payer.role}).` : '';
+  const balance = fee.status === 'paid' ? 'Fully paid.' : `Remaining: ${fee.currency} ${fee.outstandingAmount}`;
+  await require('../services/notification.service').notifyParentsOfStudent(fee.student,{title:'Child fee payment verified',body:`${fee.currency} ${pending.amount} confirmed for ${fee.title}.${by} ${balance}`,sentBy:req.user._id},{email:true}).catch(()=>{});
+  await notify(fee.student, { title: `Payment verified: ${fee.title}`, body: `${fee.currency} ${pending.amount} confirmed.${by} ${balance}`, sentBy: req.user._id }, { email: true }).catch(() => {});
   return ok(res, fee, 'Payment verified.');
 });
 
@@ -261,7 +275,7 @@ const listAwaitingVerification = asyncHandler(async (req, res) => {
     institution: institution._id,
     paymentHistory: { $elemMatch: { verificationStatus: 'pending' } }
   }).populate('student', 'fullName email').sort({ updatedAt: 1 });
-  return ok(res, fees);
+  return ok(res, await require('../services/feePayer.service').withPayersMany(fees));
 });
 
 // ---- Defaulters / restriction lifecycle ----
@@ -531,7 +545,7 @@ const listInvoicesFiltered = asyncHandler(async (req, res) => {
     obj.studentIdentity = profile ? { studentId: profile.idCardCode, rollNumber: profile.rollNumber, program: profile.program, classSection: profile.classSection } : null;
     return obj;
   });
-  return ok(res, enriched);
+  return ok(res, await require('../services/feePayer.service').withPayersMany(enriched));
 });
 
 // ---- Receipt/Invoice QR verification (public — same pattern as Certificate.verifyCode) ----

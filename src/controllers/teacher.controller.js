@@ -38,7 +38,7 @@ const getMyProfile = asyncHandler(async (req, res) => {
 
 // PATCH /api/teachers/me
 const updateMyProfile = asyncHandler(async (req, res) => {
-  const allowed = ['subjects', 'qualifications', 'experienceYears', 'bio', 'independent', 'visibleToInstitutions'];
+  const allowed = ['subjects', 'qualifications', 'experienceYears', 'bio', 'independent', 'visibleToInstitutions', 'categories', 'coverPhotoUrl', 'introVideoUrl', 'teachingStyle', 'teachingModes', 'publicPortfolio'];
   const update = {};
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) update[f] = req.body[f];
@@ -57,6 +57,39 @@ const updateMyProfile = asyncHandler(async (req, res) => {
     { new: true, upsert: true, runValidators: true }
   );
   return ok(res, profile);
+});
+
+// GET /api/teachers/me/standing — verified teaching hours, badge and what the next badge needs.
+const getMyStanding = asyncHandler(async (req, res) => {
+  return ok(res, await require('../services/teacherStanding.service').standingFor(req.user._id));
+});
+
+// GET /api/teachers/:id/public — the teacher's public portfolio, only when they switched it on.
+// Shows what helps a family or institution decide (subjects, style, verified record, reviews,
+// courses) and nothing private (no documents, contact details or reviewer names).
+const getPublicPortfolio = asyncHandler(async (req, res) => {
+  if (!require('mongoose').isValidObjectId(req.params.id)) throw new AppError('Teacher not found.', 404);
+  const profile = await TeacherProfile.findOne({ user: req.params.id, publicPortfolio: true, status: 'active' }).populate('institutions', 'name type city country').lean();
+  const user = profile && await require('../models/User').findById(req.params.id).select('fullName profilePhoto city country roles').lean();
+  if (!profile || !user?.roles?.includes('teacher')) throw new AppError('This teacher has not published a public portfolio.', 404);
+  const [standing, reviews, courses] = await Promise.all([
+    require('../services/teacherStanding.service').standingFor(req.params.id),
+    require('../models/TeacherFeedback').find({ teacher: req.params.id, comment: { $ne: '' } }).select('rating comment fromRole createdAt').sort({ createdAt: -1 }).limit(6).lean(),
+    Course.find({ teacher: req.params.id, published: true, testOnly: { $ne: true } }).select('title subject level language isFree price currency institution').populate('institution', 'name').limit(24).lean()
+  ]);
+  return ok(res, {
+    teacher: { _id: user._id, fullName: user.fullName, profilePhoto: user.profilePhoto || '', city: user.city || '', country: user.country || '' },
+    profile: {
+      categories: profile.categories || [], subjects: profile.subjects || [], bio: profile.bio || '', teachingStyle: profile.teachingStyle || '',
+      teachingModes: profile.teachingModes || [], coverPhotoUrl: profile.coverPhotoUrl || '', introVideoUrl: profile.introVideoUrl || '',
+      experienceYears: profile.experienceYears || 0, independent: Boolean(profile.independent),
+      qualifications: (profile.qualifications || []).map((q) => ({ title: q.title, institutionName: q.institutionName, year: q.year })),
+      institutions: (profile.institutions || []).map((i) => ({ name: i.name, type: i.type, city: i.city }))
+    },
+    standing: { verifiedHours: standing.verifiedHours, liveClasses: standing.liveClasses, classesWithAttendance: standing.classesWithAttendance, studentsTaught: standing.studentsTaught, reviews: standing.reviews, badge: standing.badge },
+    reviews: reviews.map((r) => ({ rating: r.rating, comment: r.comment, fromRole: r.fromRole, createdAt: r.createdAt })),
+    courses
+  });
 });
 
 // GET /api/teachers/me/classes -> distinct class sections derived from the teacher's courses
@@ -543,7 +576,7 @@ const getMyEngagementHistory = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
-  getMyProfile, updateMyProfile, getMyClasses, markAttendance, markAttendanceByFace, listAttendance, getMyTimetable,
+  getMyProfile, updateMyProfile, getMyStanding, getPublicPortfolio, getMyClasses, markAttendance, markAttendanceByFace, listAttendance, getMyTimetable,
   createQrSession, getQrSession, setAttendanceLocation,
   listFaceCheckInRequests, reviewFaceCheckInRequest,
   checkInMyAttendance, getMySelfAttendance, getMyPayslips, verifyMyPayslipPayment, getMyDashboard,

@@ -28,7 +28,8 @@ const pay=asyncHandler(async(req,res)=>{
   if(fee.status==='paid'){fee.paidAt=new Date();fee.restrictionActive=false;fee.receiptNumber=fee.receiptNumber||receipt;fee.verifyCode=fee.verifyCode||verification;}
   await fee.save({session});result=fee;isNew=true;
  });
- if(isNew)await notifyParentsOfStudent(result.student,{title:'Wallet fee payment verified',body:result.currency+' '+value+' paid for '+result.title,sentBy:req.user._id}).catch(()=>{});
+ // Student, every guardian and the school hear who paid; the payer gets a confirmation.
+ if(isNew){const school=await Institution.findById(result.institution).select('owner');const notes=await require('../services/feePayer.service').paidNotifications({studentId:result.student,payerId:req.user._id,what:result.title,amountText:result.currency+' '+value+' from CareerZ Wallet',receipt:result.receiptNumber,others:[school?.owner]});for(const n of notes)await notify(n.userId,n.payload).catch(()=>{});}
  return ok(res,family.safeFee(result),'Wallet payment completed.');
 });
 async function refund(feeId,actor){let result;await mongoose.connection.transaction(async session=>{

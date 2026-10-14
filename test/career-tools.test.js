@@ -180,3 +180,18 @@ test('working hours are enforced only when the institution opts in, in its own t
   assert.equal((await live(13)).status, 201, 'class ending exactly at closing time');
   assert.equal((await live(14)).status, 422, 'class after school hours');
 });
+
+test('CV template choice is saved on the main CV and versions; unknown designs are refused', async () => {
+  let r = await call('Other', 'PATCH', '/resumes/me', { headline: 'Analyst', template: 'ats' });
+  assert.equal(r.status, 200, JSON.stringify(r.body));
+  assert.equal(r.body.data.template, 'ats');
+  r = await call('Other', 'PATCH', '/resumes/me', { template: 'glitter' });
+  assert.ok(r.status >= 400 && r.status < 500, `expected refusal, got ${r.status}`);
+  assert.equal((await model('Resume').findOne({ user: u.Other._id })).template, 'ats');
+
+  r = await call('Other', 'POST', '/resumes/variants', { name: 'Teaching', source: 'main' });
+  assert.equal(r.status, 201, JSON.stringify(r.body));
+  assert.equal(r.body.data.template, 'ats');
+  r = await call('Other', 'PATCH', `/resumes/variants/${r.body.data._id}`, { template: 'teacher' });
+  assert.equal(r.body.data.template, 'teacher');
+});

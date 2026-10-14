@@ -36,8 +36,8 @@ const createFeeCheckoutSession = asyncHandler(async (req, res) => {
 
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
   await helpers().assertCanPayFee(fee, req.user);
+  const owed = require('../services/feeSettlement.service').assertPayableOnline(fee);
 
   const session = await stripe.checkout.sessions.create({
     mode: 'payment',
@@ -47,17 +47,17 @@ const createFeeCheckoutSession = asyncHandler(async (req, res) => {
         price_data: {
           currency: fee.currency.toLowerCase(),
           product_data: { name: fee.title },
-          unit_amount: Math.round(fee.amount * 100)
+          unit_amount: Math.round(owed * 100)
         },
         quantity: 1
       }
     ],
     success_url: `${env.clientUrl}/dashboard?feePaid=1&feeId=${fee._id}`,
     cancel_url: `${env.clientUrl}/dashboard?feeCancelled=1&feeId=${fee._id}`,
-    metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee' }
+    metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee', feeAmount: String(owed) }
   });
 
-  fee.status = 'processing';
+  // The fee stays as it is until Stripe confirms payment, so an abandoned checkout blocks nothing.
   fee.stripeSessionId = session.id;
   await fee.save();
 

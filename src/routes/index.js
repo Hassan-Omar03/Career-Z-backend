@@ -38,6 +38,7 @@ router.use('/funding-requests', require('./fundingRequest.routes'));
 router.use('/complaints', require('./complaint.routes'));
 router.use('/payments', require('./payment.routes'));
 router.use('/translate', require('./translate.routes'));
+router.use('/site-assistant', require('./siteAssistant.routes'));
 router.use('/ai', require('./ai.routes'));
 router.use('/security', require('./security.routes'));
 router.use('/webauthn', require('./webauthn.routes'));

@@ -106,6 +106,8 @@ const feeSchema = new mongoose.Schema(
       reason: { type: String, default: '' },
       amount: { type: Number, default: 0 },
       requestedAt: { type: Date, default: null },
+      // A second payment for an already-settled fee: refunding it must not undo the real payment.
+      duplicate: { type: Boolean, default: false },
       processedAt: { type: Date, default: null },
       processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
     },

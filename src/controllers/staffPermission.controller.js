@@ -5,17 +5,8 @@ const { ok } = require('../utils/apiResponse');
 
 // Staff permissions the owner can grant from Staff Management. AI permissions keep their own
 // dedicated endpoint (ai-permissions), so they are preserved untouched here.
-const GRANTABLE = {
-  'cafeteria:manage':'Manage cafeteria menu, stock and orders',
-  'parents:manage': 'Manage guardian links and permission requests',
-  'communication:send': 'Send broadcasts / notifications',
-  'fee:manage': 'Manage fees',
-  'application:approve': 'Approve admissions',
-  'grading:manage': 'Manage grading scale',
-  'questionbank:manage': 'Manage question bank',
-  'forum:moderate': 'Moderate discussion forums',
-  'settings:manage': 'Manage institute settings'
-};
+// One catalogue for the whole app (utils/staffRoles.js), minus the AI permissions.
+const GRANTABLE = Object.fromEntries(Object.entries(require('../utils/staffRoles').PERMISSIONS).filter(([key]) => !key.startsWith('ai:')));
 
 // GET /api/institutions/staff-permissions — the catalogue shown in the UI.
 const listGrantable = asyncHandler(async (req, res) => ok(res, Object.entries(GRANTABLE).map(([key, label]) => ({ key, label }))));

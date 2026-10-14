@@ -25,6 +25,7 @@ router.post('/:id/assignments', requirePermission('assignment:create:own'), ctrl
 router.get('/:id/assignments', ctrl.listAssignments);
 router.delete('/assignments/:assignmentId', requirePermission('assignment:create:own'), ctrl.deleteAssignment);
 router.get('/assignments/:assignmentId/submissions', requirePermission('assignment:grade:own'), ctrl.listSubmissions);
+router.get('/assignments/:assignmentId/similarity', requirePermission('assignment:grade:own'), ctrl.checkSubmissionSimilarity);
 router.patch('/submissions/:submissionId/grade', requirePermission('assignment:grade:own'), ctrl.gradeSubmission);
 router.patch('/submissions/:submissionId/resubmit', requirePermission('assignment:grade:own'), ctrl.requestAssignmentResubmission);
 router.post('/:id/results', requirePermission('result:record:own'), ctrl.recordResult);

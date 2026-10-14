@@ -101,16 +101,17 @@ const createPaddleTransaction = asyncHandler(async (req, res) => {
 
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
   await assertCanPayFee(fee, req.user);
+  // Only what is still owed (a partly paid fee is not charged in full again).
+  const owed = require('../services/feeSettlement.service').assertPayableOnline(fee);
 
-  const { amount: paddleAmount, currencyCode: paddleCurrency } = await resolvePaddleAmount(fee.amount, fee.currency || 'USD');
+  const { amount: paddleAmount, currencyCode: paddleCurrency } = await resolvePaddleAmount(owed, fee.currency || 'USD');
   const transaction = await paddleService.createTransaction({
     title: fee.title,
     amount: paddleAmount,
     currencyCode: paddleCurrency,
     customerEmail: req.user.email,
-    metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee' }
+    metadata: { feeId: fee._id.toString(), payerId: req.user._id.toString(), kind: 'fee', feeAmount: String(owed) }
   });
 
   fee.status = 'processing';
@@ -306,6 +307,6 @@ module.exports = {
   createWalletTopup, syncWalletTopup, createPaddleCourseCheckout, syncPaddleCourseStatus,
   createPaddleFeaturedJobCheckout, syncPaddleFeaturedJobStatus,
   getNowPaymentsConfig, createCryptoWalletTopup, syncCryptoWalletTopup,
-  assertCanPayFee, loadPayableCourse,
+  assertCanPayFee, loadPayableCourse, resolvePaddleAmount,
   ...require('./stripe.controller')
 };

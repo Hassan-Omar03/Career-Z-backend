@@ -64,15 +64,12 @@ async function handleStripeWebhook(req, res) {
 async function handleFeeCheckoutCompleted(checkout, session) {
   const fee = await Fee.findById(checkout.metadata.feeId).session(session);
   if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') return [];
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
-  Object.assign(fee, receipt, {
-    status: 'paid', paidAt: new Date(), paymentMethod: 'stripe', paidVia: 'Stripe (Card)',
-    transactionId: checkout.payment_intent || checkout.id, stripePaymentIntentId: checkout.payment_intent || null,
-    paidBy: checkout.metadata.payerId, escrowStatus: 'held'
-  });
-  await fee.save({ session });
-  return feeNotification(fee, 'Stripe', session);
+  const transactionId = checkout.payment_intent || checkout.id;
+  if ((fee.paymentHistory || []).some((p) => p.transactionId === transactionId)) return [];
+  return settleOnlineFee(fee, {
+    amount: Number(checkout.metadata.feeAmount) || undefined, method: 'stripe', paidVia: 'Stripe (Card)',
+    transactionId, payerId: checkout.metadata.payerId, extra: { stripePaymentIntentId: checkout.payment_intent || null }
+  }, 'Stripe', session);
 }
 
 async function settleCoursePurchase(purchase, paymentId, session) {
@@ -149,12 +146,30 @@ async function handlePaddleWebhook(req, res) {
   }, res);
 }
 
-async function feeNotification(fee, provider, session) {
+// The institution, the student and every approved parent hear about an online fee payment, with
+// who paid it; the payer gets a confirmation instead.
+// Shared by Paddle, Stripe and JazzCash: apply the payment (instalment + payer + status), issue
+// the receipt once fully paid, and pick the right notifications (normal or duplicate).
+async function settleOnlineFee(fee, { amount, method, paidVia, transactionId, payerId, extra = {} }, provider, session) {
+  const settlement = require('../services/feeSettlement.service');
+  const result = settlement.applyOnlinePayment(fee, { amount, method, paidVia, transactionId, payerId });
+  Object.assign(fee, extra);
+  if (!result.duplicate && fee.status === 'paid') {
+    Object.assign(fee, await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY), { escrowStatus: 'held' });
+    fee.receiptNumber = fee.receiptNumber || `RCPT-${Date.now().toString(36).toUpperCase()}-${String(transactionId).slice(-6).toUpperCase()}`;
+  }
+  await fee.save({ session });
+  if (result.duplicate) return settlement.duplicatePaymentNotifications(fee, { payerId, amount: result.amount, provider, transactionId });
+  return feeNotification(fee, provider, session, result.amount);
+}
+
+async function feeNotification(fee, provider, session, amountPaid) {
   const institution = await Institution.findById(fee.institution).session(session);
-  return institution ? [{
-    userId: institution.owner,
-    payload: { title: `Fee paid via ${provider}: ${fee.currency} ${fee.amount} — ${fee.title} (receipt ${fee.transactionId})`, sentBy: fee.paidBy }
-  }] : [];
+  return require('../services/feePayer.service').paidNotifications({
+    studentId: fee.student, payerId: fee.paidBy, what: fee.title,
+    amountText: `${fee.currency} ${amountPaid ?? fee.amount} via ${provider}${fee.status === 'partially_paid' ? ` (remaining ${fee.currency} ${fee.outstandingAmount})` : ''}`, receipt: fee.receiptNumber || fee.transactionId,
+    others: [institution?.owner]
+  });
 }
 
 async function handleFeePaddleCompleted(transaction, session) {
@@ -164,16 +179,12 @@ async function handleFeePaddleCompleted(transaction, session) {
     }
     const fee = await Fee.findById(transaction.custom_data.feeId).session(dbSession);
     if (!fee) throw new AppError('Fee record not found.', 404);
-    if (fee.status === 'paid') return [];
-    const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
-    Object.assign(fee, receipt, {
-      status: 'paid', paidAt: new Date(), paymentMethod: 'paddle', paidVia: 'Paddle (Card/Apple Pay/Google Pay)',
-      transactionId: transaction.id, paddleTransactionId: transaction.id, paidBy: transaction.custom_data.payerId,
-      escrowStatus: 'held',
-      receiptNumber: fee.receiptNumber || `RCPT-${Date.now().toString(36).toUpperCase()}-${transaction.id.slice(-6).toUpperCase()}`
-    });
-    await fee.save({ session: dbSession });
-    return feeNotification(fee, 'Paddle', dbSession);
+    // A webhook retry for a payment already recorded changes nothing.
+    if ((fee.paymentHistory || []).some((p) => p.transactionId === transaction.id)) return [];
+    return settleOnlineFee(fee, {
+      amount: Number(transaction.custom_data.feeAmount) || undefined, method: 'paddle', paidVia: 'Paddle (Card/Apple Pay/Google Pay)',
+      transactionId: transaction.id, payerId: transaction.custom_data.payerId, extra: { paddleTransactionId: transaction.id }
+    }, 'Paddle', dbSession);
   }, session);
 }
 
@@ -347,21 +358,42 @@ async function handleTutoringFeePaddleCompleted(transaction, session) {
     const TeacherStudentLink = require('../models/TeacherStudentLink');
     const link = await TeacherStudentLink.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
     if (!link) throw new AppError('Tutoring fee checkout not found.', 404);
-    if (link.feePaidAt) return [];
+    if (link.feeReceipt === transaction.id || (link.extraPayments || []).some((p) => p.transactionId === transaction.id)) return [];
+    if (link.feePaidAt) {
+      // Paid twice (student and parent at once): keep a record and tell the teacher to refund it.
+      const payerId = transaction.custom_data.payerId || link.student;
+      link.extraPayments.push({ transactionId: transaction.id, payer: payerId, amount: link.feeAmount, currency: link.feeCurrency, at: new Date() });
+      await link.save({ session: dbSession });
+      const text = `${link.feeCurrency} ${link.feeAmount} (${transaction.id}) arrived after this tuition fee was already paid.`;
+      return [
+        { userId: link.teacher, payload: { title: 'Duplicate tuition payment — please refund', body: text, sentBy: payerId } },
+        { userId: payerId, payload: { title: 'Second tuition payment received', body: `${text} Your tutor has been asked to refund it.`, sentBy: null } }
+      ];
+    }
 
+    const chargedAmount = link.paddleAmount ?? link.feeAmount, chargedCurrency = link.paddleCurrency || link.feeCurrency;
     if (transaction.custom_data.linkId !== link._id.toString() || transaction.custom_data.studentId !== link.student.toString()
-      || transaction.currency_code !== link.feeCurrency) {
+      || transaction.currency_code !== chargedCurrency) {
       throw new AppError('Tutoring fee transaction ownership/currency does not match.', 422);
     }
     const price = transaction.items?.[0]?.price?.unit_price;
-    if (Number(price?.amount) !== Math.round(link.feeAmount * 100) || price?.currency_code !== link.feeCurrency) {
+    if (Number(price?.amount) !== Math.round(chargedAmount * 100) || price?.currency_code !== chargedCurrency) {
       throw new AppError('Tutoring fee transaction amount does not match.', 422);
     }
 
+    // The payer is the student or one of their approved guardians (checked at checkout).
+    const payerId = transaction.custom_data.payerId || link.student;
+    const payer = await require('../services/feePayer.service').payerInfo(payerId, link.student);
     link.feePaidAt = new Date();
+    link.feePaidBy = payerId;
+    link.feePaidByRole = payer?.role || 'Student';
+    link.feeReceipt = transaction.id;
     await link.save({ session: dbSession });
 
-    return [{ userId: link.teacher, payload: { title: `Tuition fee paid: ${link.feeCurrency} ${link.feeAmount}`, body: `Receipt ${transaction.id}`, sentBy: null } }];
+    return require('../services/feePayer.service').paidNotifications({
+      studentId: link.student, payerId, what: 'Tuition fee', amountText: `${link.feeCurrency} ${link.feeAmount}`,
+      receipt: transaction.id, others: [link.teacher]
+    });
   }, session);
 }
 
@@ -369,5 +401,5 @@ module.exports = {
   handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
   handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted,
   handleTutoringFeePaddleCompleted, handleNowPaymentsWebhook, handleNowPaymentsCompleted,
-  feeNotification, settleCoursePurchase
+  feeNotification, settleCoursePurchase, settleOnlineFee
 };

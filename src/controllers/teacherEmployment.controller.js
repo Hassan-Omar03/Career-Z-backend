@@ -68,14 +68,17 @@ const listTeacherDirectory = asyncHandler(async (req, res) => {
   assertOwner(institution, req.user._id);
 
   const alreadyStaffIds = new Set(institution.staff.map((s) => s.user.toString()));
-  const { q } = req.query;
+  const { q, category } = req.query;
   const filter = { visibleToInstitutions: true, status: 'active' };
-  if (q && q.trim()) {
+  if (typeof q === 'string' && q.trim()) {
+    // Searched as plain text: regex characters typed into the box must not change the query.
+    const text = String(q).trim().slice(0, 80).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
     filter.$or = [
-      { subjects: { $regex: q.trim(), $options: 'i' } },
-      { bio: { $regex: q.trim(), $options: 'i' } }
+      { subjects: { $regex: text, $options: 'i' } },
+      { bio: { $regex: text, $options: 'i' } }
     ];
   }
+  if (category && TeacherProfile.TEACHER_CATEGORIES.includes(category)) filter.categories = category;
 
   const profiles = await TeacherProfile.find(filter)
     .populate('user', 'fullName profilePhoto')
@@ -92,6 +95,9 @@ const listTeacherDirectory = asyncHandler(async (req, res) => {
       experienceYears: p.experienceYears,
       qualifications: p.qualifications,
       bio: p.bio,
+      categories: p.categories || [],
+      teachingModes: p.teachingModes || [],
+      portfolioUrl: p.publicPortfolio ? `/teacher/${p.user._id}` : null,
       independent: p.independent
     }));
 

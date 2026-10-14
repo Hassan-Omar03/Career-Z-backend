@@ -16,6 +16,10 @@ const { emergencyControls } = require('./middleware/emergencyControls');
 const { handleStripeWebhook, handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
+// One reverse proxy (Nginx) sits in front in production. Trusting exactly that hop gives req.ip the
+// visitor's real address, so rate limits, IP blocks and audit logs apply per visitor instead of
+// treating every request as coming from 127.0.0.1.
+app.set('trust proxy', Number(process.env.TRUST_PROXY_HOPS ?? 1));
 
 app.use(helmet());
 app.use(
@@ -87,7 +91,8 @@ app.use('/api/auth', authLimiter);
 // Google Translate quota — rate-limited harder than general traffic to bound that cost.
 const translateLimiter = rateLimit({
   windowMs: 60 * 1000,
-  max: 30,
+  // A page is translated in batches of 30 strings and most come from the shared cache.
+  max: 120,
   standardHeaders: true,
   legacyHeaders: false,
   message: { success: false, message: 'Too many translation requests. Please slow down.' }

@@ -1,4 +1,5 @@
 const mongoose = require('mongoose');
+const { CV_TEMPLATES } = require('../utils/cvTemplates');
 
 // A plain, template-free CV — the "non-AI" CV Builder from the spec (AI-assisted
 // generation is a separate, later phase that needs the user's own AI API key).
@@ -40,7 +41,8 @@ const resumeSchema = new mongoose.Schema(
     ],
     skills: [{ type: String }],
     languages: [{ type: String }],
-    certifications: [{ type: String }]
+    certifications: [{ type: String }],
+    template: { type: String, enum: CV_TEMPLATES, default: 'modern' } // design used for PDF/Word downloads
   },
   { timestamps: true }
 );

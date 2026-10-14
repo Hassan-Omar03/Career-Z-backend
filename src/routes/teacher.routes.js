@@ -3,6 +3,9 @@ const ctrl = require('../controllers/teacher.controller');
 const { protect } = require('../middleware/auth');
 const { requirePermission } = require('../middleware/rbac');
 
+// Public teacher portfolio (opt-in by the teacher); no login needed.
+router.get('/:id/public', ctrl.getPublicPortfolio);
+
 router.use(protect);
 
 // Payslips belong to any employed user (teachers, wardens, drivers, etc.).
@@ -13,6 +16,7 @@ router.patch('/me/payslips/:id/verify-payment', ctrl.verifyMyPayslipPayment);
 router.use(requirePermission('teacher:profile:read:own'));
 
 router.get('/me', ctrl.getMyProfile);
+router.get('/me/standing', ctrl.getMyStanding);
 router.patch('/me', ctrl.updateMyProfile);
 router.get('/me/classes', ctrl.getMyClasses);
 router.post('/me/attendance', ctrl.markAttendance);

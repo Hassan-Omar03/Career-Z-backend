@@ -548,6 +548,16 @@ const listSubmissions = asyncHandler(async (req, res) => {
   return ok(res, submissions);
 });
 
+// GET /api/courses/assignments/:assignmentId/similarity — plagiarism check across this
+// assignment's written submissions (owner teacher only).
+const checkSubmissionSimilarity = asyncHandler(async (req, res) => {
+  const assignment = await Assignment.findById(req.params.assignmentId);
+  if (!assignment) throw new AppError('Assignment not found.', 404);
+  if (assignment.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this assignment.', 403);
+  const submissions = await Submission.find({ assignment: assignment._id }).select('student text').populate('student', 'fullName').lean();
+  return ok(res, require('../services/similarity.service').comparePairs(submissions.map((s) => ({ id: s._id, studentName: s.student?.fullName || 'Student', text: s.text }))));
+});
+
 // DELETE /api/courses/assignments/:assignmentId
 const deleteAssignment = asyncHandler(async (req, res) => {
   const assignment = await Assignment.findById(req.params.assignmentId);
@@ -931,7 +941,7 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
 
 module.exports = {
   createCourse, listCourses, myCourses, getCourse, updateCourse,
-  addLesson, updateLesson, deleteLesson, completeLesson, shareAiResource,
+  addLesson, updateLesson, deleteLesson, completeLesson, shareAiResource, checkSubmissionSimilarity,
   enroll, listEnrolledStudents, approveCompletion, listFaceDescriptors,
   createAssignment, listAssignments, deleteAssignment,
   submitAssignment, listSubmissions, gradeSubmission, requestAssignmentResubmission,

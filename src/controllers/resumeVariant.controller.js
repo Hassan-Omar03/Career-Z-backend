@@ -5,7 +5,7 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const autofill = require('../services/resumeAutofill.service');
 
-const CONTENT = ['headline', 'summary', 'location', 'education', 'experience', 'skills', 'languages', 'certifications', 'portfolio'];
+const CONTENT = ['headline', 'summary', 'location', 'education', 'experience', 'skills', 'languages', 'certifications', 'portfolio', 'template'];
 const pick = (src) => Object.fromEntries(CONTENT.filter((k) => src?.[k] !== undefined).map((k) => [k, src[k]]));
 
 async function own(req) {

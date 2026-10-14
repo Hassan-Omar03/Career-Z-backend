@@ -14,7 +14,10 @@ const normalize = (status) => (status === 'pending' ? 'pending_approval' : statu
 // has no request yet. Pending/rejected requests are left exactly as they are.
 async function ensureLegacyVerification(user) {
   if (!user?.createdAt || user.createdAt >= VERIFICATION_REQUIRED_FROM) return;
-  const roles = (user.roles || []).filter((r) => VERIFIED_ROLES.includes(r));
+  let roles = (user.roles || []).filter((r) => VERIFIED_ROLES.includes(r));
+  // Old accounts all received "student" by default. When the person signed up for something else
+  // (teacher, institute…), approving that default would open their dashboard as a student.
+  if (roles.length > 1) roles = roles.filter((r) => r !== 'student');
   if (!roles.length) return;
   const existing = new Set((await RoleRequest.find({ user: user._id, requestedRole: { $in: roles } }).select('requestedRole')).map((r) => r.requestedRole));
   for (const role of roles.filter((r) => !existing.has(r))) {

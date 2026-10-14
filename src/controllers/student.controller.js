@@ -248,7 +248,9 @@ const getMyFees = asyncHandler(async (req, res) => {
   // Populated so student/parent dashboards can group fees by billing frequency per institution
   // (spec: "clearly group fees as monthly, semester, annual and one-time for each institution").
   const fees = await Fee.find({ student: req.user._id }).populate('institution', 'name').populate('schedule', 'billingFrequency').sort({ createdAt: -1 });
-  return ok(res, fees.map(require('../services/familyAccess.service').safeFee));
+  const payers = require('../services/feePayer.service');
+  const rows = await payers.withPayers(fees.map(require('../services/familyAccess.service').safeFee), req.user._id);
+  return ok(res, [...await payers.tutoringFeeRows(req.user._id), ...rows]);
 });
 
 // PATCH /api/students/me/fees/:feeId/pay — report a manual payment for institution verification.

@@ -16,6 +16,12 @@ router.patch('/institution-fee-commission-rate', requireRole('super_admin'), ctr
 // AI provider availability — Super Admin controls which BYOK providers users/institutions may connect.
 router.get('/ai-providers', ctrl.getAiProviderConfig);
 router.patch('/ai-providers', requireRole('super_admin'), ctrl.setAiProviderConfig);
+// Homepage assistant: the platform's own AI key (Super Admin only; never sent back to the browser).
+const siteAssistant = require('../services/siteAssistant.service');
+const wrap = require('../utils/asyncHandler');
+router.get('/site-assistant', requireRole('super_admin'), wrap(async (req, res) => require('../utils/apiResponse').ok(res, await siteAssistant.status())));
+router.put('/site-assistant', requireRole('super_admin'), wrap(async (req, res) => { try { return require('../utils/apiResponse').ok(res, await siteAssistant.saveCredential(req.body || {}, req.user._id), 'Homepage assistant connected.'); } catch (e) { throw new (require('../utils/AppError'))(e.message, e.statusCode || 500); } }));
+router.delete('/site-assistant', requireRole('super_admin'), wrap(async (req, res) => require('../utils/apiResponse').ok(res, await siteAssistant.removeCredential(), 'Homepage assistant disconnected.')));
 
 // Subscription plan pricing/limits — Super Admin controls the business model, everyone else just reads it.
 router.get('/subscription-plans', ctrl.getSubscriptionPlanConfig);

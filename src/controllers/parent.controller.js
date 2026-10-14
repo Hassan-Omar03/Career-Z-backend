@@ -216,7 +216,9 @@ const childFees = asyncHandler(async (req, res) => {
   assertApprovedLink(links, req.params.studentId);
 
   const fees = await Fee.find({ student: req.params.studentId }).populate('institution', 'name').populate('schedule', 'billingFrequency').sort({ createdAt: -1 });
-  return ok(res, fees.map(family.safeFee));
+  const payers = require('../services/feePayer.service');
+  const rows = await payers.withPayers(fees.map(family.safeFee), req.params.studentId);
+  return ok(res, [...await payers.tutoringFeeRows(req.params.studentId), ...rows]);
 });
 
 // GET /api/parents/children/:studentId/timetable

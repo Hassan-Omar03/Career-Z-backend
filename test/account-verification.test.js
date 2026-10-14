@@ -290,14 +290,16 @@ test('accounts created before mandatory verification are approved automatically 
   const token = tokenFor(legacy);
   const status = (await call('GET', '/onboarding/status', { token })).body.data;
   assert.equal(status.state, 'profile_incomplete');
-  assert.ok(status.roles.every((r) => r.status === 'approved'));
-  assert.equal((await RoleRequest.find({ user: legacy._id, legacy: true })).length, 2);
+  // The old default 'student' is not auto-approved next to the role they signed up for, so the
+  // account never opens as a student; only 'teacher' is approved automatically.
+  assert.deepEqual((await RoleRequest.find({ user: legacy._id, legacy: true })).map((r) => r.requestedRole), ['teacher']);
+  assert.equal(status.roles.find((r) => r.role === 'teacher').status, 'approved');
   assert.equal((await dashboard(token)).status, 403);
-  const fields = cfg.profileFields('student');
-  await call('PUT', '/onboarding/profile', { token, body: { role: 'student', fields: Object.fromEntries(fields.map((f) => [f.key, validValue(f)])), complete: true } });
+  const fields = cfg.profileFields('teacher');
+  await call('PUT', '/onboarding/profile', { token, body: { role: 'teacher', fields: Object.fromEntries(fields.map((f) => [f.key, validValue(f)])), complete: true } });
   const after = (await call('GET', '/onboarding/status', { token })).body.data;
   assert.equal(after.state, 'ok');
-  assert.deepEqual(after.accessibleRoles, ['student'], 'teacher stays locked until its own profile is complete');
+  assert.deepEqual(after.accessibleRoles, ['teacher'], 'opens as the teacher they signed up as, not as a student');
   assert.equal((await dashboard(token)).status, 200);
   // A new account created after the cut-off gets nothing automatically.
   const { VERIFICATION_REQUIRED_FROM } = require('../src/services/accountGate.service');

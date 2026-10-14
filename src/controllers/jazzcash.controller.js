@@ -74,13 +74,13 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
   const { assertCanPayFee } = require('./payment.controller');
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') throw new AppError('This fee has already been paid.', 400);
   await assertCanPayFee(fee, req.user);
+  const owed = require('../services/feeSettlement.service').assertPayableOnline(fee);
 
-  const amountPaisa = await toPaisa(fee.amount, fee.currency || 'PKR');
+  const amountPaisa = await toPaisa(owed, fee.currency || 'PKR');
   const payment = await JazzCashPayment.create({
     txnRefNo: jazzCash.newTxnRefNo(), kind: 'fee', payer: req.user._id, fee: fee._id,
-    amountPaisa, amount: fee.amount, currency: normalizeCurrency(fee.currency || 'PKR'),
+    amountPaisa, amount: owed, currency: normalizeCurrency(fee.currency || 'PKR'),
     previousFeeStatus: fee.status === 'processing' ? 'pending' : fee.status, returnOrigin: returnOriginOf(req)
   });
   fee.status = 'processing';
@@ -162,16 +162,11 @@ async function releaseFailed(payment, session) {
 async function settleFee(payment, receiptId, session) {
   const fee = await Fee.findById(payment.fee).session(session);
   if (!fee) throw new AppError('Fee record not found.', 404);
-  if (fee.status === 'paid') return [];
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
-  Object.assign(fee, receipt, {
-    status: 'paid', paidAt: new Date(), paymentMethod: 'jazzcash', paidVia: 'JazzCash',
-    transactionId: receiptId, paidBy: payment.payer, escrowStatus: 'held',
-    receiptNumber: fee.receiptNumber || `RCPT-${Date.now().toString(36).toUpperCase()}-${payment.txnRefNo.slice(-6)}`
-  });
-  await fee.save({ session });
-  const { feeNotification } = require('./webhook.controller');
-  return feeNotification(fee, 'JazzCash', session);
+  if ((fee.paymentHistory || []).some((p) => p.transactionId === receiptId)) return [];
+  // JazzCash marks the fee 'processing' while the customer is on its page; settle from the real status.
+  if (fee.status === 'processing') fee.status = payment.previousFeeStatus || 'pending';
+  const { settleOnlineFee } = require('./webhook.controller');
+  return settleOnlineFee(fee, { amount: payment.amount, method: 'jazzcash', paidVia: 'JazzCash', transactionId: receiptId, payerId: payment.payer }, 'JazzCash', session);
 }
 
 async function settleCourse(payment, receiptId, session) {

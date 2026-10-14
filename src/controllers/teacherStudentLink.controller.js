@@ -117,6 +117,13 @@ async function activateLink(link, actorId) {
   );
   await notify(link.teacher, { title: 'Tuition relationship is now active', sentBy: actorId }).catch(() => {});
   await notify(link.student, { title: 'Tuition relationship is now active', sentBy: actorId }).catch(() => {});
+  // A tuition fee is due: the student and every parent see it on their Fees page and can pay it.
+  if (link.feeAmount > 0 && !link.feePaidAt) {
+    const guardians = await ParentChildLink.find({ student: link.student, status: 'approved' }).distinct('parent');
+    for (const userId of [link.student, ...guardians]) {
+      await notify(userId, { title: `Tuition fee due: ${link.feeCurrency} ${link.feeAmount}`, body: 'Pay it from the Fees page. The student or a parent can pay.', sentBy: link.teacher }).catch(() => {});
+    }
+  }
 }
 
 // PATCH /api/teacher-students/:id/guardian-approve — only a parent with a real, approved link to
@@ -190,13 +197,13 @@ const setLinkStatus = asyncHandler(async (req, res) => {
 
 // GET /api/teacher-students/mine — teacher's own relationships (invited/active/history).
 const myLinksAsTeacher = asyncHandler(async (req, res) => {
-  const links = await TeacherStudentLink.find({ teacher: req.user._id }).populate('student', 'fullName email').populate('course', 'title').sort({ createdAt: -1 });
+  const links = await TeacherStudentLink.find({ teacher: req.user._id }).populate('student', 'fullName email').populate('course', 'title').populate('feePaidBy', 'fullName').sort({ createdAt: -1 });
   return ok(res, links);
 });
 
 // GET /api/teacher-students/as-student — a student's own invitations/relationships.
 const myLinksAsStudent = asyncHandler(async (req, res) => {
-  const links = await TeacherStudentLink.find({ student: req.user._id }).populate('teacher', 'fullName email').populate('course', 'title').sort({ createdAt: -1 });
+  const links = await TeacherStudentLink.find({ student: req.user._id }).populate('teacher', 'fullName email').populate('course', 'title').populate('feePaidBy', 'fullName').sort({ createdAt: -1 });
   return ok(res, links);
 });
 
@@ -209,23 +216,35 @@ const pendingGuardianApproval = asyncHandler(async (req, res) => {
   return ok(res, links);
 });
 
+// The student or any of their approved parents/guardians may pay the tuition fee.
+async function assertStudentOrGuardian(link, userId, action) {
+  if (link.student.toString() === userId.toString()) return;
+  const guardian = await ParentChildLink.findOne({ parent: userId, student: link.student, status: 'approved' }).select('permissions');
+  if (!guardian || guardian.permissions?.payFees === false) throw new AppError(`Only the student or their parent can ${action}.`, 403);
+}
+
 // POST /api/teacher-students/:id/fee-checkout — optional fee, verified Paddle checkout (spec:
 // "Independent teacher fees optional hon aur verified checkout se process hon").
 const createFeeCheckout = asyncHandler(async (req, res) => {
   if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
   const link = await TeacherStudentLink.findById(req.params.id).populate('course', 'title');
   if (!link) throw new AppError('Relationship not found.', 404);
-  if (link.student.toString() !== req.user._id.toString()) throw new AppError('Only the student can pay this fee.', 403);
+  await assertStudentOrGuardian(link, req.user._id, 'pay this fee');
   if (!['active', 'paused'].includes(link.status)) throw new AppError('This relationship is not active.', 400);
   if (!link.feeAmount || link.feeAmount <= 0) throw new AppError('No fee is set for this relationship.', 400);
   if (link.feePaidAt) throw new AppError('This fee has already been paid.', 400);
 
+  // Paddle does not take every currency (e.g. PKR); like institution fees, those are charged in USD
+  // at the configured rate, while the tutoring record keeps the agreed amount and currency.
+  const { amount: paddleAmount, currencyCode: paddleCurrency } = await require('./payment.controller').resolvePaddleAmount(link.feeAmount, link.feeCurrency);
   const transaction = await paddleService.createTransaction({
-    title: `Tuition fee — ${link.course?.title || link.subject}`, amount: link.feeAmount, currencyCode: link.feeCurrency,
+    title: `Tuition fee — ${link.course?.title || link.subject}`, amount: paddleAmount, currencyCode: paddleCurrency,
     customerEmail: req.user.email,
-    metadata: { kind: 'tutoring_fee', linkId: link._id.toString(), studentId: req.user._id.toString() }
+    metadata: { kind: 'tutoring_fee', linkId: link._id.toString(), studentId: link.student.toString(), payerId: req.user._id.toString() }
   });
   link.paddleTransactionId = transaction.id;
+  link.paddleAmount = paddleAmount;
+  link.paddleCurrency = paddleCurrency;
   await link.save();
   return ok(res, { transactionId: transaction.id, status: transaction.status });
 });
@@ -233,7 +252,7 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
 const syncFeeCheckout = asyncHandler(async (req, res) => {
   const link = await TeacherStudentLink.findById(req.params.id);
   if (!link) throw new AppError('Relationship not found.', 404);
-  if (link.student.toString() !== req.user._id.toString()) throw new AppError('Only the student can check this fee.', 403);
+  await assertStudentOrGuardian(link, req.user._id, 'check this fee');
   if (!link.feePaidAt && link.paddleTransactionId) {
     const transaction = await paddleService.getTransaction(link.paddleTransactionId);
     if (transaction.status === 'completed') {
