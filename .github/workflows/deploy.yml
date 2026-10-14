@@ -20,7 +20,19 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci --no-audit --no-fund
-      - run: npm test
+      - name: Run tests
+        shell: bash
+        run: |
+          set -o pipefail
+          node --test --test-concurrency=2 --test-reporter=spec test/*.test.js 2>&1 | tee test-output.log
+      # On failure, publish the failing tests and their errors as one annotation (readable on the
+      # run page and through the API) instead of only "exit code 1".
+      - name: Report failing tests
+        if: failure()
+        shell: bash
+        run: |
+          summary=$(sed -n '/failing tests:/,$p' test-output.log | head -150 | sed -e 's/[[:cntrl:]]//g' -e 's/%/%25/g' | awk '{printf "%s%%0A", $0}')
+          echo "::error title=Failing tests::${summary:-No failing-test summary found; see the Run tests step}"
 
   deploy:
     needs: test
