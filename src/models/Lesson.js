@@ -36,6 +36,7 @@ const lessonSchema = new mongoose.Schema(
       department: { type: String, default: '', maxlength: 200 },
       aiAssisted: { type: Boolean, default: false },
       aiNote: { type: String, default: '', maxlength: 500 }, // how AI was used
+      aiMediaType: { type: String, enum: ['', 'image', 'audio', 'video', 'model'], default: '' }, // AI Create Media file in resources[0]
       lastReviewedAt: { type: Date, default: null },
       lastReviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
     }

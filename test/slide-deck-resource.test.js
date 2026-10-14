@@ -75,3 +75,32 @@ test('deck sharing rejects embedded base64 images so MongoDB cannot be bloated',
   );
   assert.equal(await Lesson.countDocuments({ course: course._id }), 0);
 });
+
+test('teacher shares AI media saved to CareerZ storage; expiring provider links are refused', async () => {
+  const env = require('../src/config/env');
+  const original = env.cloudinary.cloudName;
+  env.cloudinary.cloudName = 'careerz-test';
+  try {
+    const share = (media) => invoke(ctrl.shareAiResource, { user: teacher, params: { id: course._id }, body: { title: 'Heart diagram', content: 'Label the four chambers.', media } });
+    const image = await share({ type: 'image', url: 'https://res.cloudinary.com/careerz-test/image/upload/v1/heart.png', name: 'Heart diagram' });
+    assert.equal(image.status, 201);
+    assert.deepEqual(image.body.data.lesson.resources.map((r) => [r.name, r.url]), [['Heart diagram', 'https://res.cloudinary.com/careerz-test/image/upload/v1/heart.png']]);
+    assert.equal(image.body.data.lesson.metadata.aiMediaType, 'image');
+    assert.equal(image.body.data.lesson.videoUrl, null);
+    assert.equal(image.body.data.notifiedCount, 1);
+
+    const video = await share({ type: 'video', url: 'https://res.cloudinary.com/careerz-test/video/upload/v1/clip.mp4' });
+    assert.equal(video.body.data.lesson.videoUrl, 'https://res.cloudinary.com/careerz-test/video/upload/v1/clip.mp4');
+
+    for (const media of [
+      { type: 'image', url: 'https://oaidalleapiprodscus.blob.core.windows.net/expiring.png' },
+      { type: 'image', url: 'https://res.cloudinary.com/someone-else/image/upload/x.png' },
+      { type: 'pdf', url: 'https://res.cloudinary.com/careerz-test/raw/upload/x.pdf' }
+    ]) await assert.rejects(share(media), (err) => err.statusCode === 422);
+
+    const studentView = await invoke(ctrl.getCourse, { user: student, params: { id: course._id } });
+    assert.equal(studentView.body.data.lessons.length, 2);
+  } finally {
+    env.cloudinary.cloudName = original;
+  }
+});

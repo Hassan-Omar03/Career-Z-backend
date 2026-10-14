@@ -46,6 +46,21 @@ function sanitizeSlideDeck(deck) {
   };
 }
 
+// AI Create Media output (image, narration, video, 3D model) shared to a class. Provider links
+// expire within hours, so only files already saved to CareerZ's own Cloudinary account are
+// accepted; the browser uploads there first.
+const LESSON_MEDIA_TYPES = { image: 'Image', audio: 'Narration', video: 'Video', model: '3D model' };
+function sanitizeLessonMedia(media) {
+  const type = String(media?.type || '');
+  if (!LESSON_MEDIA_TYPES[type]) throw new AppError(`Media type must be one of: ${Object.keys(LESSON_MEDIA_TYPES).join(', ')}.`, 422);
+  const url = String(media.url || '').trim();
+  const cloud = require('../config/env').cloudinary.cloudName;
+  if (!cloud || !url.startsWith(`https://res.cloudinary.com/${cloud}/`)) {
+    throw new AppError('Save the media to CareerZ storage before sharing it with students.', 422);
+  }
+  return { type, url, name: String(media.name || LESSON_MEDIA_TYPES[type]).trim().slice(0, 200) };
+}
+
 function gradeFromPercent(percent) {
   if (percent >= 90) return 'A+';
   if (percent >= 80) return 'A';
@@ -199,10 +214,11 @@ const shareAiResource = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
-  const { title, content, deck } = req.body;
-  if (!title || (!content && !deck)) throw new AppError('Title and content or a slide deck are required.', 422);
+  const { title, content, deck, media } = req.body;
+  if (!title || (!content && !deck && !media)) throw new AppError('Title and content, a slide deck or media are required.', 422);
 
   const cleanDeck = deck ? sanitizeSlideDeck(deck) : undefined;
+  const cleanMedia = media ? sanitizeLessonMedia(media) : null;
 
   const lastLesson = await Lesson.findOne({ course: course._id }).sort({ order: -1 });
   const lesson = await Lesson.create({
@@ -211,12 +227,15 @@ const shareAiResource = asyncHandler(async (req, res) => {
     content: content || '',
     kind: cleanDeck ? 'slide_deck' : 'lesson',
     deck: cleanDeck,
-    metadata: { author: req.user._id, aiAssisted: true, aiNote: 'Created with the CareerZ AI teaching tools (Save to Class).' },
+    ...(cleanMedia ? { resources: [{ name: cleanMedia.name, url: cleanMedia.url }], ...(cleanMedia.type === 'video' ? { videoUrl: cleanMedia.url } : {}) } : {}),
+    metadata: { author: req.user._id, aiAssisted: true, aiNote: 'Created with the CareerZ AI teaching tools (Save to Class).', ...(cleanMedia ? { aiMediaType: cleanMedia.type } : {}) },
     published: course.approvalWorkflow !== 'staged',
     approvalStatus: course.approvalWorkflow === 'staged' ? 'draft' : 'approved',
     order: (lastLesson?.order || 0) + 1
   });
-  await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
+  // Progress depends on the new lesson count but not on this response; it runs many queries, so
+  // it continues in the background instead of holding up the teacher's publish.
+  recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
 
   // Same rule the student's own course/lesson view already enforces (getCourse, above): a
   // student with an unpaid blocking fee at this institution does not get told about new material
@@ -237,11 +256,13 @@ const shareAiResource = asyncHandler(async (req, res) => {
     notifiable.push(e);
   }
 
-  await Promise.all(notifiable.map((e) => notify(
+  // Respond as soon as the lesson is saved: notifications (and their emails, which can take a
+  // while per student) go out in the background so publishing never waits on the mail server.
+  Promise.all(notifiable.map((e) => notify(
     e.student._id,
     { title: `New lecture shared: ${title}`, body: `${req.user.fullName} shared "${title}" in ${course.title}.`, sentBy: req.user._id },
     { email: true, toAddress: e.student.email, ctaUrl: `/courses/${course._id}`, ctaLabel: 'View lecture' }
-  )));
+  ))).catch((err) => console.error('[course.controller] Lecture notifications failed:', err.message));
 
   return created(res, { lesson, notifiedCount: notifiable.length, feeBlockedCount: enrollments.length - notifiable.length });
 });

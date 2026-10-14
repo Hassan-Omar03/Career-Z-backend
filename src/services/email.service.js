@@ -12,7 +12,11 @@ if (env.smtp.host) {
     host: env.smtp.host,
     port: Number(env.smtp.port),
     secure: Number(env.smtp.port) === 465,
-    auth: env.smtp.user ? { user: env.smtp.user, pass: env.smtp.pass } : undefined
+    auth: env.smtp.user ? { user: env.smtp.user, pass: env.smtp.pass } : undefined,
+    // Nodemailer's defaults wait minutes on an unreachable server; fail fast instead.
+    connectionTimeout: 10000,
+    greetingTimeout: 10000,
+    socketTimeout: 20000
   });
 }
 

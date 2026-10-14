@@ -115,6 +115,9 @@ router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);
 
 router.get('/:id/reports', ctrl.getInstitutionReports);
 router.post('/:id/ai-insights', require('../controllers/aiOperations.controller').insights);
+router.get('/:id/ai-insights/reports', require('../controllers/aiOperations.controller').listReports);
+router.get('/:id/ai-insights/reports/:reportId', require('../controllers/aiOperations.controller').getReport);
+router.delete('/:id/ai-insights/reports/:reportId', require('../controllers/aiOperations.controller').deleteReport);
 router.get('/:id/exams', ctrl.listInstitutionExams);
 
 module.exports = router;

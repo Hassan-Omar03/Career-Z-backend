@@ -5,6 +5,7 @@ const { translateTexts, isTranslationConfigured } = require('../services/transla
 
 const SUPPORTED_LANGS = ['en', 'ur', 'ar', 'zh', 'fr', 'de', 'es', 'tr', 'hi', 'bn', 'fa', 'ru', 'ms', 'id', 'pt', 'it', 'ja', 'ko'];
 const MAX_TEXTS_PER_REQUEST = 200;
+const MAX_TEXT_LENGTH = 2000;
 
 // GET /api/translate/config — the frontend needs to know whether live translation is available
 // at all before it starts walking the DOM trying to translate anything.
@@ -20,6 +21,8 @@ const translateBatch = asyncHandler(async (req, res) => {
   if (!Array.isArray(texts) || texts.length === 0) throw new AppError('texts must be a non-empty array.', 422);
   if (texts.length > MAX_TEXTS_PER_REQUEST) throw new AppError(`No more than ${MAX_TEXTS_PER_REQUEST} texts per request.`, 422);
   if (!targetLang || !SUPPORTED_LANGS.includes(targetLang)) throw new AppError('A supported targetLang is required.', 422);
+  // Public and cached for everyone, so only short UI strings: no essays or binary in the cache.
+  if (texts.some((x) => typeof x !== 'string' || x.length > MAX_TEXT_LENGTH)) throw new AppError(`Each text must be a string of at most ${MAX_TEXT_LENGTH} characters.`, 422);
 
   try {
     const translations = await translateTexts(texts, targetLang);

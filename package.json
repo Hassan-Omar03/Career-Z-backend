@@ -14,7 +14,8 @@
     "jazzcash:simulate": "node scripts/jazzcash-simulate.js",
     "seed:mohammad-active": "node src/seed/seedMohammadActive.js",
     "seed:complete-test-profiles": "node src/seed/completeTestProfiles.js",
-    "seed:remove-institution-test-quiz": "node src/seed/removeInstitutionTestQuiz.js"
+    "seed:remove-institution-test-quiz": "node src/seed/removeInstitutionTestQuiz.js",
+    "seed:teacher-ai": "node src/seed/seedTeacherAiContent.js"
   },
   "dependencies": {
     "@simplewebauthn/server": "^14.0.2",

@@ -1,5 +1,6 @@
 const mongoose = require('mongoose');
 const env = require('./env');
+const { repairLegacyIndexes } = require('./legacyIndexes');
 
 let connectionPromise;
 let memoryServer;
@@ -29,6 +30,8 @@ async function connectDB() {
       uri = memoryServer.getUri();
     }
     await mongoose.connect(uri, { serverSelectionTimeoutMS: 8000 });
+    // Never block startup on this: a failed repair leaves the old index, which only affects AI keys.
+    await repairLegacyIndexes(mongoose.connection.db).catch((error) => console.error('[DB] Legacy index repair failed:', error.message));
     return mongoose.connection;
   })();
 

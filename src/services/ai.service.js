@@ -135,11 +135,24 @@ async function removeInstitutionCredential(institutionId, userId, purpose) {
 // and that institution has its own key for this purpose, use it (billed to the institution) —
 // otherwise fall back to the caller's personal key. Institution access is checked either way, so
 // a caller can't silently "borrow" an institution's key just by passing its id.
+// A key saved under a different server encryption secret (e.g. before a server move) can no longer
+// be decrypted; say how to fix it instead of surfacing the raw crypto error.
+function readKey(cred) {
+  try {
+    return decrypt(cred.apiKeyEncrypted);
+  } catch {
+    const whose = cred.scope === 'institution' ? 'This institution\'s' : 'Your';
+    const err = new Error(`${whose} saved ${cred.purpose} API key can no longer be read by the server. Disconnect it and connect the key again.`);
+    err.statusCode = 409;
+    throw err;
+  }
+}
+
 async function getDecryptedCredential(userId, purpose, institutionId) {
   if (institutionId) {
     await assertInstitutionAiAccess(institutionId, userId);
     const instCred = await AiCredential.findOne({ institution: institutionId, purpose, scope: 'institution' });
-    if (instCred) return { provider: instCred.provider, apiKey: decrypt(instCred.apiKeyEncrypted), model: await resolveModel(purpose, instCred.provider, instCred.model) };
+    if (instCred) return { provider: instCred.provider, apiKey: readKey(instCred), model: await resolveModel(purpose, instCred.provider, instCred.model) };
   }
 
   const cred = await AiCredential.findOne({ user: userId, purpose, scope: 'user' });
@@ -148,7 +161,7 @@ async function getDecryptedCredential(userId, purpose, institutionId) {
     err.statusCode = 503;
     throw err;
   }
-  return { provider: cred.provider, apiKey: decrypt(cred.apiKeyEncrypted), model: await resolveModel(purpose, cred.provider, cred.model) };
+  return { provider: cred.provider, apiKey: readKey(cred), model: await resolveModel(purpose, cred.provider, cred.model) };
 }
 
 function providerError(payload, res) {
@@ -178,7 +191,7 @@ async function callClaude(apiKey, model, systemPrompt, userPrompt) {
   const res = await fetch('https://api.anthropic.com/v1/messages', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' },
-    body: JSON.stringify({ model, max_tokens: 1500, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] })
+    body: JSON.stringify({ model, max_tokens: 4096, system: systemPrompt, messages: [{ role: 'user', content: userPrompt }] })
   });
   const payload = await res.json();
   if (!res.ok) throw providerError(payload, res);
