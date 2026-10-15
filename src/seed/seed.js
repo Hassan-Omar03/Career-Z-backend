@@ -43,7 +43,7 @@ const currencies = [
   { name: 'Pakistani Rupee', code: 'PKR', symbol: 'Rs', symbolPosition: 'left', exchangeRateToUSD: 0.0036 },
   { name: 'Saudi Riyal', code: 'SAR', symbol: 'SAR', symbolPosition: 'left', exchangeRateToUSD: 0.27 },
   { name: 'UAE Dirham', code: 'AED', symbol: 'AED', symbolPosition: 'left', exchangeRateToUSD: 0.27 },
-  { name: 'British Pound', code: 'GBP', symbol: 'Â£', symbolPosition: 'left', exchangeRateToUSD: 1.27 }
+  { name: 'British Pound', code: 'GBP', symbol: '£', symbolPosition: 'left', exchangeRateToUSD: 1.27 }
 ];
 
 const featureFlags = [
@@ -502,8 +502,8 @@ async function seedGcufAcademicDemo() {
   ];
   const now = Date.now();
   await Exam.findOneAndUpdate(
-    { course: courses[0]._id, title: 'Introduction to Computing â€” Comprehensive Test' },
-    { $set: { teacher: teachers[0]._id, institution: institution._id, classSection: section._id, subject: courses[0].subject, academicSession: '2026-2030', term: 'Semester 1', type: 'test', durationMinutes: 90, scheduledDate: new Date(now - 60 * 60 * 1000), closesAt: new Date(now + 7 * 24 * 60 * 60 * 1000), passingPercent: 50, venue: 'Online â€” CareerZ Examination Portal', instructions: 'Attempt every question. The teacher reviews and grades every MCQ and written answer. Write detailed answers for long questions.', questions: examQuestions, published: true } },
+    { course: courses[0]._id, title: 'Introduction to Computing — Comprehensive Test' },
+    { $set: { teacher: teachers[0]._id, institution: institution._id, classSection: section._id, subject: courses[0].subject, academicSession: '2026-2030', term: 'Semester 1', type: 'test', durationMinutes: 90, scheduledDate: new Date(now - 60 * 60 * 1000), closesAt: new Date(now + 7 * 24 * 60 * 60 * 1000), passingPercent: 50, venue: 'Online — CareerZ Examination Portal', instructions: 'Attempt every question. The teacher reviews and grades every MCQ and written answer. Write detailed answers for long questions.', questions: examQuestions, published: true } },
     { upsert: true, new: true, setDefaultsOnInsert: true }
   );
 

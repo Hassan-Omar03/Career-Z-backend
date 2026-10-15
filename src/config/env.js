@@ -69,6 +69,9 @@ module.exports = {
   // set LIBRETRANSLATE_URL to switch, e.g. http://localhost:5555 or their server's address).
   translation: {
     provider: process.env.TRANSLATION_PROVIDER || 'mymemory',
+    // Google's public web translator (the one translate.google.com uses): no key, no account,
+    // neural quality. Runs first; the provider above is the fallback. TRANSLATION_WEB=off disables.
+    webEngine: process.env.TRANSLATION_WEB !== 'off',
     myMemoryEmail: process.env.MYMEMORY_EMAIL || '', // optional — raises the free daily cap
     libretranslateUrl: process.env.LIBRETRANSLATE_URL || '',
     libretranslateApiKey: process.env.LIBRETRANSLATE_API_KEY || '',

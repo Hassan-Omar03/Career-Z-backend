@@ -18,7 +18,7 @@ const { guide } = require('./platformGuide.service');
 // The only fixed text here is the system-level behaviour and safety rules.
 
 const SETTING_KEY = 'site_assistant';
-const PROVIDERS = ['openai', 'claude', 'gemini', 'deepseek'];
+const PROVIDERS = ['openai', 'claude', 'gemini', 'deepseek', 'perplexity'];
 const MAX_TURNS = 12;
 const MAX_CHARS = 1500;
 const LOOKUP_TYPES = ['jobs', 'scholarships', 'institutions', 'marketplace', 'courses', 'teachers', 'stats'];

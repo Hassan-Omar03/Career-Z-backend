@@ -11,7 +11,7 @@ const { assertAiInstitutionKeyAllowed } = require('../utils/subscriptionGate');
 
 const PURPOSES = ['text', 'image', 'threed', 'voice', 'avatar', 'animation'];
 const PROVIDERS_BY_PURPOSE = {
-  text: ['openai', 'claude', 'gemini', 'deepseek'],
+  text: ['openai', 'claude', 'gemini', 'deepseek', 'perplexity', 'local'],
   image: ['openai', 'stability'],
   threed: ['meshy'],
   voice: ['elevenlabs', 'google'],
@@ -19,6 +19,19 @@ const PROVIDERS_BY_PURPOSE = {
   animation: ['runway']
 };
 const MAX_PROMPT_LENGTH = 4000;
+
+// Key, model and (for a self-hosted "local" server) address of a new connection. Cloud providers
+// need a key; a local server needs its address and model name, and its key is optional.
+async function connectionDetails(provider, apiKey, model, baseUrl) {
+  const key = String(apiKey || '').trim();
+  if (provider !== 'local') {
+    if (key.length < 8) throw new AppError('A valid API key is required.', 422);
+    return { apiKey: key, model: String(model || '').trim(), baseUrl: '' };
+  }
+  if (!String(model || '').trim()) throw new AppError('Enter the model name your local AI server runs, e.g. llama3.1 or qwen2.5.', 422);
+  const url = await require('../utils/safeUrl').assertPublicHttpUrl(baseUrl).catch((err) => { throw new AppError(err.message, err.statusCode || 422); });
+  return { apiKey: key || aiService.LOCAL_NO_KEY, model: String(model).trim().slice(0, 120), baseUrl: url.href.replace(/\/+$/, '') };
+}
 const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
 
 // Super Admin can narrow (never widen beyond PROVIDERS_BY_PURPOSE) which providers are
@@ -83,9 +96,9 @@ const saveConfig = asyncHandler(async (req, res) => {
   if (!provider || !enabledProviders.includes(provider)) {
     throw new AppError(`For ${purpose}, provider must be one of: ${enabledProviders.join(', ')}.`, 422);
   }
-  if (!apiKey || apiKey.trim().length < 8) throw new AppError('A valid API key is required.', 422);
+  const connection = await connectionDetails(provider, apiKey, model, req.body.baseUrl);
 
-  await aiService.saveCredential(req.user._id, purpose, provider, apiKey.trim(), model?.trim());
+  await aiService.saveCredential(req.user._id, purpose, provider, connection.apiKey, connection.model, connection.baseUrl);
   return ok(res, { configured: true, purpose, provider }, 'AI provider connected.');
 });
 
@@ -118,14 +131,14 @@ const saveInstitutionConfig = asyncHandler(async (req, res) => {
   if (!provider || !enabledProviders.includes(provider)) {
     throw new AppError(`For ${purpose}, provider must be one of: ${enabledProviders.join(', ')}.`, 422);
   }
-  if (!apiKey || apiKey.trim().length < 8) throw new AppError('A valid API key is required.', 422);
+  const connection = await connectionDetails(provider, apiKey, model, req.body.baseUrl);
 
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   await assertAiInstitutionKeyAllowed(institution);
 
   try {
-    await aiService.saveInstitutionCredential(req.params.id, req.user._id, purpose, provider, apiKey.trim(), model?.trim());
+    await aiService.saveInstitutionCredential(req.params.id, req.user._id, purpose, provider, connection.apiKey, connection.model, connection.baseUrl);
     return ok(res, { configured: true, purpose, provider }, 'Institution AI provider connected.');
   } catch (err) {
     throw new AppError(err.message, err.statusCode || 500);

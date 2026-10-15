@@ -173,7 +173,7 @@ async function listInstitutes(query = {}) {
 }
 async function instituteDetail(id) {
   const filter = await instituteFilter({});
-  const i = await Institution.findOne({ ...filter, _id: id }).select('name type city country logo coverImage description website owner').lean();
+  const i = await Institution.findOne({ ...filter, _id: id }).select('name type city country logo coverImage description website owner address accreditations affiliations socialLinks location').lean();
   if (!i) return null;
   const openJobs = await jobFilter({});
   const [programs, courses, jobs, settings] = await Promise.all([
@@ -184,7 +184,7 @@ async function instituteDetail(id) {
     require('../models/InstitutionSettings').findOne({ institution: i._id }).select('subdomain').lean().catch(() => null)
   ]);
   return {
-    ...instituteCard(i, programs.map((p) => p.name)), description: i.description || '', website: /^https?:\/\//.test(i.website || '') ? i.website : '',
+    ...instituteCard(i, programs.map((p) => p.name)), ...require('../utils/institutionProfile').publicProfileExtras(i), description: i.description || '', website: /^https?:\/\//.test(i.website || '') ? i.website : '',
     coverImage: /^https:\/\//.test(i.coverImage || '') ? i.coverImage : null,
     programs: programs.map((p) => ({ name: p.name, department: p.department, durationTerms: p.durationTerms, tuition: p.totalTuitionFee, admissionFee: p.admissionFee, currency: p.currency })),
     courses: courses.map((c) => ({ _id: c._id, title: c.title, subject: c.subject, level: c.level, price: c.isFree ? 'Free' : `${c.currency || ''} ${c.price || ''}`.trim() })),

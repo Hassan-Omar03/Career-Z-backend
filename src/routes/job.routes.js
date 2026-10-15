@@ -31,6 +31,8 @@ router.post('/applications/:appId/schedule-interview', requireRole('employer', '
 router.patch('/interviews/:id', requireRole('employer', 'education_agent'), ctrl.updateInterview);
 
 // Any authenticated user — applying to jobs, and saving jobs for later.
+router.get('/smart-apply/matches', ctrl.smartApplyMatches);
+router.post('/smart-apply', ctrl.smartApply);
 router.post('/:id/apply', ctrl.applyToJob);
 router.get('/mine/applications', ctrl.myApplications);
 router.get('/mine/saved', ctrl.listSavedJobs);

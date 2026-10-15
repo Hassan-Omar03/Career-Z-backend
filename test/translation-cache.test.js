@@ -14,7 +14,7 @@ const realFetch = global.fetch;
 before(async () => {
   mongo = await MongoMemoryServer.create();
   await mongoose.connect(mongo.getUri());
-  Object.assign(env.translation, { provider: 'libretranslate', libretranslateUrl: 'http://lt.test', googleTranslateApiKey: '' });
+  Object.assign(env.translation, { provider: 'libretranslate', libretranslateUrl: 'http://lt.test', googleTranslateApiKey: '', webEngine: false });
   global.fetch = async (url, options) => {
     const body = JSON.parse(options.body);
     calls.push(body);

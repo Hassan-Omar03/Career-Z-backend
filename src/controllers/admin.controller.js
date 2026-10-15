@@ -27,7 +27,7 @@ const DEFAULT_MARKETPLACE_COMMISSION = 10;
 const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
 const AI_MODEL_CONFIG_KEY = 'ai_provider_models';
 const ALL_AI_PROVIDERS = {
-  text: ['openai', 'claude', 'gemini', 'deepseek'],
+  text: ['openai', 'claude', 'gemini', 'deepseek', 'perplexity', 'local'],
   image: ['openai', 'stability'],
   threed: ['meshy'],
   voice: ['elevenlabs', 'google'],

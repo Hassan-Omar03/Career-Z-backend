@@ -1,6 +1,6 @@
 ﻿const mongoose = require('mongoose');
 
-// The real hiring lifecycle an institution's direct addStaff/removeStaff never had â€” an offer
+// The real hiring lifecycle an institution's direct addStaff/removeStaff never had — an offer
 // the teacher actually consents to (or declines), a service record while active, and a
 // resignation/termination reason kept as history (spec: Teacher<->Institution "hiring
 // application/offer/acceptance, employment contract, resignation, transfer, service history").
@@ -31,7 +31,7 @@ const teacherEmploymentSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
-// One open/active employment record per teacher+institution at a time â€” a past resigned/declined
+// One open/active employment record per teacher+institution at a time — a past resigned/declined
 // one doesn't block a fresh offer later (re-hiring), so the unique index only covers live states.
 teacherEmploymentSchema.index(
   { teacher: 1, institution: 1 },

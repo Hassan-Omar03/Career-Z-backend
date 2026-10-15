@@ -127,6 +127,12 @@ router.patch('/payroll/:payslipId/pay', ctrl.markPayslipPaid);
 
 router.get('/:id/reports', ctrl.getInstitutionReports);
 router.patch('/:id/staff/:userId', ctrl.updateStaff);
+const opsCtrl = require('../controllers/institutionAutomation.controller');
+router.post('/:id/timetable/auto/preview', opsCtrl.previewTimetable);
+router.post('/:id/timetable/auto/apply', opsCtrl.applyTimetable);
+router.get('/:id/reports/campuses', opsCtrl.campusReports);
+router.post('/:id/assistant/plan', opsCtrl.assistantPlan);
+router.post('/:id/assistant/execute', opsCtrl.assistantExecute);
 router.post('/:id/ai-insights', require('../controllers/aiOperations.controller').insights);
 router.get('/:id/ai-insights/reports', require('../controllers/aiOperations.controller').listReports);
 router.get('/:id/ai-insights/reports/:reportId', require('../controllers/aiOperations.controller').getReport);

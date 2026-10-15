@@ -31,6 +31,15 @@ router.get('/marketplace/:id', detail(listings.productDetail, 'Listing'));
 router.get('/donors', asyncHandler(async (req, res) => ok(res, await listings.listDonors(req.query))));
 router.get('/donors/:id', detail(listings.donorDetail, 'Donor'));
 
+// Homepage sections beyond the listings (numbers, courses, teachers, employers, blog, programmes)
+// and the homepage search's country/city/level options.
+const homeSections = require('../services/publicHome.service');
+router.get('/home/sections', asyncHandler(async (req, res) => ok(res, await homeSections.homeSections())));
+router.get('/courses', asyncHandler(async (req, res) => ok(res, await homeSections.listCourses(req.query))));
+router.get('/courses/:id', detail(homeSections.courseDetail, 'Course'));
+router.get('/search-options', asyncHandler(async (req, res) => ok(res, await homeSections.searchOptions())));
+router.get('/cities', asyncHandler(async (req, res) => ok(res, await homeSections.citiesFor(req.query.country))));
+
 // A donor's own public profile settings (off until they switch it on).
 const PROFILE_FIELDS = ['enabled', 'displayName', 'about', 'logoUrl', 'focusAreas', 'city', 'country', 'showScholarships'];
 router.get('/me/donor-profile', protect, requireRole('donor'), asyncHandler(async (req, res) => {

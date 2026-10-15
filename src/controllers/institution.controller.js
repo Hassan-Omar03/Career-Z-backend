@@ -151,7 +151,7 @@ const listInstitutions = asyncHandler(async (req, res) => {
   return ok(res, institutions);
 });
 
-// GET /api/institutions/admin/all (admin/platform_staff â€” every status, for verification review)
+// GET /api/institutions/admin/all (admin/platform_staff — every status, for verification review)
 const adminListAll = asyncHandler(async (req, res) => {
   const institutions = await Institution.find({}).select('-verificationDocuments -staff').sort({ createdAt: -1 });
   return ok(res, institutions);
@@ -179,7 +179,7 @@ function assertOwnerOrStaff(institution, userId) {
   return isOwner;
 }
 
-// No account type can act on the platform until Super Admin has approved it â€” an unverified
+// No account type can act on the platform until Super Admin has approved it — an unverified
 // (potentially fake) institution must not be able to hire staff, charge fees, issue certificates,
 // broadcast notifications, etc. Setup/editing basic details and submitting verification documents
 // stay allowed (updateInstitution, submitVerificationDocuments) since those are how an owner
@@ -201,6 +201,7 @@ const updateInstitution = asyncHandler(async (req, res) => {
   allowed.forEach((field) => {
     if (req.body[field] !== undefined) institution[field] = req.body[field];
   });
+  require('../utils/institutionProfile').applyProfileExtras(institution, req.body);
   await institution.save();
   return ok(res, institution);
 });
@@ -242,7 +243,7 @@ const reviewVerification = asyncHandler(async (req, res) => {
   await institution.save();
 
   // The owner's own "institution_owner"/"academy_owner" role request (from signup or /roles/
-  // request) is a separate, older approval trail that duplicates this one â€” an owner should only
+  // request) is a separate, older approval trail that duplicates this one — an owner should only
   // ever have to clear ONE approval, not two out-of-sync ones. Verifying the institution here is
   // the real vetting, so mirror the same decision onto that role request instead of leaving it
   // permanently pending (which would otherwise still show a stale "dashboard unlocked but posting
@@ -332,7 +333,7 @@ const removeStaff = asyncHandler(async (req, res) => {
   return ok(res, institution, 'Staff member removed.');
 });
 
-// PATCH /api/institutions/:id/staff/:userId/ai-permissions â€” owner-only toggle for whether a
+// PATCH /api/institutions/:id/staff/:userId/ai-permissions — owner-only toggle for whether a
 // staff member may use ('ai:use') and/or connect/manage ('ai:manage') the institution's own
 // AI keys. Matches the frontend's Staff Management panel, which already calls this endpoint.
 const updateStaffAiPermissions = asyncHandler(async (req, res) => {
@@ -358,7 +359,7 @@ const updateStaffAiPermissions = asyncHandler(async (req, res) => {
   return ok(res, institution, 'Staff AI permissions updated.');
 });
 
-// GET /api/institutions/:id/staff-attendance â€” owner/staff view of everyone's real self-check-ins
+// GET /api/institutions/:id/staff-attendance — owner/staff view of everyone's real self-check-ins
 // (spec 15D.9). Populated from the same StaffAttendance records teachers create themselves.
 const listStaffAttendance = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -374,7 +375,7 @@ const listStaffAttendance = asyncHandler(async (req, res) => {
 
 // ---- Virtual Campus Tour (real 3D map, built from the institution's own building data) ----
 
-// GET /api/institutions/:id/campus-buildings â€” public: anyone (student, parent, prospective
+// GET /api/institutions/:id/campus-buildings — public: anyone (student, parent, prospective
 // applicant) can view the tour without being staff, same as browsing the institution's profile.
 const listCampusBuildings = asyncHandler(async (req, res) => {
   const buildings = await CampusBuilding.find({ institution: req.params.id }).sort({ order: 1, createdAt: 1 });
@@ -451,16 +452,17 @@ const listClassSections = asyncHandler(async (req, res) => {
   return ok(res, sections);
 });
 
-// PATCH /api/institutions/:id/class-sections/:sectionId â€” mainly for assigning/changing the class teacher
+// PATCH /api/institutions/:id/class-sections/:sectionId — mainly for assigning/changing the class teacher
 const updateClassSection = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  const allowed = ['name', 'academicYear', 'classTeacher'];
+  const allowed = ['name', 'academicYear', 'classTeacher', 'campus'];
   const update = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f] || null; });
+  if (update.campus && !(await Campus.exists({ _id: update.campus, institution: institution._id }))) throw new AppError('That campus does not belong to this institution.', 422);
 
   const section = await ClassSection.findOneAndUpdate(
     { _id: req.params.sectionId, institution: institution._id },
@@ -528,17 +530,17 @@ const createFee = asyncHandler(async (req, res) => {
 
   await notifyParentsOfStudent(student, {
     title: `New fee due for ${feeStudent?.fullName || 'your child'}`,
-    body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` â€” due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
+    body: `${title}: ${currency || 'USD'} ${amount}${dueDate ? ` — due ${new Date(dueDate).toLocaleDateString()}` : ''}`,
     sentBy: req.user._id
   }).catch(() => {});
 
   return created(res, fee, 'Fee recorded.');
 });
 
-// POST /api/institutions/fees/:feeId/remind â€” manual trigger for the "Automatic Reminder"
+// POST /api/institutions/fees/:feeId/remind — manual trigger for the "Automatic Reminder"
 // (spec 15D.7). No cron/scheduler exists in this codebase (same honest pattern as meeting
 // reminders elsewhere), so reminders are sent on-demand by the institution, or lazily whenever
-// listFees runs past the due date â€” see the auto-reminder check below.
+// listFees runs past the due date — see the auto-reminder check below.
 const remindFee = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId).populate('student', 'fullName');
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -559,7 +561,7 @@ const remindFee = asyncHandler(async (req, res) => {
   return ok(res, fee, 'Reminder sent.');
 });
 
-// POST /api/institutions/fees/:feeId/refund/request â€” student/parent requests a refund.
+// POST /api/institutions/fees/:feeId/refund/request — student/parent requests a refund.
 const requestFeeRefund = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -588,7 +590,7 @@ const requestFeeRefund = asyncHandler(async (req, res) => {
   return ok(res, family.safeFee(fee), 'Refund requested.');
 });
 
-// PATCH /api/institutions/fees/:feeId/refund/decide â€” institution approves/rejects/processes a refund.
+// PATCH /api/institutions/fees/:feeId/refund/decide — institution approves/rejects/processes a refund.
 const decideFeeRefund = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -680,9 +682,9 @@ const listFees = asyncHandler(async (req, res) => {
   return ok(res, fee, 'Fee marked as paid.');
 });
 
-// PATCH /api/institutions/fees/:feeId/release â€” escrow release (spec 3A.3): the institution
+// PATCH /api/institutions/fees/:feeId/release — escrow release (spec 3A.3): the institution
 // confirms the paid fee and moves it out of "held" into "released" (available to them). No real
-// fund custody happens anywhere in this app (no payment gateway connected) â€” see Fee.js's
+// fund custody happens anywhere in this app (no payment gateway connected) — see Fee.js's
 // escrowStatus comment for what this status machine does and does not represent.
 const releaseFeeEscrow = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
@@ -741,7 +743,7 @@ const createTimetableEntry = asyncHandler(async (req, res) => {
   if (entry.teacher) {
     await notify(entry.teacher, {
       title: `New class scheduled: ${subject}`,
-      body: `${DOW_FULL[dayOfWeek] || dayOfWeek} ${startTime}â€“${endTime}${room ? ` Â· ${room}` : ''}`,
+      body: `${DOW_FULL[dayOfWeek] || dayOfWeek} ${startTime}–${endTime}${room ? ` · ${room}` : ''}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -758,7 +760,7 @@ const listTimetable = asyncHandler(async (req, res) => {
   return ok(res, entries);
 });
 
-// PATCH /api/institutions/:id/class-sections/:sectionId/timetable/:entryId â€” the actual
+// PATCH /api/institutions/:id/class-sections/:sectionId/timetable/:entryId — the actual
 // "Class change" event (editing an existing scheduled class, not just adding/removing one).
 const updateTimetableEntry = asyncHandler(async (req, res) => {
   const entry = await TimetableEntry.findById(req.params.entryId);
@@ -786,7 +788,7 @@ const updateTimetableEntry = asyncHandler(async (req, res) => {
   if (notifyTeacherId) {
     await notify(notifyTeacherId, {
       title: `Class changed: ${entry.subject}`,
-      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}â€“${entry.endTime}${entry.room ? ` Â· ${entry.room}` : ''}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}${entry.room ? ` · ${entry.room}` : ''}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -804,7 +806,7 @@ const deleteTimetableEntry = asyncHandler(async (req, res) => {
   if (entry.teacher) {
     await notify(entry.teacher, {
       title: `Class cancelled: ${entry.subject}`,
-      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}â€“${entry.endTime}`,
+      body: `${DOW_FULL[entry.dayOfWeek] || entry.dayOfWeek} ${entry.startTime}–${entry.endTime}`,
       sentBy: req.user._id
     }).catch(() => {});
   }
@@ -843,7 +845,7 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   course.creditHours = Number(creditHours) || 3;
   course.academicTerm = String(academicTerm || '').trim();
   await course.save();
-  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} Â· ${section.name} Â· ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
+  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
   await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);
   return ok(res, course, 'Course academic assignment updated.');
 });
@@ -872,7 +874,7 @@ const listInstitutionStudents = asyncHandler(async (req, res) => {
   return ok(res, students);
 });
 
-// GET /api/institutions/:id/parents â€” a real parent directory (spec: Institution<->Parent
+// GET /api/institutions/:id/parents — a real parent directory (spec: Institution<->Parent
 // "parent directory relationship"): every parent with an approved link to one of this
 // institution's students, which of their children are here, and whether the institution has
 // separately verified that link.
@@ -903,7 +905,7 @@ const listInstitutionParents = asyncHandler(async (req, res) => {
   return ok(res, Array.from(byParent.values()));
 });
 
-// PATCH /api/institutions/:id/parents/:linkId/verify â€” institution's own extra confirmation on
+// PATCH /api/institutions/:id/parents/:linkId/verify — institution's own extra confirmation on
 // top of student consent (spec: "guardian verification").
 const verifyParentLink = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -928,7 +930,7 @@ const verifyParentLink = asyncHandler(async (req, res) => {
   return ok(res, link, link.institutionVerified ? 'Guardian link verified.' : 'Guardian verification removed.');
 });
 
-// GET /api/institutions/:id/feedback â€” parent satisfaction ratings received (spec:
+// GET /api/institutions/:id/feedback — parent satisfaction ratings received (spec:
 // Institution<->Parent "parent satisfaction/feedback", "parent engagement analytics").
 const getInstitutionFeedback = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -947,7 +949,7 @@ const getInstitutionFeedback = asyncHandler(async (req, res) => {
   });
 });
 
-// GET /api/institutions/:id/feedback/summary â€” average + count only (no comments), visible to
+// GET /api/institutions/:id/feedback/summary — average + count only (no comments), visible to
 // any authenticated user (e.g. a parent deciding whether/how to rate), plus their own rating if
 // they've already left one.
 const getInstitutionFeedbackSummary = asyncHandler(async (req, res) => {
@@ -979,14 +981,14 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
       throw new AppError('Invalid status.', 422);
     }
     profile.status = status;
-    // A real transfer/history record (spec: "transfer/withdrawal/alumni lifecycle") â€” not just
+    // A real transfer/history record (spec: "transfer/withdrawal/alumni lifecycle") — not just
     // an overwritten status flag. 'suspended'/'active' aren't a departure, so only these two are.
     if (['transferred', 'graduated'].includes(status)) {
       await recordLeave(profile.user, institution._id, status, reason);
     }
   }
   // Class Section + Roll Number are normally assigned by the institution's office, not the
-  // student â€” this is the school-admin side of that assignment.
+  // student — this is the school-admin side of that assignment.
   if (classSection !== undefined) profile.classSection = classSection || null;
   if (rollNumber !== undefined) profile.rollNumber = rollNumber;
   await profile.save();
@@ -1410,10 +1412,10 @@ const getInstitutionReports = asyncHandler(async (req, res) => {
   });
 });
 
-// POST /api/institutions/:id/ai-insights â€” AI Operations Assistant (spec 15D.19). Uses the
+// POST /api/institutions/:id/ai-insights — AI Operations Assistant (spec 15D.19). Uses the
 // institution's own BYOK AI text credential (same pattern as the AI Creative Teacher tools) to
-// analyze REAL aggregated institution data â€” never fabricated numbers, the AI only summarizes
-// what getInstitutionReports already computed. All decisions stay with the institution â€” this
+// analyze REAL aggregated institution data — never fabricated numbers, the AI only summarizes
+// what getInstitutionReports already computed. All decisions stay with the institution — this
 // only produces a written summary/alerts, it never changes any data itself.
 const getAiInsights = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
@@ -1446,7 +1448,7 @@ Open help-desk tickets: ${openComplaints}`;
   try {
     const result = await aiService.generate(
       req.user._id,
-      'You are an institution operations assistant for a school/college. Given real, structured operational data, write a short (5-8 bullet points) analysis: highlight fee-collection risk, payroll status, support/complaint load, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the institution\'s own â€” you are only summarizing, not deciding.',
+      'You are an institution operations assistant for a school/college. Given real, structured operational data, write a short (5-8 bullet points) analysis: highlight fee-collection risk, payroll status, support/complaint load, and 1-2 concrete recommended actions. Be specific to the numbers given, never invent numbers not provided. All decisions remain the institution\'s own — you are only summarizing, not deciding.',
       dataSummary
     );
     return ok(res, { insights: result, dataSummary });
@@ -1485,7 +1487,7 @@ const listInstitutionExams = asyncHandler(async (req, res) => {
   return ok(res, withCourseTitle);
 });
 
-// GET /api/institutions/mine/staff-roles â€” every institution the current user is staff at,
+// GET /api/institutions/mine/staff-roles — every institution the current user is staff at,
 // and their exact staff.role there. The frontend uses this to decide whether to show the
 // full Institution workspace or the scoped-down Representative dashboard.
 const myStaffRoles = asyncHandler(async (req, res) => {
@@ -1497,7 +1499,7 @@ const myStaffRoles = asyncHandler(async (req, res) => {
   return ok(res, roles);
 });
 
-// GET /api/institutions/mine/rep-dashboard â€” the Institute Representative home page.
+// GET /api/institutions/mine/rep-dashboard — the Institute Representative home page.
 // Scoped to the first institution where this user's staff.role is "representative".
 const getRepDashboard = asyncHandler(async (req, res) => {
   const institutions = await Institution.find({ 'staff.user': req.user._id });
@@ -1522,11 +1524,11 @@ const getRepDashboard = asyncHandler(async (req, res) => {
   const completedConsultations = meetings.filter((m) => m.status === 'completed').length;
   const pendingStatuses = ['submitted', 'under_review', 'documents_required'];
 
-  // "Meeting reminder" / "Admission deadline" notifications â€” this codebase has no
+  // "Meeting reminder" / "Admission deadline" notifications — this codebase has no
   // cron/scheduler, so both are checked lazily on real dashboard load, same pattern as the
   // job-seeker's application-deadline reminder. Deduped by title so refreshing doesn't spam.
   await Promise.all(meetingReminders.map(async (m) => {
-    const title = `Meeting reminder: ${m.student?.fullName || 'a student'} â€” ${new Date(m.scheduledDate).toLocaleString()}`;
+    const title = `Meeting reminder: ${m.student?.fullName || 'a student'} — ${new Date(m.scheduledDate).toLocaleString()}`;
     const already = await Notification.findOne({ user: req.user._id, title });
     if (!already) await notify(req.user._id, { title, body: m.program || inst.name, sentBy: null }).catch(() => {});
   }));
@@ -1541,7 +1543,7 @@ const getRepDashboard = asyncHandler(async (req, res) => {
   }
   const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(8);
 
-  // "Admission progress" â€” a real, computed stage indicator (not a fabricated number),
+  // "Admission progress" — a real, computed stage indicator (not a fabricated number),
   // derived from where the application actually sits in its own status pipeline.
   const PROGRESS_BY_STATUS = { draft: 0, submitted: 25, under_review: 50, documents_required: 60, accepted: 100, rejected: 100 };
   const applicationsWithProgress = applications.map((a) => ({ ...a.toObject(), admissionProgress: PROGRESS_BY_STATUS[a.status] ?? 0 }));

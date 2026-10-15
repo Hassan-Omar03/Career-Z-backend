@@ -21,7 +21,10 @@ const aiCredentialSchema = new mongoose.Schema(
     // encrypted (e.g. "sk-...4f2a") — lets the UI show "a key is connected, here's which one"
     // without ever being able to reconstruct the real key from it.
     keyPreview: { type: String, default: '' },
-    model: { type: String, default: '' } // optional override; provider default used if blank
+    model: { type: String, default: '' }, // optional override; provider default used if blank
+    // Only for provider 'local': the OpenAI-compatible server the user runs (Ollama, LM Studio,
+    // vLLM...), e.g. https://ai.my-school.edu/v1.
+    baseUrl: { type: String, default: '' }
   },
   { timestamps: true }
 );

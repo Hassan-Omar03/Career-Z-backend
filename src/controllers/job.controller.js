@@ -190,10 +190,8 @@ const updateJob = asyncHandler(async (req, res) => {
   return ok(res, job);
 });
 
-// POST /api/jobs/:id/apply
-const applyToJob = asyncHandler(async (req, res) => {
-  const job = await Job.findById(req.params.id);
-  if (!job) throw new AppError('Job not found.', 404);
+// Every rule for one application, shared by single apply and Smart Apply.
+async function submitApplication(req, job, coverLetter) {
   if (job.status !== 'active') throw new AppError('This job is no longer accepting applications.', 400);
   if (job.applicationDeadline && new Date(job.applicationDeadline) < new Date()) {
     throw new AppError('The application deadline has passed.', 400);
@@ -216,7 +214,7 @@ const applyToJob = asyncHandler(async (req, res) => {
   const application = await JobApplication.create({
     job: job._id,
     applicant: req.user._id,
-    coverLetter: req.body.coverLetter || '',
+    coverLetter: String(coverLetter || '').slice(0, 4000),
     resumeSnapshot: resume ? resume.toObject() : null
   });
 
@@ -225,8 +223,88 @@ const applyToJob = asyncHandler(async (req, res) => {
     body: job.company,
     sentBy: req.user._id
   }).catch(() => {});
+  return application;
+}
 
+// POST /api/jobs/:id/apply
+const applyToJob = asyncHandler(async (req, res) => {
+  const job = await Job.findById(req.params.id);
+  if (!job) throw new AppError('Job not found.', 404);
+  const application = await submitApplication(req, job, req.body.coverLetter);
   return created(res, application, 'Application submitted.');
+});
+
+// ---------------------------------------------------------------- Smart Apply
+// Open jobs ranked against the applicant's CV (skills, location, experience, education), so a
+// student can pick several and apply to all of them at once with one cover letter. The score is
+// computed from the two documents; nothing is guessed.
+const SMART_APPLY_MAX = 20;
+const SMART_APPLY_DAILY = 40;
+
+function matchJob(job, resume, user) {
+  const jobSkills = (job.skills || []).map((s) => String(s).toLowerCase().trim()).filter(Boolean);
+  const mine = new Set((resume?.skills || []).map((s) => String(s).toLowerCase().trim()));
+  const matched = jobSkills.filter((s) => mine.has(s));
+  const reasons = [];
+  let score = 0, weight = 0;
+  if (jobSkills.length) { weight += 50; score += 50 * (matched.length / jobSkills.length); if (matched.length) reasons.push(`${matched.length} of ${jobSkills.length} skills: ${matched.slice(0, 4).join(', ')}`); }
+  const years = EXPERIENCE_LEVEL_YEARS[resume?.experienceLevel] ?? 0;
+  weight += 20;
+  if (!job.experienceYears || years >= job.experienceYears) { score += 20; if (job.experienceYears) reasons.push(`Meets ${job.experienceYears}+ years experience`); }
+  weight += 20;
+  if (job.workMode === 'remote') { score += 20; reasons.push('Remote'); }
+  else if (user.city && job.city && String(user.city).toLowerCase() === String(job.city).toLowerCase()) { score += 20; reasons.push(`In your city (${job.city})`); }
+  else if (!job.country || job.country === user.country) score += 10;
+  if (job.education) {
+    weight += 10;
+    const need = job.education.toLowerCase();
+    if ((resume?.education || []).some((e) => { const d = String(e.degree || '').toLowerCase(); return d && (d.includes(need) || need.includes(d)); })) { score += 10; reasons.push(`Education: ${job.education}`); }
+  }
+  return { score: Math.round((score / weight) * 100), reasons, missingSkills: jobSkills.filter((s) => !mine.has(s)).slice(0, 5) };
+}
+
+// GET /api/jobs/smart-apply/matches
+const smartApplyMatches = asyncHandler(async (req, res) => {
+  const [resume, applied, open] = await Promise.all([
+    Resume.findOne({ user: req.user._id }).lean(),
+    JobApplication.distinct('job', { applicant: req.user._id }),
+    require('../services/publicListings.service').listJobs({ limit: 48 })
+  ]);
+  const ids = open.items.map((j) => j._id).filter((id) => !applied.some((a) => String(a) === String(id)));
+  const jobs = await Job.find({ _id: { $in: ids } }).select('title company city country type workMode skills experienceYears education salaryMin salaryMax currency applicationDeadline').lean();
+  const ranked = jobs.map((j) => ({ ...j, match: matchJob(j, resume, req.user) })).sort((a, b) => b.match.score - a.match.score);
+  const today = await JobApplication.countDocuments({ applicant: req.user._id, createdAt: { $gte: new Date(Date.now() - 864e5) } });
+  return ok(res, { jobs: ranked, hasResume: Boolean(resume), resumeSkills: resume?.skills?.length || 0, perRequest: SMART_APPLY_MAX, remainingToday: Math.max(0, SMART_APPLY_DAILY - today) });
+});
+
+// POST /api/jobs/smart-apply { jobIds, coverLetter } — applies to each job under the same rules
+// as a single application and reports, per job, whether it was sent or why not. {job} and
+// {company} in the cover letter are filled in for each job.
+const smartApply = asyncHandler(async (req, res) => {
+  const ids = [...new Set((Array.isArray(req.body.jobIds) ? req.body.jobIds : []).map(String))].filter((id) => require('mongoose').isValidObjectId(id));
+  if (!ids.length) throw new AppError('Choose at least one job.', 422);
+  if (ids.length > SMART_APPLY_MAX) throw new AppError(`Choose at most ${SMART_APPLY_MAX} jobs at a time.`, 422);
+  const today = await JobApplication.countDocuments({ applicant: req.user._id, createdAt: { $gte: new Date(Date.now() - 864e5) } });
+  const room = Math.max(0, SMART_APPLY_DAILY - today);
+  if (!room) throw new AppError(`You have sent ${SMART_APPLY_DAILY} applications in the last 24 hours. Try again tomorrow.`, 429);
+  const template = String(req.body.coverLetter || '').slice(0, 4000);
+  const jobs = await Job.find({ _id: { $in: ids } });
+  const results = [];
+  let sent = 0;
+  for (const id of ids) {
+    const job = jobs.find((j) => String(j._id) === id);
+    if (!job) { results.push({ job: id, status: 'skipped', reason: 'Job not found.' }); continue; }
+    if (sent >= room) { results.push({ job: id, title: job.title, status: 'skipped', reason: 'Daily limit reached. Apply to this one tomorrow.' }); continue; }
+    try {
+      const letter = template.replace(/\{job\}/gi, job.title).replace(/\{company\}/gi, job.company);
+      const application = await submitApplication(req, job, letter);
+      sent += 1;
+      results.push({ job: id, title: job.title, company: job.company, status: 'applied', application: application._id });
+    } catch (err) {
+      results.push({ job: id, title: job.title, company: job.company, status: 'skipped', reason: err.message });
+    }
+  }
+  return ok(res, { applied: sent, skipped: results.length - sent, results }, sent ? `Applied to ${sent} job${sent === 1 ? '' : 's'}.` : 'No applications were sent.');
 });
 
 // GET /api/jobs/mine/applications (as applicant)
@@ -748,6 +826,7 @@ const featureJob = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  smartApplyMatches, smartApply,
   createJob,
   loadFeaturableJob,
   getFeaturedFee,

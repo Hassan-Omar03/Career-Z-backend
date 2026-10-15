@@ -13,6 +13,11 @@ const TranslationCache = require('../models/TranslationCache');
 //   FALLBACK the moment LibreTranslate is slow, overloaded or down, so translation never actually
 //   stops for users. Never used as the primary on its own (it's a paid-per-character API).
 // - mymemory (default when nothing else is configured): translated.net's free API, no key needed.
+//
+// In front of all of them runs Google's keyless web translator (TRANSLATION_WEB, on by default):
+// live neural translation with no API key. LibreTranslate's small models got everyday interface
+// words wrong in Urdu (Scholarships -> "scholar ship", Logout -> "Login"), so it is now only the
+// fallback when the web engine is unreachable.
 
 // Self-hosted LibreTranslate on a 2-CPU VPS needs roughly 0.25-1s per string, so a page's
 // strings go in small chunks, each with a timeout sized for that, and two chunks at a time. A
@@ -100,6 +105,62 @@ async function translateLibreChunk(texts, targetLang) {
   return Array.isArray(payload.translatedText) ? payload.translatedText : [payload.translatedText];
 }
 
+// ---------------------------------------------------------------------- Google web (no key)
+const WEB_CHUNK_CHARS = 4000;
+const WEB_CHUNK_ITEMS = 60;
+const WEB_CONCURRENCY = 3;
+const WEB_TIMEOUT_MS = 15000;
+const WEB_CODES = { zh: 'zh-CN' };
+const WEB_PROVIDER = 'google-web';
+
+async function translateViaWeb(texts, targetLang) {
+  // Leading/trailing spaces belong to the page layout, not the sentence: translate the trimmed
+  // text and put the spaces back.
+  const parts = texts.map((t) => String(t).match(/^(\s*)([\s\S]*?)(\s*)$/));
+  const chunks = [];
+  let current = [], size = 0;
+  parts.forEach((m, i) => {
+    if (current.length && (current.length >= WEB_CHUNK_ITEMS || size + m[2].length > WEB_CHUNK_CHARS)) { chunks.push(current); current = []; size = 0; }
+    current.push(i); size += m[2].length;
+  });
+  if (current.length) chunks.push(current);
+
+  const out = new Array(texts.length);
+  let next = 0;
+  async function worker() {
+    while (next < chunks.length) {
+      const idx = chunks[next++];
+      const translated = await translateWebChunk(idx.map((i) => parts[i][2]), targetLang);
+      idx.forEach((i, j) => { out[i] = parts[i][1] + tidyPunctuation(parts[i][2], translated[j]) + parts[i][3]; });
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(WEB_CONCURRENCY, chunks.length) }, worker));
+  return out;
+}
+
+async function translateWebChunk(texts, targetLang) {
+  const body = new URLSearchParams();
+  texts.forEach((q) => body.append('q', q));
+  const res = await fetchWithTimeout(`https://translate.googleapis.com/translate_a/t?client=gtx&sl=en&tl=${encodeURIComponent(WEB_CODES[targetLang] || targetLang)}&format=text`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/x-www-form-urlencoded;charset=UTF-8' },
+    body
+  }, WEB_TIMEOUT_MS);
+  if (!res.ok) throw Object.assign(new Error(`Web translator answered ${res.status}.`), { statusCode: 502 });
+  let payload = await res.json();
+  if (!Array.isArray(payload) || texts.length === 1) payload = [payload];
+  // Some answers come back as [translation, detectedLanguage] pairs.
+  const out = payload.map((item) => (Array.isArray(item) ? item[0] : item));
+  if (out.length !== texts.length || out.some((s) => typeof s !== 'string')) throw Object.assign(new Error('Web translator returned an unexpected answer.'), { statusCode: 502 });
+  return out;
+}
+
+// A button label like "Apply Now" must not come back as a full sentence ending in "." or "۔".
+function tidyPunctuation(source, translated) {
+  if (/[.!?。۔]$/.test(source)) return translated;
+  return translated.replace(/\s*[.。۔]$/, '');
+}
+
 async function translateViaGoogle(texts, targetLang) {
   const res = await fetch(`https://translation.googleapis.com/language/translate/v2?key=${encodeURIComponent(env.translation.googleTranslateApiKey)}`, {
     method: 'POST',
@@ -117,6 +178,7 @@ async function translateViaGoogle(texts, targetLang) {
 // In-memory first, then MongoDB (TranslationCache), then the provider. Only strings the provider
 // actually returned are stored, so a failed or timed-out request is retried next time.
 const memory = new Map();
+const QUALITY_PROVIDERS = [WEB_PROVIDER, 'google'];
 const MEMORY_LIMIT = 50000;
 const keyOf = (text) => crypto.createHash('sha1').update(text).digest('hex');
 
@@ -133,7 +195,9 @@ async function translateTexts(texts, targetLang) {
 
   let missing = [...new Set(keys.filter((k, i) => out[i] === undefined))];
   if (missing.length && dbReady) {
-    const rows = await TranslationCache.find({ lang: targetLang, key: { $in: missing } }).select('key translated').lean().catch(() => []);
+    const filter = { lang: targetLang, key: { $in: missing } };
+    if (env.translation.webEngine) filter.provider = { $in: QUALITY_PROVIDERS };
+    const rows = await TranslationCache.find(filter).select('key translated').lean().catch(() => []);
     for (const row of rows) remember(targetLang, row.key, row.translated);
     keys.forEach((k, i) => { if (out[i] === undefined) out[i] = memory.get(`${targetLang}:${k}`); });
     missing = [...new Set(keys.filter((k, i) => out[i] === undefined))];
@@ -141,19 +205,31 @@ async function translateTexts(texts, targetLang) {
   if (!missing.length) return out;
 
   const sources = missing.map((k) => String(texts[keys.indexOf(k)]));
-  const translated = await translateUncached(sources, targetLang);
+  const { translated, provider } = await translateUncached(sources, targetLang);
   const fresh = [];
   missing.forEach((k, i) => {
     const value = translated[i];
     if (typeof value !== 'string' || !value.trim()) return;
     remember(targetLang, k, value);
-    fresh.push({ updateOne: { filter: { lang: targetLang, key: k }, update: { $set: { text: sources[i], translated: value, provider: env.translation.provider } }, upsert: true } });
+    fresh.push({ updateOne: { filter: { lang: targetLang, key: k }, update: { $set: { text: sources[i], translated: value, provider } }, upsert: true } });
   });
   if (fresh.length && dbReady) await TranslationCache.bulkWrite(fresh, { ordered: false }).catch((err) => console.error('[translation] cache write failed:', err.message));
   return keys.map((k, i) => out[i] ?? memory.get(`${targetLang}:${k}`) ?? String(texts[i]));
 }
 
+// Returns { translated, provider } so the cache records which engine produced each string.
 async function translateUncached(texts, targetLang) {
+  if (env.translation.webEngine) {
+    try {
+      return { translated: await translateViaWeb(texts, targetLang), provider: WEB_PROVIDER };
+    } catch (err) {
+      console.error('[translation] web translator unavailable, using the fallback provider:', err.message);
+    }
+  }
+  return { translated: await translateViaProvider(texts, targetLang), provider: env.translation.provider };
+}
+
+async function translateViaProvider(texts, targetLang) {
   if (env.translation.provider === 'libretranslate') {
     if (!env.translation.libretranslateUrl) {
       throw Object.assign(new Error('LIBRETRANSLATE_URL is not set — either configure your self-hosted instance or set TRANSLATION_PROVIDER=mymemory.'), { statusCode: 503 });

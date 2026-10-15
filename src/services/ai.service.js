@@ -21,7 +21,7 @@ async function getAdminDefaultModel(purpose, provider) {
 // Creative Teacher pipeline combines several different AI categories.
 
 const DEFAULT_MODEL = {
-  text: { openai: 'gpt-4o-mini', claude: 'claude-haiku-4-5-20251001', gemini: 'gemini-3.5-flash', deepseek: 'deepseek-flash' },
+  text: { openai: 'gpt-4o-mini', claude: 'claude-haiku-4-5-20251001', gemini: 'gemini-3.5-flash', deepseek: 'deepseek-flash', perplexity: 'sonar' },
   image: { openai: 'gpt-image-1-mini', stability: 'stable-diffusion-xl-1024-v1-0' },
   threed: { meshy: 'latest' },
   voice: { elevenlabs: 'eleven_multilingual_v2' },
@@ -41,7 +41,11 @@ const RETIRED_MODEL_REPLACEMENT = {
 };
 
 // A short, safe-to-store display hint — never enough to reconstruct the real key.
+// A local AI server often needs no key; this placeholder is stored (encrypted) in its place.
+const LOCAL_NO_KEY = 'no-key-local-ai';
+
 function computeKeyPreview(apiKey) {
+  if (apiKey === LOCAL_NO_KEY) return 'no key';
   const trimmed = apiKey.trim();
   if (trimmed.length <= 8) return `${trimmed.slice(0, 2)}...`;
   return `${trimmed.slice(0, 4)}...${trimmed.slice(-4)}`;
@@ -64,12 +68,12 @@ async function assertInstitutionAiAccess(institutionId, userId) {
   return institution;
 }
 
-async function saveCredential(userId, purpose, provider, apiKey, model) {
+async function saveCredential(userId, purpose, provider, apiKey, model, baseUrl = '') {
   const apiKeyEncrypted = encrypt(apiKey);
   const keyPreview = computeKeyPreview(apiKey);
   return AiCredential.findOneAndUpdate(
     { user: userId, purpose, scope: 'user' },
-    { user: userId, purpose, scope: 'user', institution: null, provider, apiKeyEncrypted, keyPreview, model: model || '' },
+    { user: userId, purpose, scope: 'user', institution: null, provider, apiKeyEncrypted, keyPreview, model: model || '', baseUrl: baseUrl || '' },
     { upsert: true, new: true, runValidators: true }
   );
 }
@@ -77,13 +81,13 @@ async function saveCredential(userId, purpose, provider, apiKey, model) {
 // Institution-owned key — connectable only by the owner or a staff member with 'ai:use'
 // (assertInstitutionAiAccess), so it's a deliberate institution decision, not any staff member
 // unilaterally spending the institution's provider budget.
-async function saveInstitutionCredential(institutionId, userId, purpose, provider, apiKey, model) {
+async function saveInstitutionCredential(institutionId, userId, purpose, provider, apiKey, model, baseUrl = '') {
   await assertInstitutionAiAccess(institutionId, userId);
   const apiKeyEncrypted = encrypt(apiKey);
   const keyPreview = computeKeyPreview(apiKey);
   return AiCredential.findOneAndUpdate(
     { institution: institutionId, purpose, scope: 'institution' },
-    { user: userId, institution: institutionId, purpose, scope: 'institution', provider, apiKeyEncrypted, keyPreview, model: model || '' },
+    { user: userId, institution: institutionId, purpose, scope: 'institution', provider, apiKeyEncrypted, keyPreview, model: model || '', baseUrl: baseUrl || '' },
     { upsert: true, new: true, runValidators: true }
   );
 }
@@ -97,7 +101,7 @@ async function resolveModel(purpose, provider, explicitModel) {
 
 async function statusShape(cred, purpose) {
   if (!cred) return { configured: false, provider: null, keyPreview: null, model: null };
-  return { configured: true, provider: cred.provider, keyPreview: cred.keyPreview || null, model: await resolveModel(purpose, cred.provider, cred.model) };
+  return { configured: true, provider: cred.provider, keyPreview: cred.keyPreview || null, model: await resolveModel(purpose, cred.provider, cred.model), baseUrl: cred.baseUrl || null };
 }
 
 async function getCredentialStatus(userId, purpose) {
@@ -152,7 +156,7 @@ async function getDecryptedCredential(userId, purpose, institutionId) {
   if (institutionId) {
     await assertInstitutionAiAccess(institutionId, userId);
     const instCred = await AiCredential.findOne({ institution: institutionId, purpose, scope: 'institution' });
-    if (instCred) return { provider: instCred.provider, apiKey: readKey(instCred), model: await resolveModel(purpose, instCred.provider, instCred.model) };
+    if (instCred) return { provider: instCred.provider, apiKey: readKey(instCred), model: await resolveModel(purpose, instCred.provider, instCred.model), baseUrl: instCred.baseUrl || '' };
   }
 
   const cred = await AiCredential.findOne({ user: userId, purpose, scope: 'user' });
@@ -161,7 +165,7 @@ async function getDecryptedCredential(userId, purpose, institutionId) {
     err.statusCode = 503;
     throw err;
   }
-  return { provider: cred.provider, apiKey: readKey(cred), model: await resolveModel(purpose, cred.provider, cred.model) };
+  return { provider: cred.provider, apiKey: readKey(cred), model: await resolveModel(purpose, cred.provider, cred.model), baseUrl: cred.baseUrl || '' };
 }
 
 function providerError(payload, res) {
@@ -176,10 +180,11 @@ function providerError(payload, res) {
 
 // No `temperature` override — newer models (e.g. OpenAI's gpt-5 family) reject any value other
 // than their default (1) and error out entirely, while older models are fine without it too.
-async function callOpenAiCompatible(baseUrl, apiKey, model, systemPrompt, userPrompt) {
+async function callOpenAiCompatible(baseUrl, apiKey, model, systemPrompt, userPrompt, timeoutMs = 120000) {
   const res = await fetch(baseUrl, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${apiKey}` },
+    signal: AbortSignal.timeout(timeoutMs),
+    headers: { 'Content-Type': 'application/json', ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}) },
     body: JSON.stringify({ model, messages: [{ role: 'system', content: systemPrompt }, { role: 'user', content: userPrompt }] })
   });
   const payload = await res.json();
@@ -215,10 +220,17 @@ async function generate(userId, systemPrompt, userPrompt, institutionId) {
 
 // Same text call with a credential the caller already holds (e.g. the platform's own homepage
 // assistant key, configured by the Super Admin).
-async function generateWith({ provider, apiKey, model }, systemPrompt, userPrompt) {
+async function generateWith({ provider, apiKey, model, baseUrl }, systemPrompt, userPrompt) {
   switch (provider) {
     case 'openai': return callOpenAiCompatible('https://api.openai.com/v1/chat/completions', apiKey, model, systemPrompt, userPrompt);
     case 'deepseek': return callOpenAiCompatible('https://api.deepseek.com/chat/completions', apiKey, model, systemPrompt, userPrompt);
+    case 'perplexity': return callOpenAiCompatible('https://api.perplexity.ai/chat/completions', apiKey, model, systemPrompt, userPrompt);
+    // Self-hosted OpenAI-compatible server (Ollama, LM Studio, vLLM). The address is checked again
+    // on every call so a DNS change cannot turn it into an internal address later.
+    case 'local': {
+      const url = await require('../utils/safeUrl').assertPublicHttpUrl(baseUrl);
+      return callOpenAiCompatible(`${url.href.replace(/\/+$/, '')}/chat/completions`, apiKey === LOCAL_NO_KEY ? '' : apiKey, model, systemPrompt, userPrompt, 300000);
+    }
     case 'claude': return callClaude(apiKey, model, systemPrompt, userPrompt);
     case 'gemini': return callGemini(apiKey, model, systemPrompt, userPrompt);
     default: throw Object.assign(new Error('Unknown text AI provider.'), { statusCode: 500 });
@@ -402,6 +414,7 @@ async function getAnimationTaskStatus(userId, taskId, institutionId) {
 }
 
 module.exports = {
+  LOCAL_NO_KEY,
   generateWith, DEFAULT_MODEL, resolveModel,
   saveCredential, getCredentialStatus, getAllCredentialStatuses, removeCredential, generate,
   generateImage, create3DModelTask, get3DModelTaskStatus, generateSpeech,

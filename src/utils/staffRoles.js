@@ -16,6 +16,7 @@ const PERMISSIONS = {
   'parents:manage': 'Manage parent links and family communication',
   'ops:manage': 'Operations dashboard and AI operations reports',
   'settings:manage': 'Change institution settings',
+  'timetable:manage': 'Build and change class timetables',
   'placement:manage': 'Run the placement office',
   'institution:health:manage': 'Manage student health records',
   'transport:manage': 'Manage transport routes and vehicles',
@@ -26,8 +27,8 @@ const PERMISSIONS = {
 };
 
 const STAFF_ROLES = {
-  principal: { label: 'Principal', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage'] },
-  vice_principal: { label: 'Vice Principal', permissions: ['students:manage', 'staff:review', 'grading:manage', 'content:review:department', 'communication:send', 'parents:manage'] },
+  principal: { label: 'Principal', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage', 'timetable:manage'] },
+  vice_principal: { label: 'Vice Principal', permissions: ['students:manage', 'staff:review', 'grading:manage', 'content:review:department', 'communication:send', 'parents:manage', 'timetable:manage'] },
   coordinator: { label: 'Academic Coordinator', permissions: ['students:manage', 'grading:manage', 'content:review:department', 'communication:send'] },
   hod: { label: 'Head of Department', permissions: ['staff:review', 'grading:manage', 'content:review:department', 'questionbank:manage'] },
   teacher: { label: 'Teacher', permissions: [] },

@@ -40,6 +40,12 @@ const institutionSchema = new mongoose.Schema(
       }
     ],
 
+    // Public profile extras (validated in utils/institutionProfile.js).
+    accreditations: [{ body: String, reference: String, validUntil: Date, documentUrl: String, _id: false }],
+    affiliations: [{ name: String, kind: { type: String, default: 'other' }, since: Number, _id: false }],
+    socialLinks: { facebook: String, instagram: String, linkedin: String, x: String, youtube: String, tiktok: String, whatsapp: String },
+    location: { lat: { type: Number, default: null }, lng: { type: Number, default: null } },
+
     status: { type: String, enum: ['active', 'suspended', 'disabled'], default: 'active' },
 
     // Master spec Part 17E "Subscription System" — every institution starts on Free; paid tiers

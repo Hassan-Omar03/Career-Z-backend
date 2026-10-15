@@ -15,7 +15,7 @@ function assertOwner(institution, userId) {
   if (institution.owner.toString() !== userId.toString()) throw new AppError('Only the institution owner can manage hiring.', 403);
 }
 
-// POST /api/institutions/:id/teacher-offers â€” the real, consent-based alternative to directly
+// POST /api/institutions/:id/teacher-offers — the real, consent-based alternative to directly
 // adding staff (spec: Teacher<->Institution "hiring application/offer/acceptance, employment
 // contract"). Nothing changes on the institution or the teacher's account until they accept.
 const createOffer = asyncHandler(async (req, res) => {
@@ -42,7 +42,7 @@ const createOffer = asyncHandler(async (req, res) => {
   });
 
   // Emailed (not just in-app) so a teacher who isn't already sitting on the dashboard still
-  // finds out â€” the button drops them straight onto the portal to accept/decline.
+  // finds out — the button drops them straight onto the portal to accept/decline.
   await notify(teacherUserId, {
     title: `Job offer from ${institution.name}`,
     body: `Role: ${role}${designation ? ` (${designation})` : ''}. Review and respond from Employment Offers.`,
@@ -57,9 +57,9 @@ const createOffer = asyncHandler(async (req, res) => {
   return created(res, offer, 'Offer sent.');
 });
 
-// GET /api/institutions/:id/teacher-directory â€” lets an institution browse teachers to hire,
+// GET /api/institutions/:id/teacher-directory — lets an institution browse teachers to hire,
 // instead of needing to already know a teacher's exact User ID (which used to be the only way
-// to send an offer). Only professional info is exposed here (no email/phone/address) â€” contact
+// to send an offer). Only professional info is exposed here (no email/phone/address) — contact
 // happens through the offer itself or in-app messaging, never raw personal details in a public
 // list. Teachers can opt out via TeacherProfile.visibleToInstitutions.
 const listTeacherDirectory = asyncHandler(async (req, res) => {
@@ -104,7 +104,7 @@ const listTeacherDirectory = asyncHandler(async (req, res) => {
   return ok(res, directory);
 });
 
-// PATCH /api/teacher-employments/:id/respond â€” the teacher accepts or declines. Accepting is
+// PATCH /api/teacher-employments/:id/respond — the teacher accepts or declines. Accepting is
 // what actually onboards them (same shared logic as the direct addStaff path).
 const respondToOffer = asyncHandler(async (req, res) => {
   const { decision } = req.body;
@@ -120,7 +120,7 @@ const respondToOffer = asyncHandler(async (req, res) => {
     const institution = await Institution.findById(offer.institution);
     if (!institution) throw new AppError('Institution not found.', 404);
     if (institution.verificationStatus !== 'approved') {
-      throw new AppError('This institution is no longer verified â€” it cannot be accepted until Super Admin re-verifies it.', 403);
+      throw new AppError('This institution is no longer verified — it cannot be accepted until Super Admin re-verifies it.', 403);
     }
     if (institution.staff.some((s) => s.user.toString() === offer.teacher.toString())) {
       throw new AppError('Already staff at this institution.', 409);
@@ -141,7 +141,7 @@ const respondToOffer = asyncHandler(async (req, res) => {
   return ok(res, offer, `Offer ${decision}.`);
 });
 
-// POST /api/teacher-employments/:id/resign â€” teacher-initiated departure.
+// POST /api/teacher-employments/:id/resign — teacher-initiated departure.
 const resign = asyncHandler(async (req, res) => {
   const employment = await TeacherEmployment.findById(req.params.id);
   if (!employment) throw new AppError('Employment record not found.', 404);
@@ -160,7 +160,7 @@ const resign = asyncHandler(async (req, res) => {
   return ok(res, employment, 'Resignation recorded.');
 });
 
-// PATCH /api/teacher-employments/:id/terminate â€” institution-initiated departure.
+// PATCH /api/teacher-employments/:id/terminate — institution-initiated departure.
 const terminate = asyncHandler(async (req, res) => {
   const employment = await TeacherEmployment.findById(req.params.id);
   if (!employment) throw new AppError('Employment record not found.', 404);
@@ -179,7 +179,7 @@ const terminate = asyncHandler(async (req, res) => {
   return ok(res, employment, 'Employment ended.');
 });
 
-// GET /api/teacher-employments/mine â€” a teacher's full service history, every institution.
+// GET /api/teacher-employments/mine — a teacher's full service history, every institution.
 const myEmployments = asyncHandler(async (req, res) => {
   const employments = await TeacherEmployment.find({ teacher: req.user._id })
     .populate('institution', 'name type country logo')
@@ -218,7 +218,7 @@ const getContractLink = asyncHandler(async (req, res) => {
   return ok(res, { url, expiresAt });
 });
 
-// GET /api/institutions/:id/teacher-employments â€” the institution's own hiring history.
+// GET /api/institutions/:id/teacher-employments — the institution's own hiring history.
 const listInstitutionEmployments = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
