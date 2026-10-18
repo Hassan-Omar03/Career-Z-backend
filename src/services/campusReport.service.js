@@ -16,7 +16,7 @@ const UNASSIGNED = 'unassigned';
 
 async function campusReport(institutionId, { from, to } = {}) {
   const start = from ? new Date(from) : new Date(Date.now() - 30 * 864e5);
-  const end = to ? new Date(`${String(to).slice(0, 10)}T23:59:59.999Z`) : new Date();
+  const end = new Date(`${(to ? String(to) : new Date().toISOString()).slice(0, 10)}T23:59:59.999Z`); // to the end of that day, so today's later sessions count
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || start > end) throw Object.assign(new Error('Choose a valid date range.'), { statusCode: 422 });
 
   const [campuses, sections, courses, members] = await Promise.all([
