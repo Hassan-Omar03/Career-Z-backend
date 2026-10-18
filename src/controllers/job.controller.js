@@ -15,23 +15,27 @@ const { notify } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
 const { PAYMENT_METHOD_LABEL } = require('../utils/paymentMethods');
 
-function assertOwnsJob(job, userId) {
-  if (job.postedBy.toString() !== userId.toString()) {
-    throw new AppError('You did not post this job.', 403);
-  }
+const jobAccess = require('../services/jobAccess.service');
+const publishing = require('../services/jobPublishing.service');
+const { JOB_CATEGORIES } = require('../models/Job');
+
+// The poster, or the owner / recruitment staff of the job's institute (see jobAccess.service).
+async function assertOwnsJob(job, userOrId) {
+  const user = userOrId?._id ? userOrId : { _id: userOrId };
+  await jobAccess.assertCanManageJob(job, user);
 }
+
+// Fields that change what applicants read; editing them on a live job re-runs the risk scan.
+const CONTENT_FIELDS = ['title', 'company', 'description', 'salaryMin', 'salaryMax', 'visaSponsorship', 'contactEmail', 'contactPhone', 'skills'];
 
 // POST /api/jobs
 const createJob = asyncHandler(async (req, res) => {
-  const verified = (await isRoleVerified(req.user._id, 'employer')) || (await isRoleVerified(req.user._id, 'education_agent'));
-  if (!verified) {
-    throw new AppError('Your Employer/Agent account is pending Super Admin verification. You can browse the dashboard but cannot post a job until it is approved.', 403);
-  }
+  const publisher = await jobAccess.publisherFor(req.user, req.body.institution, req.body.agreement);
 
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'isGovernment', 'status'
+    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'isGovernment', 'status', 'category'
   ];
   const body = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) body[f] = req.body[f]; });
@@ -42,20 +46,15 @@ const createJob = asyncHandler(async (req, res) => {
     throw new AppError('A new job can only be created as draft or active.', 422);
   }
 
-  const job = await Job.create({ ...body, postedBy: req.user._id });
+  if (body.category && !JOB_CATEGORIES.includes(body.category)) throw new AppError('Choose a valid job category.', 422);
+  // An institute's job always carries the institute's own name and logo.
+  if (publisher.institution) { body.company = publisher.institution.name; if (!body.companyLogo && publisher.institution.logo) body.companyLogo = publisher.institution.logo; }
+  const wantsPublish = (body.status || 'active') === 'active';
+  const job = await Job.create({ ...body, status: 'draft', postedBy: req.user._id, institution: publisher.institution?._id || null,
+    agreement: publisher.agreement?._id || null, recruitmentRequest: publisher.agreement?.request || null });
+  const outcome = wantsPublish ? await publishing.submit(job, req.user, publisher.role === 'institution_staff' ? null : publisher.role) : { published: false, flags: [] };
+  return created(res, { ...job.toObject(), outcome }, !wantsPublish ? 'Job saved as draft.' : outcome.published ? 'Job published.' : 'Job sent to admin review before it goes live.');
 
-  // "New matching job" notification — real signal: only candidates whose CV already lists
-  // one of this job's required skills get notified, and only once the job is actually live.
-  if (job.status === 'active' && body.skills?.length > 0) {
-    const matchingResumes = await Resume.find({ skills: { $in: body.skills } }).select('user');
-    await Promise.all(matchingResumes.map((r) => notify(r.user, {
-      title: `New matching job: ${job.title} @ ${job.company}`,
-      body: `Matches your skills: ${body.skills.join(', ')}`,
-      sentBy: req.user._id
-    }).catch(() => {})));
-  }
-
-  return created(res, job, 'Job posted.');
 });
 
 // GET /api/jobs (public search)
@@ -80,6 +79,10 @@ const listJobs = asyncHandler(async (req, res) => {
 const getJob = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id).populate('postedBy', 'fullName');
   if (!job) throw new AppError('Job not found.', 404);
+  // Drafts, held and rejected jobs are visible only to the people who manage them.
+  if (!['active', 'paused', 'closed', 'filled'].includes(job.status) && !(req.user && (await jobAccess.canManageJob(job, req.user)))) {
+    throw new AppError('Job not found.', 404);
+  }
 
   // "Recently viewed jobs" — only for a signed-in viewer actually opening the job's own
   // detail view, not every list/search hit. Dedupe (most-recent-first), cap at 20.
@@ -96,7 +99,14 @@ const getJob = asyncHandler(async (req, res) => {
 
 // GET /api/jobs/mine/list
 const myJobs = asyncHandler(async (req, res) => {
-  const jobs = await Job.find({ postedBy: req.user._id }).sort({ createdAt: -1 });
+  const institutions = await jobAccess.manageableInstitutionIds(req.user);
+  const wanted = req.query.institution;
+  let filter;
+  if (wanted) {
+    if (!institutions.some((id) => String(id) === String(wanted))) throw new AppError('You cannot manage this institute\'s jobs.', 403);
+    filter = { institution: wanted, agreement: null };
+  } else filter = { $or: [{ postedBy: req.user._id }, ...(institutions.length ? [{ institution: { $in: institutions }, agreement: null }] : [])] };
+  const jobs = await Job.find(filter).sort({ createdAt: -1 });
   const counts = await JobApplication.aggregate([
     { $match: { job: { $in: jobs.map((j) => j._id) } } },
     { $group: { _id: '$job', count: { $sum: 1 } } }
@@ -178,16 +188,31 @@ const myRecentActivity = asyncHandler(async (req, res) => {
 const updateJob = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, req.user._id);
+  await assertOwnsJob(job, req.user);
 
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'status'
+    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'category'
   ];
+  if (req.body.category !== undefined && !JOB_CATEGORIES.includes(req.body.category)) throw new AppError('Choose a valid job category.', 422);
+  const contentChanged = CONTENT_FIELDS.some((f) => req.body[f] !== undefined && JSON.stringify(req.body[f]) !== JSON.stringify(job[f]));
   allowed.forEach((f) => { if (req.body[f] !== undefined) job[f] = req.body[f]; });
-  await job.save();
-  return ok(res, job);
+  if (job.institution && req.body.company !== undefined) { const inst = await require('../models/Institution').findById(job.institution).select('name'); if (inst) job.company = inst.name; }
+
+  // Status the publisher may ask for. Going live always passes through the risk scan; an admin
+  // decides held jobs, so 'pending_review' and 'rejected' cannot be set or skipped here.
+  const wanted = req.body.status;
+  if (wanted !== undefined && !['draft', 'active', 'paused', 'closed', 'filled'].includes(wanted)) throw new AppError('Invalid job status.', 422);
+  const live = ['active', 'paused'].includes(job.status);
+  let outcome = null;
+  if (wanted === 'active' && !live) outcome = await publishing.submit(job, req.user, await publisherRole(job, req.user));
+  else if (wanted === 'active' && job.status === 'paused') { if (contentChanged) outcome = await publishing.submit(job, req.user, await publisherRole(job, req.user)); else { job.status = 'active'; await job.save(); } }
+  else if (['paused', 'closed', 'filled'].includes(wanted)) { if (!live) throw new AppError('Only a live job can be paused, closed or marked filled.', 409); job.status = wanted; await job.save(); }
+  else if (wanted === 'draft') { if (live) throw new AppError('A published job cannot go back to draft; pause or close it instead.', 409); job.status = 'draft'; await job.save(); }
+  else if (contentChanged && job.status === 'active') outcome = await publishing.submit(job, req.user, await publisherRole(job, req.user));
+  else await job.save();
+  return ok(res, { ...job.toObject(), outcome }, outcome && !outcome.published ? 'Changes sent to admin review before they go live.' : 'Job updated.');
 });
 
 // Every rule for one application, shared by single apply and Smart Apply.
@@ -218,12 +243,27 @@ async function submitApplication(req, job, coverLetter) {
     resumeSnapshot: resume ? resume.toObject() : null
   });
 
-  await notify(job.postedBy, {
-    title: `New candidate applied: ${req.user.fullName} — ${job.title}`,
-    body: job.company,
-    sentBy: req.user._id
-  }).catch(() => {});
+  application.statusHistory.push({ status: 'pending', by: req.user._id, byRole: 'applicant', note: 'Applied' });
+  await application.save();
+  const managers = new Set([String(job.postedBy)]);
+  if (job.institution) { const inst = await require('../models/Institution').findById(job.institution).select('owner'); if (inst) managers.add(String(inst.owner)); }
+  for (const id of managers) {
+    await notify(id, { title: `New application: ${req.user.fullName} — ${job.title}`, body: job.company, sentBy: req.user._id, link: '/dashboard', category: 'application' },
+      { email: true, emailPreference: 'applicationEmails', ctaLabel: 'Review applicants' }).catch(() => {});
+  }
+  // The applicant's own receipt.
+  await notify(req.user._id, { title: `Application received: ${job.title} @ ${job.company}`, body: 'Track its progress in My Applications.', link: `/jobs/${job._id}`, category: 'application' },
+    { email: true, emailPreference: 'applicationEmails', ctaLabel: 'View job' }).catch(() => {});
   return application;
+}
+
+// The role a job was posted under, for the risk scan's verification context.
+async function publisherRole(job, user) {
+  if (job.agreement) return 'education_agent';
+  if (job.institution) return null;
+  const poster = String(job.postedBy) === String(user._id) ? user : await User.findById(job.postedBy).select('roles');
+  if (poster?.roles?.includes('employer') && (await isRoleVerified(poster._id, 'employer'))) return 'employer';
+  return 'education_agent';
 }
 
 // POST /api/jobs/:id/apply
@@ -324,7 +364,7 @@ const EXPERIENCE_LEVEL_YEARS = { entry: 1, mid: 3, senior: 7, lead: 12 };
 const listRecommendedCandidates = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, req.user._id);
+  await assertOwnsJob(job, req.user);
 
   const existingApplicantIds = new Set(
     (await JobApplication.find({ job: job._id }).select('applicant')).map((a) => a.applicant.toString())
@@ -381,7 +421,7 @@ const listRecommendedCandidates = asyncHandler(async (req, res) => {
 const shortlistCandidate = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, req.user._id);
+  await assertOwnsJob(job, req.user);
 
   const { candidateId } = req.body;
   if (!candidateId) throw new AppError('candidateId is required.', 422);
@@ -413,10 +453,10 @@ const shortlistCandidate = asyncHandler(async (req, res) => {
 const listApplicants = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, req.user._id);
+  await assertOwnsJob(job, req.user);
 
   const applications = await JobApplication.find({ job: job._id })
-    .populate('applicant', 'fullName email profilePhoto')
+    .populate('applicant', 'fullName email phone city country profilePhoto')
     .sort({ createdAt: -1 });
 
   // Real "Profile Views" signal for the job-seeker dashboard — an employer opening the
@@ -443,114 +483,128 @@ const listApplicants = asyncHandler(async (req, res) => {
 });
 
 // PATCH /api/jobs/applications/:appId/status
+// Master 12.10 Hiring Workflow, in stored values (see JobApplication): Applied (pending) →
+// Screening (viewed) → Shortlisted → Interview → Final Interview → Offer (selected) → Accepted →
+// Joined (hired) → Completed; Rejected and Withdrawn at any point.
+const HIRING_STATUSES = ['pending', 'viewed', 'shortlisted', 'interview', 'final_interview', 'selected', 'accepted', 'hired', 'completed', 'rejected', 'withdrawn'];
+const STAGE_LABEL = { pending: 'Applied', viewed: 'Screening', shortlisted: 'Shortlisted', interview: 'Interview', final_interview: 'Final interview', selected: 'Offer', accepted: 'Offer accepted', hired: 'Joined', completed: 'Completed', rejected: 'Not selected', withdrawn: 'Withdrawn' };
+
+// Is the person updating this application the hiring organization itself (the employer or the
+// institute), rather than an agent recruiting on someone else's behalf?
+async function isHiringOrganization(job, user) {
+  if (job.agreement) return false; // the institute confirms from its Agents tab (recruitment hires)
+  if (job.institution) return jobAccess.canManageJob(job, user);
+  if (String(job.postedBy) !== String(user._id)) return false;
+  return (await publisherRole(job, user)) === 'employer';
+}
+
+// Runs once joining is confirmed: the job is filled and an agent's own placement earns its
+// commission (existing Agent commission rule, Master 13).
+async function onJoiningConfirmed(application, actorId) {
+  const job = application.job;
+  if (job.status !== 'filled') { job.status = 'filled'; await job.save(); }
+  const poster = await User.findById(job.postedBy).select('roles');
+  if (!job.institution && poster?.roles?.includes('education_agent') && (await publisherRole(job, poster)) === 'education_agent') {
+    const existing = await Commission.findOne({ application: application._id });
+    if (!existing) {
+      const rateSetting = await Setting.findOne({ key: 'commission_rate_percent' });
+      const rate = rateSetting ? rateSetting.value : 10; // existing Agent commission setting (Super Admin)
+      const base = job.salaryMin || job.salaryMax || 0;
+      const commission = await Commission.create({ agent: job.postedBy, job: job._id, application: application._id, candidate: application.applicant, rate, amount: Math.round((base * rate) / 100), currency: job.currency || 'USD' });
+      await notify(job.postedBy, { title: `Commission generated: ${commission.currency} ${commission.amount}`, body: `${job.title}: joining confirmed.`, sentBy: actorId, link: '/dashboard', category: 'commission' }).catch(() => {});
+    }
+  }
+}
+
 const updateApplicationStatus = asyncHandler(async (req, res) => {
   const { status } = req.body;
-  if (!['pending', 'viewed', 'shortlisted', 'interview', 'selected', 'rejected', 'hired'].includes(status)) {
-    throw new AppError('Invalid status.', 422);
-  }
+  const note = String(req.body.note || '').trim().slice(0, 500);
+  if (!HIRING_STATUSES.includes(status)) throw new AppError('Invalid status.', 422);
 
   const application = await JobApplication.findById(req.params.appId).populate('job');
   if (!application) throw new AppError('Application not found.', 404);
-  assertOwnsJob(application.job, req.user._id);
+  await assertOwnsJob(application.job, req.user);
+  const hiringOrg = await isHiringOrganization(application.job, req.user);
+  if (status === 'completed' && !(application.status === 'hired' && application.joining?.confirmed)) throw new AppError('Mark Completed only after joining is confirmed.', 409);
 
   const previousStatus = application.status;
   application.status = status;
+  application.statusHistory.push({ status, by: req.user._id, byRole: hiringOrg ? 'hiring_organization' : 'agent', note });
+  if (status === 'hired' && previousStatus !== 'hired') {
+    application.joining = hiringOrg
+      ? { confirmed: true, confirmedBy: req.user._id, confirmedAt: new Date(), via: 'hiring_organization' }
+      : { confirmed: false, confirmedBy: null, confirmedAt: null, via: '' };
+  }
+  if (previousStatus === 'hired' && !['hired', 'completed'].includes(status)) application.joining = { confirmed: false, confirmedBy: null, confirmedAt: null, via: '' };
   await application.save();
 
   // The hire fell through — cancel the commission it generated rather than leaving a stale
   // "earned" record for a placement that no longer stands.
-  if (previousStatus === 'hired' && status !== 'hired') {
-    await Commission.updateOne(
-      { application: application._id, status: { $ne: 'paid' } },
-      { status: 'cancelled' }
-    );
+  if (['hired', 'completed'].includes(previousStatus) && !['hired', 'completed'].includes(status)) {
+    await Commission.updateOne({ application: application._id, status: { $ne: 'paid' } }, { status: 'cancelled' });
   }
 
-  const STATUS_LABEL = { pending: 'Applied', viewed: 'Application viewed', shortlisted: 'Shortlisted', interview: 'Interview stage', selected: 'Selected', rejected: 'Not selected', hired: 'Job offer — Hired!' };
+  const needsConfirmation = status === 'hired' && !application.joining.confirmed;
+  const institutionConfirms = Boolean(application.job.agreement);
+  if (needsConfirmation && institutionConfirms) {
+    const { tellInstitution } = require('../services/recruitment.service');
+    await tellInstitution(application.job.institution, { title: `Confirm joining: ${application.job.title}`, body: 'Your recruitment agent marked a candidate as joined. Confirm or decline in Jobs & Hiring → Agents.', link: '/dashboard', sentBy: req.user._id });
+  }
   await notify(application.applicant, {
-    title: `${application.job.title} @ ${application.job.company}: ${STATUS_LABEL[status]}`,
-    body: `Your application status changed to "${status}".`,
-    sentBy: req.user._id
-  }).catch(() => {});
+    title: `${application.job.title} @ ${application.job.company}: ${STAGE_LABEL[status]}`,
+    body: needsConfirmation && institutionConfirms ? 'You were marked as joined. The institute will confirm it.' : needsConfirmation ? 'The recruiter marked you as joined. Please confirm in My Applications that you have joined.' : (note || `Your application is now at: ${STAGE_LABEL[status]}.`),
+    sentBy: req.user._id, link: `/jobs/${application.job._id}`, category: 'application'
+  }, { email: true, emailPreference: 'applicationEmails', ctaLabel: 'View job' }).catch(() => {});
 
-  // The recruiter's own confirmation — useful once more than one staff member can act on the
-  // same placement, and for the Agent's "Candidate shortlisted"/"Candidate hired" notifications.
-  if (status === 'shortlisted') {
-    await notify(req.user._id, {
-      title: `Candidate shortlisted: ${application.job.title}`,
-      sentBy: req.user._id
-    }).catch(() => {});
-  }
+  if (status === 'shortlisted') await notify(req.user._id, { title: `Candidate shortlisted: ${application.job.title}`, sentBy: req.user._id }).catch(() => {});
   if (status === 'hired') {
-    await notify(req.user._id, {
-      title: `Candidate hired: ${application.job.title}`,
-      sentBy: req.user._id
-    }).catch(() => {});
-  }
-
-  // The position is genuinely filled once someone is hired for it — not just a status label
-  // change, the job itself stops accepting further applications.
-  if (status === 'hired' && application.job.status !== 'filled') {
-    application.job.status = 'filled';
-    await application.job.save();
-  }
-
-  // Commission — earned automatically when an education_agent's own placement gets a hire.
-  // Real, computed off the job's actual salary; skipped (not fabricated) when no salary is set.
-  if (status === 'hired' && req.user.roles.includes('education_agent')) {
-    const existing = await Commission.findOne({ application: application._id });
-    if (!existing) {
-      const rateSetting = await Setting.findOne({ key: 'commission_rate_percent' });
-      const rate = rateSetting ? rateSetting.value : 10; // Super Admin controls this via PATCH /commissions/rate
-      const base = application.job.salaryMin || application.job.salaryMax || 0;
-      const amount = Math.round((base * rate) / 100);
-      const commission = await Commission.create({
-        agent: req.user._id,
-        job: application.job._id,
-        application: application._id,
-        candidate: application.applicant,
-        rate,
-        amount,
-        currency: application.job.currency || 'USD'
-      });
-      await notify(req.user._id, {
-        title: `Commission generated: ${commission.currency} ${commission.amount}`,
-        body: application.job.title,
-        sentBy: req.user._id
-      }).catch(() => {});
-    }
-  }
-
-  // A real employment record on top of the "hired" label — a formal offer the candidate must
-  // actually accept, not just a status change (spec: "offer acceptance/rejection, employment
-  // contract, employee onboarding, salary/employment record"). Additive — never changes the
-  // existing "hired" behavior above (job filled, commission), just adds real tracking after it.
-  if (status === 'hired') {
+    await notify(req.user._id, { title: needsConfirmation ? `Joining recorded, waiting for ${institutionConfirms ? 'the institute' : 'the candidate'} to confirm: ${application.job.title}` : `Candidate joined: ${application.job.title}`, sentBy: req.user._id }).catch(() => {});
+    if (application.joining.confirmed) await onJoiningConfirmed(application, req.user._id);
+    // A real employment record on top of the "joined" label (existing behaviour).
     const Employment = require('../models/Employment');
-    const existingEmployment = await Employment.findOne({ application: application._id });
-    if (!existingEmployment) {
-      await Employment.create({
-        application: application._id, job: application.job._id,
-        employer: application.job.postedBy, employee: application.applicant,
-        salary: application.job.salaryMin || application.job.salaryMax || null,
-        currency: application.job.currency || 'USD', status: 'offered'
-      });
-      await notify(application.applicant, {
-        title: `Employment offer: ${application.job.title}`,
-        body: 'Review and respond to the formal offer from My Applications.',
-        sentBy: req.user._id
-      }).catch(() => {});
+    if (!(await Employment.findOne({ application: application._id }))) {
+      await Employment.create({ application: application._id, job: application.job._id, employer: application.job.postedBy, employee: application.applicant,
+        salary: application.job.salaryMin || application.job.salaryMax || null, currency: application.job.currency || 'USD', status: 'offered' });
+      await notify(application.applicant, { title: `Employment offer: ${application.job.title}`, body: 'Review and respond to the formal offer from My Applications.', sentBy: req.user._id }).catch(() => {});
     }
   }
 
-  return ok(res, application, `Application ${status}.`);
+  return ok(res, application, `Application moved to ${STAGE_LABEL[status]}.`);
+});
+
+// POST /api/jobs/applications/:appId/confirm-joining — the candidate confirms they joined, for a
+// job an agent recruited for (Master 12.10 Joined; an agent's claim alone is not enough).
+const confirmJoining = asyncHandler(async (req, res) => {
+  const application = await JobApplication.findOne({ _id: req.params.appId, applicant: req.user._id }).populate('job');
+  if (!application) throw new AppError('Application not found.', 404);
+  if (application.status !== 'hired') throw new AppError('There is no joining to confirm for this application.', 409);
+  if (application.joining?.confirmed) return ok(res, application, 'Joining already confirmed.');
+  if (application.job.agreement) throw new AppError('The institute confirms joining for this job.', 409);
+  application.joining = { confirmed: true, confirmedBy: req.user._id, confirmedAt: new Date(), via: 'candidate' };
+  application.statusHistory.push({ status: 'hired', by: req.user._id, byRole: 'applicant', note: 'Candidate confirmed joining' });
+  await application.save();
+  await onJoiningConfirmed(application, req.user._id);
+  await notify(application.job.postedBy, { title: `Joining confirmed: ${application.job.title}`, body: `${req.user.fullName} confirmed they joined.`, sentBy: req.user._id, link: '/dashboard', category: 'application' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+  return ok(res, application, 'Thank you. Your joining is confirmed.');
+});
+
+// POST /api/jobs/applications/:appId/withdraw — the applicant withdraws before joining.
+const withdrawApplication = asyncHandler(async (req, res) => {
+  const application = await JobApplication.findOne({ _id: req.params.appId, applicant: req.user._id }).populate('job', 'title company postedBy');
+  if (!application) throw new AppError('Application not found.', 404);
+  if (['hired', 'completed', 'rejected', 'withdrawn'].includes(application.status)) throw new AppError(`This application is already ${STAGE_LABEL[application.status].toLowerCase()}.`, 409);
+  application.status = 'withdrawn';
+  application.statusHistory.push({ status: 'withdrawn', by: req.user._id, byRole: 'applicant', note: String(req.body?.reason || '').slice(0, 300) });
+  await application.save();
+  await notify(application.job.postedBy, { title: `Application withdrawn: ${application.job.title}`, body: `${req.user.fullName} withdrew their application.`, sentBy: req.user._id, link: '/dashboard', category: 'application' }).catch(() => {});
+  return ok(res, application, 'Application withdrawn.');
 });
 
 // POST /api/jobs/applications/:appId/schedule-interview (employer)
 const scheduleInterview = asyncHandler(async (req, res) => {
   const application = await JobApplication.findById(req.params.appId).populate('job');
   if (!application) throw new AppError('Application not found.', 404);
-  assertOwnsJob(application.job, req.user._id);
+  await assertOwnsJob(application.job, req.user);
 
   const { scheduledDate, mode, location, meetingLink } = req.body;
   if (!scheduledDate) throw new AppError('scheduledDate is required.', 422);
@@ -572,8 +626,8 @@ const scheduleInterview = asyncHandler(async (req, res) => {
   await notify(application.applicant, {
     title: `Interview scheduled: ${application.job.title} @ ${application.job.company}`,
     body: `${new Date(scheduledDate).toLocaleString()} — ${mode === 'physical' ? location : (meetingLink || 'online')}`,
-    sentBy: req.user._id
-  }).catch(() => {});
+    sentBy: req.user._id, link: `/jobs/${application.job._id}`, category: 'application'
+  }, { email: true, emailPreference: 'applicationEmails', ctaLabel: 'View job' }).catch(() => {});
 
   return created(res, interview, 'Interview scheduled.');
 });
@@ -582,9 +636,9 @@ const scheduleInterview = asyncHandler(async (req, res) => {
 // endpoint (same "allowed fields" pattern as everywhere else) — only the person who scheduled
 // it can change it.
 const updateInterview = asyncHandler(async (req, res) => {
-  const interview = await Interview.findById(req.params.id).populate('job', 'title company');
+  const interview = await Interview.findById(req.params.id).populate('job', 'title company postedBy institution');
   if (!interview) throw new AppError('Interview not found.', 404);
-  if (interview.scheduledBy.toString() !== req.user._id.toString()) throw new AppError('You did not schedule this interview.', 403);
+  if (interview.scheduledBy.toString() !== req.user._id.toString() && !(await jobAccess.canManageJob(interview.job, req.user))) throw new AppError('You cannot change this interview.', 403);
 
   const { scheduledDate, mode, location, meetingLink, status, feedback } = req.body;
   const isReschedule = scheduledDate !== undefined && new Date(scheduledDate).getTime() !== interview.scheduledDate.getTime();
@@ -657,7 +711,7 @@ const getMyJobDashboard = asyncHandler(async (req, res) => {
   // Dedupe by title so refreshing the dashboard doesn't re-notify for the same job.
   const now = new Date();
   const soon = new Date(now.getTime() + 3 * 24 * 60 * 60 * 1000);
-  const activeApps = applications.filter((a) => !['rejected', 'hired'].includes(a.status)).map((a) => a.job).filter(Boolean);
+  const activeApps = applications.filter((a) => !['rejected', 'hired', 'completed', 'withdrawn'].includes(a.status)).map((a) => a.job).filter(Boolean);
   const deadlineCandidates = [...activeApps, ...savedJobs];
   const seenJobIds = new Set();
   for (const j of deadlineCandidates) {
@@ -786,7 +840,7 @@ const setFeaturedFee = asyncHandler(async (req, res) => {
 async function loadFeaturableJob(jobId, userId) {
   const job = await Job.findById(jobId);
   if (!job) throw new AppError('Job not found.', 404);
-  assertOwnsJob(job, userId);
+  await assertOwnsJob(job, userId);
   if (job.featured && job.featuredUntil > new Date()) throw new AppError('This job is already featured.', 400);
   const setting = await Setting.findOne({ key: FEATURED_JOB_FEE_KEY });
   const fee = setting ? setting.value : DEFAULT_FEATURED_JOB_FEE;
@@ -826,6 +880,7 @@ const featureJob = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  confirmJoining, withdrawApplication, HIRING_STATUSES, isHiringOrganization,
   smartApplyMatches, smartApply,
   createJob,
   loadFeaturableJob,

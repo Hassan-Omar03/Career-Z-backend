@@ -321,7 +321,7 @@ test('register rejects unknown account types and subtypes; requirements are publ
   assert.equal((await call('POST', '/auth/register', { body: { ...base, email: 'y@verify.test', accountType: 'donor', subtype: 'bank' } })).status, 422);
   const req = await call('GET', '/onboarding/requirements');
   assert.equal(req.status, 200);
-  assert.equal(req.body.data.accountTypes.length, 7);
+  assert.equal(req.body.data.accountTypes.length, 8, 'seven account types plus Employer / Company (Master 6.8, 12.2)');
 });
 
 test('passwords must contain a capital letter, a small letter and a special character', async () => {

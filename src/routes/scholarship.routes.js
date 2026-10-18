@@ -9,6 +9,13 @@ router.get('/:id', optionalAuth, ctrl.getScholarship);
 
 router.use(protect);
 
+// Agent listings for providers, and the donor's confirmation of one naming them.
+const agentListing = require('../controllers/agentScholarship.controller');
+router.post('/agent', requireRole('education_agent'), agentListing.create);
+router.get('/agent/mine', requireRole('education_agent'), agentListing.mine);
+router.patch('/agent/:id', requireRole('education_agent'), agentListing.update);
+router.post('/:id/donor-confirm', requireRole('donor'), agentListing.donorConfirm);
+
 router.get('/received/sponsorship-payments', ctrl.receivedSponsorshipPayments);
 router.patch('/received/sponsorships/:id/payments/:paymentId', ctrl.verifySponsorshipPayment);
 

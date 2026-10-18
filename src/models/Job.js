@@ -1,8 +1,18 @@
 const mongoose = require('mongoose');
 
+// Teaching and non-teaching staff categories (institutes hire drivers, wardens, accountants...).
+const JOB_CATEGORIES = ['teaching', 'academic_leadership', 'administration', 'finance_accounts', 'it_technical', 'transport', 'hostel', 'security', 'library', 'lab', 'maintenance_cleaning', 'healthcare', 'sales_marketing', 'engineering', 'customer_service', 'other'];
+
 const jobSchema = new mongoose.Schema(
   {
     postedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // Set when a verified institute posts its own vacancy (Master 4.24, 5.5). The institute's
+    // owner and staff with 'recruitment:manage' manage it alongside the person who posted it.
+    institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null, index: true },
+    category: { type: String, enum: JOB_CATEGORIES, default: 'other' },
+    // Set when an agent publishes under an active Institute–Agent agreement.
+    recruitmentRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'RecruitmentRequest', default: null },
+    agreement: { type: mongoose.Schema.Types.ObjectId, ref: 'RecruitmentAgreement', default: null, index: true },
     title: { type: String, required: true, trim: true },
     company: { type: String, required: true, trim: true },
     type: {
@@ -27,7 +37,17 @@ const jobSchema = new mongoose.Schema(
     companyLogo: { type: String, default: null },
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
-    status: { type: String, enum: ['draft', 'active', 'paused', 'closed', 'filled'], default: 'active' },
+    // pending_review: held by the risk scan for an admin (Master 12.5); rejected: admin declined.
+    status: { type: String, enum: ['draft', 'pending_review', 'active', 'paused', 'closed', 'filled', 'rejected'], default: 'active' },
+    moderation: {
+      riskScore: { type: Number, default: 0 },
+      flags: [{ code: String, label: String, points: Number, _id: false }],
+      submittedAt: { type: Date, default: null },
+      reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
+      reviewedAt: { type: Date, default: null },
+      note: { type: String, default: '' }
+    },
+    publishedAt: { type: Date, default: null },
     isGovernment: { type: Boolean, default: false },
     // Revenue: Part 4.26 "Featured Jobs" — employer/agent pays to have a listing shown first
     // with a badge. featuredUntil is cleared (not just left stale) once it lapses, in listJobs.
@@ -40,3 +60,4 @@ const jobSchema = new mongoose.Schema(
 jobSchema.index({ title: 'text', company: 'text', skills: 'text' });
 
 module.exports = mongoose.model('Job', jobSchema);
+module.exports.JOB_CATEGORIES = JOB_CATEGORIES;

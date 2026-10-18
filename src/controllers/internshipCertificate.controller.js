@@ -32,7 +32,7 @@ const issueAsEmployer = asyncHandler(async (req, res) => {
   if (!application || !application.job) throw new AppError('Application not found.', 404);
   if (String(application.job.postedBy) !== String(req.user._id)) throw new AppError('Only the employer who posted this internship can issue its certificate.', 403);
   if (application.job.type !== 'internship') throw new AppError('Certificates can only be issued for internship positions.', 422);
-  if (application.status !== 'hired') throw new AppError('Only a hired intern can receive a completion certificate.', 409);
+  if (!['hired', 'completed'].includes(application.status)) throw new AppError('Only a hired intern can receive a completion certificate.', 409);
   const cert = await save({ student: application.applicant, issuerType: 'employer', issuedBy: req.user._id, job: application.job._id, application: application._id, organization: application.job.company, role: application.job.title, ...period(req.body) });
   await notify(application.applicant, { title: 'Internship certificate issued', body: `${application.job.company} issued your ${application.job.title} internship certificate.`, sentBy: req.user._id }).catch(() => {});
   return created(res, await withQr(cert), 'Internship certificate issued.');

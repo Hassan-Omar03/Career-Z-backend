@@ -14,7 +14,7 @@ const { generateTransactionId } = require('../utils/transactionId');
 const { PAYMENT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 function assertOwnsScholarship(scholarship, userId) {
-  if (scholarship.donor.toString() !== userId.toString()) {
+  if (String(scholarship.donor) !== String(userId)) {
     throw new AppError('You did not create this scholarship.', 403);
   }
 }
@@ -27,15 +27,21 @@ const createScholarship = asyncHandler(async (req, res) => {
 
   const allowed = [
     'title', 'description', 'amount', 'currency', 'eligibilityCriteria',
-    'country', 'applicationDeadline', 'seatsAvailable'
+    'country', 'applicationDeadline', 'seatsAvailable', 'audience'
   ];
   const body = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) body[f] = req.body[f]; });
   if (!body.title || body.amount === undefined) {
     throw new AppError('title and amount are required.', 422);
   }
+  if (body.audience !== undefined) {
+    body.audience = [...new Set((Array.isArray(body.audience) ? body.audience : [body.audience]).filter((a) => ['students', 'teachers'].includes(a)))];
+    if (!body.audience.length) body.audience = ['students'];
+  }
 
   const scholarship = await Scholarship.create({ ...body, donor: req.user._id });
+  // Verified donor + open scholarship = published: the people it is for get one alert.
+  await require('../services/scholarshipAlerts.service').onScholarshipPublished(scholarship);
   return created(res, scholarship, 'Scholarship posted.');
 });
 
@@ -71,6 +77,9 @@ const updateScholarship = asyncHandler(async (req, res) => {
     'title', 'description', 'amount', 'currency', 'eligibilityCriteria',
     'country', 'applicationDeadline', 'seatsAvailable', 'status'
   ];
+  // An agent listing goes live only through admin review; its donor may close it, not open it.
+  if (scholarship.publishedBy && req.body.status !== undefined && req.body.status !== 'closed') throw new AppError('An agent listing is opened by admin review. You can close it.', 409);
+  if (!['open', 'closed', undefined].includes(req.body.status)) throw new AppError('Invalid status.', 422);
   allowed.forEach((f) => { if (req.body[f] !== undefined) scholarship[f] = req.body[f]; });
   await scholarship.save();
   return ok(res, scholarship);
@@ -81,11 +90,15 @@ const applyToScholarship = asyncHandler(async (req, res) => {
   const scholarship = await Scholarship.findById(req.params.id);
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
   if (scholarship.status !== 'open') throw new AppError('This scholarship is closed.', 400);
+  if (scholarship.applicationMode === 'external') throw new AppError('Apply on the provider\'s own website for this scholarship.', 400, { externalUrl: scholarship.externalUrl });
   if (scholarship.applicationDeadline && new Date(scholarship.applicationDeadline) < new Date()) throw new AppError('The application deadline has passed.', 400);
   if (!(scholarship.seatsAvailable > 0)) throw new AppError('All seats for this scholarship are filled.', 400);
   const roles = req.accessibleRoles || req.user.roles || [];
-  if (!roles.includes('student')) {
-    throw new AppError('Only student accounts can apply for scholarships. Sign in with a student account, or create one.', 403, { code: 'WRONG_ACCOUNT_TYPE', eligible: ['student'] });
+  // Students, and teachers when the publisher opened it to teachers (audience).
+  const audience = scholarship.audience?.length ? scholarship.audience : ['students'];
+  const eligible = [...(audience.includes('students') ? ['student'] : []), ...(audience.includes('teachers') ? ['teacher'] : [])];
+  if (!eligible.some((r) => roles.includes(r))) {
+    throw new AppError(eligible.includes('teacher') ? 'Only student and teacher accounts can apply for this scholarship.' : 'Only student accounts can apply for scholarships. Sign in with a student account, or create one.', 403, { code: 'WRONG_ACCOUNT_TYPE', eligible });
   }
   // The donor must still be allowed to list it (approved and active).
   if (!(await require('../services/publicListings.service').scholarshipDetail(scholarship._id))) throw new AppError('This scholarship is no longer accepting applications.', 400);
@@ -168,8 +181,9 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
   const STATUS_LABEL = { pending: 'Under review', approved: 'Approved', rejected: 'Not selected' };
   await notify(application.applicant, {
     title: `${application.scholarship.title}: ${STATUS_LABEL[status]}`,
-    sentBy: req.user._id
-  }).catch(() => {});
+    body: status === 'approved' ? 'Congratulations. The donor will contact you about the next steps.' : status === 'rejected' ? 'Your application was not selected this time.' : 'Your application is under review.',
+    sentBy: req.user._id, link: `/scholarships/${application.scholarship._id}`, category: 'scholarship'
+  }, { email: true, emailPreference: 'applicationEmails', ctaLabel: 'View scholarship' }).catch(() => {});
 
   return ok(res, application, `Application ${status}.`);
 });

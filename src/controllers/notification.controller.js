@@ -15,7 +15,7 @@ const { ok } = require('../utils/apiResponse');
 
 // GET /api/notifications/mine
 const listMine = asyncHandler(async (req, res) => {
-  const notifications = await Notification.find({ user: req.user._id }).sort({ createdAt: -1 }).limit(100);
+  const notifications = await Notification.find({ user: req.user._id, muted: { $ne: true } }).sort({ createdAt: -1 }).limit(100);
   return ok(res, notifications);
 });
 
@@ -23,7 +23,7 @@ const listMine = asyncHandler(async (req, res) => {
 // Count in MongoDB so the header remains exact even when there are more than
 // the 100 notifications returned by the paginated feed.
 const getUnreadCount = asyncHandler(async (req, res) => {
-  const count = await Notification.countDocuments({ user: req.user._id, read: false });
+  const count = await Notification.countDocuments({ user: req.user._id, read: false, muted: { $ne: true } });
   return ok(res, { count });
 });
 

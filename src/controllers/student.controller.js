@@ -418,7 +418,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
   const appliedScholarshipIds = new Set(scholarshipApps.map((a) => a.scholarship?._id?.toString()).filter(Boolean));
   const recommendedScholarships = openScholarships.filter((s) => !appliedScholarshipIds.has(s._id.toString())).slice(0, 3);
 
-  const activeApplications = jobApps.filter((a) => ['pending', 'viewed', 'shortlisted', 'interview', 'selected'].includes(a.status)).length
+  const activeApplications = jobApps.filter((a) => ['pending', 'viewed', 'shortlisted', 'interview', 'final_interview', 'selected', 'accepted'].includes(a.status)).length
     + scholarshipApps.filter((a) => a.status === 'pending').length;
 
   // Recent Activity — every kind the spec asks for (course, application, payment, marketplace),

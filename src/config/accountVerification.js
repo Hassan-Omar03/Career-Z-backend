@@ -7,7 +7,9 @@ const ACCOUNT_TYPES = {
   institute: { role: 'institution_owner', label: 'Institute' },
   agent: { role: 'education_agent', label: 'Agent' },
   donor: { role: 'donor', label: 'Donor' },
-  marketplace: { role: 'marketplace_seller', label: 'Marketplace' }
+  marketplace: { role: 'marketplace_seller', label: 'Marketplace' },
+  // Master 6.8 Employer Verification / 12.2 Company Registration (with Startup Mode).
+  employer: { role: 'employer', label: 'Employer / Company' }
 };
 const VERIFIED_ROLES = Object.values(ACCOUNT_TYPES).map((t) => t.role).concat('academy_owner');
 const ROLE_LABEL = { ...Object.fromEntries(Object.values(ACCOUNT_TYPES).map((t) => [t.role, t.label])), academy_owner: 'Institute' };
@@ -20,9 +22,12 @@ const DOCUMENT_TYPES = {
   representative_cnic: 'Owner / authorized representative CNIC', institute_logo: 'Institute logo / profile picture', other_legal: 'Other legal registration document',
   agency_registration_certificate: 'Agency registration certificate', agency_authorization: 'Agency authorization document',
   organization_registration_certificate: 'Organization registration certificate', representative_identity: 'Authorized representative identity document',
-  business_registration_certificate: 'Business registration certificate', owner_identity: 'Business owner / representative identity document'
+  business_registration_certificate: 'Business registration certificate', owner_identity: 'Business owner / representative identity document',
+  company_registration_certificate: 'Company registration certificate', company_tax_certificate: 'Tax registration (NTN) certificate',
+  authorized_person_identity: 'Authorized person identity document (CNIC / passport)', company_logo: 'Company logo',
+  recruitment_license: 'Recruitment / overseas employment licence'
 };
-const IMAGE_ONLY = new Set(['profile_picture', 'institute_logo']);
+const IMAGE_ONLY = new Set(['profile_picture', 'institute_logo', 'company_logo']);
 
 // Identity: CNIC front+back, or the alternative listed for that role.
 const identity = (alternative) => ({ anyOf: [['cnic_front', 'cnic_back'], [alternative]], label: `CNIC (front and back) or ${DOCUMENT_TYPES[alternative]}` });
@@ -47,6 +52,14 @@ function documentRequirements(role, subtype = '') {
     case 'marketplace_seller':
       groups.push({ ...identity('other_identity'), mandatory: true }); add(['profile_picture']);
       if (subtype === 'business') { add(['business_registration_certificate']); add(['owner_identity']); }
+      break;
+    // Registered company: registration, authorized person, logo; tax optional. Recruitment/visa
+    // agency: also its licence. Startup Mode (12.2): identity now, company documents later.
+    case 'employer':
+      add(['authorized_person_identity']);
+      if (subtype === 'startup') { add(['profile_picture']); break; }
+      add(['company_registration_certificate']); add(['company_logo']); add(['company_tax_certificate'], null, false);
+      add(['recruitment_license'], null, subtype === 'recruitment_agency');
       break;
     default: break;
   }
@@ -79,6 +92,15 @@ function profileFields(role, subtype = '') {
     case 'marketplace_seller': return [F('firstName', 'First name'), F('lastName', 'Last name'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'], required: individual }), F('dateOfBirth', 'Date of birth', { type: 'date', required: individual }),
       F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic', required: individual }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }),
       F('businessName', 'Business / shop name', { required: !individual }), F('businessRegistrationNumber', 'Business registration number', { required: !individual }), F('address', 'Complete address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'), F('businessDescription', 'Business description', { type: 'textarea', required: !individual })];
+    case 'employer': {
+      const registered = subtype !== 'startup';
+      return [F('companyName', subtype === 'startup' ? 'Startup / business name' : 'Company name'), F('companyRegistrationNumber', 'Company registration number', { required: registered }),
+        F('taxNumber', 'Tax number (NTN)', { required: false }), F('recruitmentLicenseNumber', 'Recruitment licence number', { required: subtype === 'recruitment_agency' }),
+        F('website', 'Website', { required: false, pattern: 'url' }), F('officialEmail', 'Official company email', { pattern: 'email' }), F('contactNumber', 'Official contact number', { pattern: 'phone' }),
+        F('address', 'Office address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'),
+        F('authorizedPersonName', 'Authorized person name'), F('authorizedPersonDesignation', 'Authorized person designation'), F('authorizedPersonCnic', 'Authorized person CNIC', { sensitive: true, pattern: 'cnic' }),
+        F('description', 'About the company', { type: 'textarea' })];
+    }
     default: return [];
   }
 }
@@ -86,7 +108,8 @@ function profileFields(role, subtype = '') {
 const SUBTYPES = {
   donor: ['individual', 'organization'],
   marketplace_seller: ['individual', 'business'],
-  education_agent: ['individual', 'agency']
+  education_agent: ['individual', 'agency'],
+  employer: ['company', 'recruitment_agency', 'startup']
 };
 
 const STATUSES = ['awaiting_documents', 'pending_approval', 'under_review', 'approved', 'rejected', 'resubmission_required', 'suspended'];

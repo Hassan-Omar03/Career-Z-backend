@@ -37,6 +37,20 @@ router.post('/ai-insights', ctrl.getAiInsights);
 router.get('/verifications', requireDepartment('verification'), verificationCtrl.list);
 router.get('/verifications/:id', requireDepartment('verification'), verificationCtrl.detail);
 router.post('/verifications/:id/decision', requireDepartment('verification'), verificationCtrl.decision);
+// Job Review queue: jobs held by the risk scan (Master 12.5).
+const jobReview = require('../controllers/jobModerationAdmin.controller');
+router.get('/jobs/review', requireDepartment('verification'), jobReview.listForReview);
+router.post('/jobs/:id/decision', requireDepartment('verification'), jobReview.decide);
+const agentScholarships = require('../controllers/agentScholarship.controller');
+router.get('/scholarships/review', requireDepartment('verification'), agentScholarships.reviewQueue);
+router.post('/scholarships/:id/decision', requireDepartment('verification'), agentScholarships.decide);
+const recruitmentAdmin = require('../controllers/recruitment.controller').admin;
+router.get('/recruitment/invoices', requireDepartment('finance'), recruitmentAdmin.listInvoices);
+router.get('/recruitment/invoices/:id/proofs/:proofId', requireDepartment('finance'), recruitmentAdmin.proof);
+router.post('/recruitment/invoices/:id/verify', requireDepartment('finance'), recruitmentAdmin.verify);
+router.post('/recruitment/invoices/:id/review', requireDepartment('finance'), recruitmentAdmin.resolve);
+router.get('/recruitment/settings', requireRole('super_admin'), recruitmentAdmin.getSettings);
+router.put('/recruitment/settings', requireRole('super_admin'), recruitmentAdmin.saveSettings);
 
 // Staff team management — Super Admin only.
 router.get('/staff', requireRole('super_admin'), staffCtrl.listStaff);

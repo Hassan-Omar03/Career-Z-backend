@@ -42,7 +42,35 @@ const userSchema = new mongoose.Schema(
         job: { type: mongoose.Schema.Types.ObjectId, ref: 'Job' },
         viewedAt: { type: Date, default: Date.now }
       }
-    ]
+    ],
+
+    // Notification Center (Master 35) and Job Alerts (Job Marketplace 19): what the person wants
+    // to receive, and where. Everything is on until they switch it off or unsubscribe.
+    notificationPreferences: {
+      jobAlertsInApp: { type: Boolean, default: true },
+      jobAlertsEmail: { type: Boolean, default: true },
+      weeklyDigest: { type: Boolean, default: true },
+      applicationEmails: { type: Boolean, default: true },
+      scholarshipAlertsInApp: { type: Boolean, default: true },
+      scholarshipAlertsEmail: { type: Boolean, default: true }
+    },
+    // Profile-based job matching beyond the CV: categories and places the person wants.
+    jobPreferences: {
+      categories: [{ type: String }],
+      cities: [{ type: String }],
+      remoteOk: { type: Boolean, default: false }
+    },
+    // Secret used in one-click unsubscribe links in alert emails (no login needed).
+    unsubscribeToken: { type: String, default: null, index: { sparse: true } },
+    // Public recruitment profile institutes see in Find Agents (agents only).
+    agentProfile: {
+      specialties: [{ type: String }],   // job categories the agent recruits for
+      serviceCities: [{ type: String }],
+      experienceYears: { type: Number, default: 0, min: 0, max: 60 },
+      bio: { type: String, default: '', maxlength: 1500 },
+      acceptingRequests: { type: Boolean, default: true }
+    },
+    lastDigestAt: { type: Date, default: null }
   },
   { timestamps: true }
 );

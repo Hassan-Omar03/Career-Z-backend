@@ -15,6 +15,7 @@ router.use('/dashboard', require('./dashboard.routes'));
 router.use('/messages', require('./message.routes'));
 router.use('/notifications', require('./notification.routes'));
 router.use('/jobs', require('./job.routes'));
+router.use('/recruitment', require('./recruitment.routes'));
 router.use('/job-alerts', require('./jobAlert.routes'));
 router.use('/commissions', require('./commission.routes'));
 router.use('/inquiries', require('./inquiry.routes'));

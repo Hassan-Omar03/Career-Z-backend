@@ -34,7 +34,7 @@ const paging = (query) => {
 // Publishers whose account may show content publicly: active, holding the role, and (for roles in
 // the verification programme) with that role's latest request approved.
 async function eligiblePublishers(ids, role) {
-  const unique = [...new Set(ids.map(String))];
+  const unique = [...new Set(ids.filter(Boolean).map(String))];
   if (!unique.length) return [];
   const users = await User.find({ _id: { $in: unique }, status: 'active', roles: role }).select('_id').lean();
   if (!VERIFIED_ROLES.includes(role)) return users.map((u) => u._id);
@@ -44,17 +44,20 @@ async function eligiblePublishers(ids, role) {
   return users.filter((u) => latest.get(String(u._id)) === 'approved').map((u) => u._id);
 }
 
-// Jobs are posted by employers and education agents.
+// Jobs are posted by verified employers and education agents, or by a verified, active institute
+// for its own vacancies (whoever on its staff pressed Post).
 async function jobPublishers(base) {
-  const posters = await Job.distinct('postedBy', base);
+  const posters = await Job.distinct('postedBy', { $and: [base, { institution: null }] });
   const [agents, employers] = await Promise.all([eligiblePublishers(posters, 'education_agent'), eligiblePublishers(posters, 'employer')]);
   return [...agents, ...employers];
 }
+const verifiedInstitutionIds = () => Institution.distinct('_id', { status: 'active', verificationStatus: 'approved' });
 
 const openDeadline = () => ({ $or: [{ applicationDeadline: null }, { applicationDeadline: { $exists: false } }, { applicationDeadline: { $gte: new Date() } }] });
 
 // ---------------------------------------------------------------- jobs
 const JOB_TYPES = ['full_time', 'part_time', 'internship', 'freelance', 'government', 'ngo'];
+const { JOB_CATEGORIES } = require('../models/Job');
 async function jobFilter(query = {}) {
   const base = { status: 'active', ...openDeadline() };
   const and = [base];
@@ -64,10 +67,10 @@ async function jobFilter(query = {}) {
   if (['onsite', 'remote', 'hybrid'].includes(query.workMode)) and.push({ workMode: query.workMode });
   if (num(query.maxExperience) !== null) and.push({ experienceYears: { $lte: num(query.maxExperience) } });
   if (num(query.minSalary) !== null) and.push({ $or: [{ salaryMax: { $gte: num(query.minSalary) } }, { salaryMin: { $gte: num(query.minSalary) } }] });
+  if (JOB_CATEGORIES.includes(query.category)) and.push({ category: query.category });
   if (query.q) and.push(textMatch(query.q, ['title', 'company', 'skills', 'description', 'city']));
-  const filter = { $and: and };
-  filter.postedBy = { $in: await jobPublishers({ $and: and }) };
-  return filter;
+  const [publishers, institutions] = await Promise.all([jobPublishers({ $and: and }), verifiedInstitutionIds()]);
+  return { $and: [...and, { $or: [{ institution: null, postedBy: { $in: publishers } }, { institution: { $in: institutions } }] }] };
 }
 function jobCard(j, publisherRoles = new Map()) {
   return {
@@ -75,7 +78,8 @@ function jobCard(j, publisherRoles = new Map()) {
     salaryMin: j.salaryMin, salaryMax: j.salaryMax, currency: j.currency, experienceYears: j.experienceYears || 0,
     applicationDeadline: j.applicationDeadline, postedAt: j.createdAt, featured: !!j.featured, visaSponsorship: !!j.visaSponsorship,
     companyLogo: /^https:\/\//.test(j.companyLogo || '') ? j.companyLogo : null,
-    postedBy: j.postedBy ? { name: j.postedBy.fullName, kind: publisherRoles.get(String(j.postedBy._id)) || 'employer' } : null,
+    category: j.category || 'other', institution: j.institution ? String(j.institution._id || j.institution) : null,
+    postedBy: j.institution ? { name: j.company, kind: 'institute' } : j.postedBy ? { name: j.postedBy.fullName, kind: publisherRoles.get(String(j.postedBy._id)) || 'employer' } : null,
     verifiedPublisher: true
   };
 }
@@ -110,7 +114,12 @@ async function scholarshipFilter(query = {}) {
   if (query.deadlineBefore && !Number.isNaN(Date.parse(query.deadlineBefore))) and.push({ applicationDeadline: { $lte: new Date(query.deadlineBefore) } });
   if (query.q) and.push(textMatch(query.q, ['title', 'description', 'eligibilityCriteria', 'country']));
   const donors = await eligiblePublishers(await Scholarship.distinct('donor', { $and: and }), 'donor');
-  return { $and: and, donor: { $in: donors } };
+  // Agent listings: admin-approved, the agent still verified, and a donor provider still verified.
+  const agents = await eligiblePublishers(await Scholarship.distinct('publishedBy', { $and: [...and, { publishedBy: { $ne: null } }] }), 'education_agent');
+  return { $and: [...and, { $or: [
+    { publishedBy: null, donor: { $in: donors } },
+    { publishedBy: { $in: agents }, 'review.status': 'approved', $or: [{ donor: null, applicationMode: 'external' }, { donor: { $in: donors } }] }
+  ] }] };
 }
 async function donorNames(rows) {
   const ids = rows.map((r) => r.donor?._id || r.donor).filter(Boolean);
@@ -124,7 +133,10 @@ function scholarshipCard(s, names) {
     _id: s._id, title: s.title, amount: s.amount, currency: s.currency, country: s.country || '', applicationDeadline: s.applicationDeadline,
     seatsAvailable: s.seatsAvailable, eligibility: String(s.eligibilityCriteria || '').slice(0, 220), postedAt: s.createdAt,
     // A donor's name is shown only when they published a public profile; otherwise "Verified donor".
-    provider: publicName ? { name: publicName, profile: `/donors/${donorId}` } : { name: 'Verified donor', profile: null }
+    // An agent listing names its provider; an outside provider's listing applies on their site.
+    provider: s.publishedBy && !s.donor ? { name: s.provider?.name || 'Provider', profile: null, website: s.provider?.website || '' }
+      : publicName ? { name: publicName, profile: `/donors/${donorId}` } : { name: s.publishedBy ? s.provider?.name || 'Verified donor' : 'Verified donor', profile: null },
+    applicationMode: s.applicationMode || 'internal', externalUrl: s.applicationMode === 'external' ? s.externalUrl : null, listedByAgent: Boolean(s.publishedBy)
   };
 }
 async function listScholarships(query = {}) {
@@ -180,7 +192,7 @@ async function instituteDetail(id) {
     InstitutionProgram.find({ institution: i._id, active: { $ne: false } }).select('name department durationTerms totalTuitionFee currency admissionFee').lean(),
     Course.find({ institution: i._id, published: true, testOnly: { $ne: true } }).select('title subject level isFree price currency').limit(24).lean(),
     // Jobs the institute itself posted (through its owner's employer account), if any.
-    Job.find({ $and: [openJobs, { postedBy: i.owner }] }).select('title type city country applicationDeadline createdAt').limit(6).lean(),
+    Job.find({ $and: [openJobs, { $or: [{ institution: i._id }, { institution: null, postedBy: i.owner }] }] }).select('title type city country applicationDeadline createdAt').limit(6).lean(),
     require('../models/InstitutionSettings').findOne({ institution: i._id }).select('subdomain').lean().catch(() => null)
   ]);
   return {
@@ -279,5 +291,5 @@ async function home() {
 
 module.exports = {
   home, stats, resetStatsCache, listJobs, jobDetail, listScholarships, scholarshipDetail, listInstitutes, instituteDetail,
-  listProducts, productDetail, listDonors, donorDetail, eligiblePublishers, JOB_TYPES, INSTITUTE_TYPES, PRODUCT_CATEGORIES
+  listProducts, productDetail, listDonors, donorDetail, eligiblePublishers, JOB_TYPES, JOB_CATEGORIES, INSTITUTE_TYPES, PRODUCT_CATEGORIES
 };

@@ -18,6 +18,7 @@ const PERMISSIONS = {
   'settings:manage': 'Change institution settings',
   'timetable:manage': 'Build and change class timetables',
   'placement:manage': 'Run the placement office',
+  'recruitment:manage': 'Post the institute\'s jobs and manage applicants',
   'institution:health:manage': 'Manage student health records',
   'transport:manage': 'Manage transport routes and vehicles',
   'cafeteria:manage': 'Manage the cafeteria',
@@ -27,12 +28,12 @@ const PERMISSIONS = {
 };
 
 const STAFF_ROLES = {
-  principal: { label: 'Principal', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage', 'timetable:manage'] },
+  principal: { label: 'Principal', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage', 'timetable:manage', 'recruitment:manage'] },
   vice_principal: { label: 'Vice Principal', permissions: ['students:manage', 'staff:review', 'grading:manage', 'content:review:department', 'communication:send', 'parents:manage', 'timetable:manage'] },
   coordinator: { label: 'Academic Coordinator', permissions: ['students:manage', 'grading:manage', 'content:review:department', 'communication:send'] },
   hod: { label: 'Head of Department', permissions: ['staff:review', 'grading:manage', 'content:review:department', 'questionbank:manage'] },
   teacher: { label: 'Teacher', permissions: [] },
-  hr_manager: { label: 'HR Manager', permissions: ['staff:review'] },
+  hr_manager: { label: 'HR Manager', permissions: ['staff:review', 'recruitment:manage'] },
   accountant: { label: 'Accountant', permissions: ['fee:manage'] },
   admissions_officer: { label: 'Admissions Officer', permissions: ['application:approve'] },
   representative: { label: 'Admissions Representative', permissions: [] },

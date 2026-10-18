@@ -10,6 +10,15 @@ const LEGACY_INDEXES = [
     key: { user: 1, purpose: 1 },
     options: { unique: true, partialFilterExpression: { scope: 'user' } },
     isLegacy: (index) => !index.partialFilterExpression
+  },
+  {
+    // Was unique on every commission's application; a guest hire's commission has none, so the
+    // index now covers only commissions that do (see Commission.js).
+    collection: 'commissions',
+    name: 'application_1',
+    key: { application: 1 },
+    options: { unique: true, partialFilterExpression: { application: { $type: 'objectId' } } },
+    isLegacy: (index) => !index.partialFilterExpression
   }
 ];
 
