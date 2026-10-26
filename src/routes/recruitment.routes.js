@@ -21,11 +21,14 @@ router.post('/agreements/:id/decline', ctrl.decline);
 router.post('/agreements/:id/end', ctrl.end);
 
 router.get('/hires', ctrl.hires);
+router.get('/candidates', ctrl.candidates);
+router.post('/candidates/:appId/select', ctrl.selectCandidate);
 router.post('/hires/:appId/confirm', ctrl.confirmHire);
 router.post('/hires/:appId/decline', ctrl.declineHire);
 
 router.get('/invoices', ctrl.invoices);
 router.get('/invoices/:id', ctrl.invoiceDetail);
+router.post('/invoices/:id/pay-wallet', ctrl.payWallet);
 router.post('/invoices/:id/proof', ctrl.submitProof);
 router.get('/invoices/:id/proofs/:proofId', ctrl.proof);
 router.post('/invoices/:id/left', ctrl.reportLeft);

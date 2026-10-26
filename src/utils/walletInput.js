@@ -7,7 +7,7 @@ function validateAmount(amount) {
   return amount;
 }
 
-function normalizeCurrency(currency = 'USD') {
+function normalizeCurrency(currency = 'PKR') {
   if (typeof currency !== 'string' || !/^[A-Za-z]{3}$/.test(currency)) {
     throw new AppError('A three-letter currency code is required.', 422);
   }

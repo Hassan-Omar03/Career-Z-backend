@@ -15,7 +15,7 @@ const pay=asyncHandler(async(req,res)=>{
   if(fee.schedule){const schedule=await require('../models/FeeSchedule').findById(fee.schedule).session(session);const min=Number(schedule?.minimumPartialPayment||0);const balance=fee.outstandingAmount??Math.max(0,fee.amount-(fee.paidAmount||0));if(value<min&&value<balance)throw new AppError('Payment is below the institution minimum partial payment.',422);}
   const outstanding=fee.outstandingAmount??Math.max(0,fee.amount-(fee.paidAmount||0));if(value>outstanding)throw new AppError('Payment exceeds the outstanding balance.',422);
   const school=await Institution.findById(fee.institution).session(session);if(!school||school.status!=='active'||school.verificationStatus!=='approved')throw new AppError('Institution is not available for payments.',403);
-  const setting=await require('../models/Setting').findOne({key:'fee_commission_percent'}).session(session);const rate=Number(setting?.value||0);if(!Number.isFinite(rate)||rate<0||rate>100)throw new AppError('Invalid institution commission configuration.',503);
+  const rate=await require('../utils/receiptCalc').commissionRate('fee_commission_percent',session);
   const commission=Math.round(value*rate)/100,net=Math.round((value-commission)*100)/100;
   const balance=await Wallet.findOneAndUpdate({user:req.user._id,currency:fee.currency,available:{$gte:value}},{$inc:{available:-value}},{new:true,session});if(!balance)throw new AppError('Insufficient wallet balance in '+fee.currency+'.',422);
   await Wallet.findOneAndUpdate({user:school.owner,currency:fee.currency},{$inc:{available:net}},{upsert:true,session,setDefaultsOnInsert:true});

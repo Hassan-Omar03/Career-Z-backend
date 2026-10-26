@@ -14,22 +14,25 @@ JWT/encryption secrets. No unsafe nontransactional fallback is provided.
 
 ## Payments
 
-Stripe and Paddle webhooks verify signatures before processing. Payment effects
-and the webhook receipt commit in the same transaction. Failures return HTTP 500
-and roll back the receipt, allowing the gateway to retry. Duplicate committed
-events return HTTP 200 without applying their effects again. Notifications run
-after commit and are best-effort; they are not a durable notification outbox.
+Every online checkout uses JazzCash (Page Redirect): institute fees, courses,
+wallet top-ups, featured jobs, institute plans (30 days, renewed by paying again)
+and tuition fees. Wallet top-ups can also be paid in crypto via NOWPayments.
+Paddle and Stripe checkout were removed; old `paddle*`/`stripe*` fields stay on
+the models only so past records remain readable. Stripe is still used for the
+optional Stripe Connect salary payout.
 
-Paddle checkout sync and webhooks share the same settlement path. A partial unique
-index on `WalletTransaction.paddleTransactionId` prevents repeated credits, while
-excluding null transaction IDs used by transfers and withdrawals.
+A JazzCash checkout first stores a `JazzCashPayment` with our own amount and
+purpose. The signed browser return, the IPN and the status-inquiry sync all
+verify the secure hash, merchant, currency and exact amount, then settle that
+record once inside a transaction. Failures roll back so a later confirmation can
+retry. NOWPayments IPNs verify signatures and commit the webhook receipt in the
+same transaction; duplicate events return HTTP 200 without applying effects again.
+Notifications run after commit and are best-effort; they are not a durable outbox.
 
-Before deploying to an existing database, check for duplicate non-null Paddle
-transaction IDs and reconcile any duplicates before building the unique index.
-Ensure the existing wallet `(user, currency)` and webhook `(provider, eventId)`
-unique indexes, plus the new Paddle index, exist before accepting payments.
-If automatic index creation is disabled, create these indexes through your normal
-database migration process. No production records are changed by this patch.
+Ensure the wallet `(user, currency)`, webhook `(provider, eventId)` and
+`JazzCashPayment.txnRefNo` unique indexes exist before accepting payments. If
+automatic index creation is disabled, create them through your normal migration
+process.
 
 Old webhook receipts created before transactional settlement may already exist
 for failed processing. Those historical payments require reconciliation against

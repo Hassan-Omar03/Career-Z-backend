@@ -4,11 +4,18 @@ const mongoose = require('mongoose');
 // always credits from OUR stored purpose/amount — never from fields in the browser-posted return.
 const jazzCashPaymentSchema = new mongoose.Schema({
   txnRefNo: { type: String, required: true, unique: true },
-  kind: { type: String, enum: ['fee', 'course', 'wallet_topup'], required: true },
+  // Which hosted checkout took the payment. Safepay attempts use the same record and settlement.
+  provider: { type: String, enum: ['jazzcash', 'safepay'], default: 'jazzcash', index: true },
+  // Safepay's tracker token for this attempt (checked on return before anything is credited).
+  gatewayTracker: { type: String, default: '', index: true },
+  kind: { type: String, enum: ['fee', 'course', 'wallet_topup', 'featured_job', 'subscription', 'tutoring_fee'], required: true },
   payer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   fee: { type: mongoose.Schema.Types.ObjectId, ref: 'Fee', default: null },
   coursePurchase: { type: mongoose.Schema.Types.ObjectId, ref: 'CoursePurchase', default: null },
   walletTransaction: { type: mongoose.Schema.Types.ObjectId, ref: 'WalletTransaction', default: null },
+  featuredListing: { type: mongoose.Schema.Types.ObjectId, ref: 'FeaturedListing', default: null },
+  subscriptionPurchase: { type: mongoose.Schema.Types.ObjectId, ref: 'SubscriptionPurchase', default: null },
+  tutoringLink: { type: mongoose.Schema.Types.ObjectId, ref: 'TeacherStudentLink', default: null },
   // What JazzCash charges (always PKR, in paisa) vs. what the record itself is priced in.
   amountPaisa: { type: Number, required: true, min: 1 },
   amount: { type: Number, required: true },

@@ -20,6 +20,7 @@ const { startFeeAutomation } = require('./services/feeAutomation.service');
   startFeeAutomation();
   require('./services/jobDigest.service').startJobDigest();
   require('./services/guestApplication.service').startGuestCleanup();
+  require('./services/exchangeRates.service').startExchangeRates();
 
   httpServer.listen(env.port, () => {
     console.log(`[SERVER] CareerZ API listening on http://localhost:${env.port}`);

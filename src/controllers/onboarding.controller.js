@@ -24,6 +24,7 @@ const requirements = asyncHandler(async (req, res) => {
 
 // GET /api/onboarding/status — the caller's verification + profile state for every account type.
 const status = asyncHandler(async (req, res) => {
+  await require('../services/guestClaim.service').claimFor(req.user).catch(() => {});
   const gate = req.accountGate || await gateFor(req.user);
   return ok(res, await service.statusFor(req.user, gate));
 });

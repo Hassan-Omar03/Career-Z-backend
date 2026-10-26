@@ -148,7 +148,7 @@ async function programmes() {
   ]);
   const cities = sponsoredStudents.length ? (await User.distinct('city', { _id: { $in: sponsoredStudents }, city: { $nin: [null, ''] } })).map((c) => c.trim().toLowerCase()) : [];
   return {
-    agent: { commissionRate: rateSetting ? Number(rateSetting.value) : 10, activeAgents: agents },
+    agent: { commissionRate: require('../utils/commissionSettings').asRate(rateSetting?.value), activeAgents: agents },
     donor: { studentsSponsored: sponsoredStudents.length, scholarshipsFunded: new Set(sponsored.map((s) => String(s.scholarship))).size, scholarshipsPublished: donorScholarships, citiesReached: new Set(cities).size }
   };
 }

@@ -62,10 +62,17 @@ const createCurrency = asyncHandler(async (req, res) => {
 });
 
 const updateCurrency = asyncHandler(async (req, res) => {
-  const currency = await Currency.findByIdAndUpdate(req.params.id, req.body, { new: true, runValidators: true });
+  // A hand-set rate is kept from then on (send rateManual: false to go back to the daily feed).
+  const body = { ...req.body };
+  if (body.exchangeRateToUSD !== undefined && body.rateManual === undefined) body.rateManual = true;
+  if (body.exchangeRateToUSD !== undefined) { body.rateUpdatedAt = new Date(); body.rateSource = 'Super Admin'; }
+  const currency = await Currency.findByIdAndUpdate(req.params.id, body, { new: true, runValidators: true });
   if (!currency) throw new AppError('Currency not found.', 404);
   return ok(res, currency);
 });
+
+// POST /api/config/currencies/refresh-rates — update every rate from the feed now.
+const refreshRates = asyncHandler(async (req, res) => ok(res, await require('../services/exchangeRates.service').refresh(), 'Exchange rates updated.'));
 
 const listCurrencies = asyncHandler(async (req, res) => {
   const currencies = await Currency.find().sort({ name: 1 });
@@ -94,6 +101,6 @@ module.exports = {
   getPublicConfig,
   createCountry, updateCountry, listCountries,
   createLanguage, updateLanguage, listLanguages,
-  createCurrency, updateCurrency, listCurrencies,
+  createCurrency, updateCurrency, listCurrencies, refreshRates,
   upsertFeatureFlag, listFeatureFlags
 };

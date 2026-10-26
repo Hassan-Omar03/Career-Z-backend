@@ -9,7 +9,7 @@ const walletTransactionSchema = new mongoose.Schema(
     amount: { type: Number, required: true }, // always positive; type says direction
     currency: { type: String, required: true },
     // A unique, human-findable receipt id for THIS specific ledger entry — separate from any
-    // gateway id (paddleTransactionId/nowPaymentsId), so every internal wallet-to-wallet move
+    // gateway id (nowPaymentsId, or the JazzCash txnRefNo), so every internal wallet-to-wallet move
     // (transfers, salary payouts) is independently searchable even though no gateway is involved.
     reference: { type: String, default: null, index: true },
     status: { type: String, enum: ['pending', 'completed', 'rejected'], default: 'completed' },
@@ -24,6 +24,8 @@ const walletTransactionSchema = new mongoose.Schema(
     gatewayPayAmount: { type: Number, default: null },
     payoutMethod: { type: String, default: '' },
     payoutDetails: { type: String, default: '' },
+    // The bank/wallet transaction id of the money the admin sent for a withdrawal.
+    payoutReference: { type: String, default: '' },
     processedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     processedAt: { type: Date, default: null }
   },

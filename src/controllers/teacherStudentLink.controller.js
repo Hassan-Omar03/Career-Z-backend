@@ -9,7 +9,6 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 const { notify } = require('../services/notification.service');
-const paddleService = require('../services/paddle.service');
 
 function ageFromDob(dob) {
   if (!dob) return null;
@@ -223,10 +222,9 @@ async function assertStudentOrGuardian(link, userId, action) {
   if (!guardian || guardian.permissions?.payFees === false) throw new AppError(`Only the student or their parent can ${action}.`, 403);
 }
 
-// POST /api/teacher-students/:id/fee-checkout — optional fee, verified Paddle checkout (spec:
+// POST /api/teacher-students/:id/fee-checkout — optional fee, verified JazzCash checkout (spec:
 // "Independent teacher fees optional hon aur verified checkout se process hon").
 const createFeeCheckout = asyncHandler(async (req, res) => {
-  if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
   const link = await TeacherStudentLink.findById(req.params.id).populate('course', 'title');
   if (!link) throw new AppError('Relationship not found.', 404);
   await assertStudentOrGuardian(link, req.user._id, 'pay this fee');
@@ -234,38 +232,17 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
   if (!link.feeAmount || link.feeAmount <= 0) throw new AppError('No fee is set for this relationship.', 400);
   if (link.feePaidAt) throw new AppError('This fee has already been paid.', 400);
 
-  // Paddle does not take every currency (e.g. PKR); like institution fees, those are charged in USD
-  // at the configured rate, while the tutoring record keeps the agreed amount and currency.
-  const { amount: paddleAmount, currencyCode: paddleCurrency } = await require('./payment.controller').resolvePaddleAmount(link.feeAmount, link.feeCurrency);
-  const transaction = await paddleService.createTransaction({
-    title: `Tuition fee — ${link.course?.title || link.subject}`, amount: paddleAmount, currencyCode: paddleCurrency,
-    customerEmail: req.user.email,
-    metadata: { kind: 'tutoring_fee', linkId: link._id.toString(), studentId: link.student.toString(), payerId: req.user._id.toString() }
+  // JazzCash charges PKR; other fee currencies convert at the configured rate, while the
+  // tutoring record keeps the agreed amount and currency.
+  const { startCheckout } = require('./jazzcash.controller');
+  return startCheckout(req, res, {
+    kind: 'tutoring_fee', amount: link.feeAmount, currency: link.feeCurrency,
+    description: `Tuition fee ${link.course?.title || link.subject || ''}`, createRefs: async () => ({ tutoringLink: link._id })
   });
-  link.paddleTransactionId = transaction.id;
-  link.paddleAmount = paddleAmount;
-  link.paddleCurrency = paddleCurrency;
-  await link.save();
-  return ok(res, { transactionId: transaction.id, status: transaction.status });
-});
-
-const syncFeeCheckout = asyncHandler(async (req, res) => {
-  const link = await TeacherStudentLink.findById(req.params.id);
-  if (!link) throw new AppError('Relationship not found.', 404);
-  await assertStudentOrGuardian(link, req.user._id, 'check this fee');
-  if (!link.feePaidAt && link.paddleTransactionId) {
-    const transaction = await paddleService.getTransaction(link.paddleTransactionId);
-    if (transaction.status === 'completed') {
-      const { handleTutoringFeePaddleCompleted } = require('./webhook.controller');
-      await handleTutoringFeePaddleCompleted(transaction);
-    }
-  }
-  const refreshed = await TeacherStudentLink.findById(link._id);
-  return ok(res, { paid: Boolean(refreshed.feePaidAt) });
 });
 
 module.exports = {
   inviteStudent, respondToInvite, guardianApprove, revoke, setLinkStatus,
   myLinksAsTeacher, myLinksAsStudent, pendingGuardianApproval,
-  createFeeCheckout, syncFeeCheckout
+  createFeeCheckout
 };

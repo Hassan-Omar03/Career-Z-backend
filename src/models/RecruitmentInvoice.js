@@ -25,6 +25,9 @@ const invoiceSchema = new mongoose.Schema(
       reference: { type: String, maxlength: 120 }, amount: Number, paidOn: Date,
       submittedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, submittedAt: { type: Date, default: Date.now }
     }],
+    // Paid from the institute's CareerZ wallet: held until the admin approves, then split between
+    // the agent's wallet and CareerZ's (services/invoiceWallet.service.js).
+    wallet: { reference: { type: String, default: '' }, heldAt: Date, releasedAt: Date, returnedAt: Date, paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' } },
     history: [{ action: String, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, note: String, at: { type: Date, default: Date.now }, _id: false }],
     // Replacement / refund handling under the agreement's own terms (never automatic).
     replacement: {

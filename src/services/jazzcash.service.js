@@ -1,7 +1,7 @@
 // Real JazzCash (Pakistan) payments via the HTTP POST "Page Redirect" integration: the payer's
 // browser is posted to JazzCash's own hosted page, where they choose JazzCash mobile account,
 // card or voucher — card details never touch our server. No SDK; plain HTTPS + HMAC, same
-// "empty keys = not configured" pattern as paddle.service.js / nowpayments.service.js.
+// "empty keys = not configured" pattern as nowpayments.service.js.
 const crypto = require('crypto');
 const env = require('../config/env');
 

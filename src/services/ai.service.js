@@ -203,10 +203,18 @@ async function callClaude(apiKey, model, systemPrompt, userPrompt) {
   return payload.content?.[0]?.text || '';
 }
 
-async function callGemini(apiKey, model, systemPrompt, userPrompt) {
-  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`, {
+// Gemini often answers 503 "overloaded" or 429 for a moment; one short retry usually succeeds.
+async function callGemini(apiKey, model, systemPrompt, userPrompt, attempt = 1) {
+  try { return await callGeminiOnce(apiKey, model, systemPrompt, userPrompt); }
+  catch (e) {
+    if (attempt < 2 && [429, 500, 503].includes(e.statusCode)) { await new Promise((r) => setTimeout(r, 2000)); return callGemini(apiKey, model, systemPrompt, userPrompt, attempt + 1); }
+    throw e;
+  }
+}
+async function callGeminiOnce(apiKey, model, systemPrompt, userPrompt) {
+  const res = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', 'x-goog-api-key': apiKey }, // header, so the key never sits in a URL or log
     body: JSON.stringify({ contents: [{ role: 'user', parts: [{ text: userPrompt }] }], systemInstruction: { parts: [{ text: systemPrompt }] } })
   });
   const payload = await res.json();

@@ -4,6 +4,8 @@ const mongoose = require('mongoose');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
 process.env.NODE_ENV = 'test';
+// These tests cover the online checkouts, which are switched off in production for now.
+process.env.ONLINE_PAYMENTS_ENABLED = 'true';
 process.env.JAZZCASH_MERCHANT_ID = 'MC_TEST';
 process.env.JAZZCASH_PASSWORD = 'test-password';
 process.env.JAZZCASH_INTEGRITY_SALT = 'test-salt';

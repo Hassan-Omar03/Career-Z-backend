@@ -8,7 +8,10 @@ async function onboardStaff(institution, userId, { role, department, designation
   await institution.save();
 
   const staffUser = await User.findById(userId);
-  if (staffUser && !staffUser.roles.includes('institution_staff')) {
+  // A teacher works from the Teacher workspace; the institution workspace (fees, staff, admin
+  // figures) is only for staff who run the institute (non-teacher roles or granted permissions).
+  const runsInstitute = role !== 'teacher' || (permissions || []).length > 0;
+  if (staffUser && runsInstitute && !staffUser.roles.includes('institution_staff')) {
     staffUser.roles.push('institution_staff');
     await staffUser.save();
   }

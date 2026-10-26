@@ -64,8 +64,8 @@ test('staff roles come with real permissions; unknown roles/permissions are refu
 
   // The accountant can now really manage fees: record a cash payment.
   const fee = await model('Fee').create({ institution: school._id, student: u.Ali._id, recordedBy: u.Owner._id, title: 'Term fee', amount: 1000, currency: 'PKR', status: 'pending' });
-  expect(await api('Clerk', 'PATCH', `/institutions/fees/${fee._id}/pay`, { paidVia: 'Cash', reference: 'R1' }), 403, 'receptionist cannot take fees');
-  expect(await api('Accounts', 'PATCH', `/institutions/fees/${fee._id}/pay`, { paidVia: 'Cash', reference: 'R1' }), 200, 'accountant takes fees');
+  expect(await api('Clerk', 'PATCH', `/institutions/fees/${fee._id}/pay`, { paidVia: 'Cash', reference: 'R1' }), 410, 'counter cash is replaced by paying through the app');
+  expect(await api('Accounts', 'PATCH', `/institutions/fees/${fee._id}/pay`, { paidVia: 'Cash', reference: 'R1', proofUrl: 'https://files.test/r1.jpg' }), 410, 'counter cash is replaced for every staff role');
 
   r = await api('Owner', 'PATCH', `/institutions/${school._id}/staff/${u.Clerk._id}`, { role: 'registrar' });
   expect(r, 200, 'change role');

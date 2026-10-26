@@ -21,7 +21,7 @@ const courseSchema = new mongoose.Schema(
     language: { type: String, default: 'en' },
 
     price: { type: Number, default: 0 },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     isFree: { type: Boolean, default: true },
 
     thumbnail: { type: String, default: null },

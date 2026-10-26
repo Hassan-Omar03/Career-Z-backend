@@ -21,7 +21,7 @@ const DIGITAL_CATEGORIES = ['courses', 'services'];
 const isPhysical = (product) => !DIGITAL_CATEGORIES.includes(product.category);
 
 const COMMISSION_RATE_KEY = 'marketplace_commission_percent';
-const DEFAULT_COMMISSION_RATE = 10;
+const DEFAULT_COMMISSION_RATE = 0; // unset = 0 until the Super Admin sets it
 
 function assertOwnsProduct(product, userId) {
   if (product.seller.toString() !== userId.toString()) {
@@ -361,7 +361,7 @@ const setCommissionRate = asyncHandler(async (req, res) => {
 // same real-world quantity — never two different "available balance" figures in one dashboard.
 async function computeEarnings(sellerId) {
   const [orders, allRateSettings, withdrawals] = await Promise.all([
-    Order.find({ seller: sellerId }).populate('product', 'category').select('status totalPrice currency product'),
+    Order.find({ seller: sellerId }).populate('product', 'category').select('status paymentStatus totalPrice currency product'),
     Setting.find({ key: { $regex: `^${COMMISSION_RATE_KEY}` } }),
     SellerWithdrawal.find({ seller: sellerId, status: { $ne: 'rejected' } }).select('amount currency status')
   ]);
@@ -385,18 +385,23 @@ async function computeEarnings(sellerId) {
     if (o.status === 'cancelled') return;
     const b = bucket(o.currency);
     b.grossSales += o.totalPrice;
-    if (o.status === 'delivered' || o.status === 'completed') {
+    // Earned only when delivered AND the payment is confirmed; a delivered order still awaiting
+    // payment stays pending, so unpaid money can never be withdrawn.
+    if ((o.status === 'delivered' || o.status === 'completed') && o.paymentStatus === 'paid') {
       b.earnedGross += o.totalPrice;
       b.platformCommission += Math.round(o.totalPrice * (rateForOrder(o) / 100) * 100) / 100;
     } else if (o.status === 'refunded') b.refundDeductions += o.totalPrice;
-    else if (['confirmed', 'processing', 'shipped'].includes(o.status)) b.pendingEarnings += o.totalPrice;
+    else if (['confirmed', 'processing', 'shipped', 'delivered', 'completed'].includes(o.status)) b.pendingEarnings += o.totalPrice;
   });
   withdrawals.forEach((w) => { bucket(w.currency).withdrawnOrPending += w.amount; });
 
   Object.values(byCurrency).forEach((b) => {
     b.platformCommission = Math.round(b.platformCommission * 100) / 100;
     b.paymentCharges = 0; // no real payment processor integrated yet
-    b.netEarnings = Math.round((b.earnedGross - b.platformCommission - b.paymentCharges - b.refundDeductions) * 100) / 100;
+    // A refunded order is already left out of earnedGross; refundDeductions is shown for reference
+    // only (subtracting it again would charge the seller twice). Money paid out before a refund
+    // is recovered because withdrawnOrPending then exceeds net earnings.
+    b.netEarnings = Math.round((b.earnedGross - b.platformCommission - b.paymentCharges) * 100) / 100;
     // Available = net earnings minus anything already withdrawn or awaiting withdrawal.
     b.availableEarnings = Math.max(Math.round((b.netEarnings - b.withdrawnOrPending) * 100) / 100, 0);
   });
@@ -431,6 +436,9 @@ const requestSellerWithdrawal = asyncHandler(async (req, res) => {
   }
   if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
   if (!accountTitle || !accountTitle.trim()) throw new AppError("The account holder's name (accountTitle) is required.", 422);
+  if (!SellerWithdrawal.schema.path('payoutMethod').enumValues.includes(payoutMethod)) {
+    throw new AppError('Seller payouts go by bank transfer, mobile wallet or other.', 422);
+  }
 
   const { totalsByCurrency } = await computeEarnings(req.user._id);
   const available = totalsByCurrency[currency]?.availableEarnings || 0;
@@ -439,9 +447,13 @@ const requestSellerWithdrawal = asyncHandler(async (req, res) => {
   // A findable receipt exists from the moment the request is made, not only once an admin
   // processes it — same reasoning as the main Wallet withdrawal flow.
   const transactionId = generateTransactionId();
+  // The unique "one open request per seller and currency" index stops a parallel second request.
   const withdrawal = await SellerWithdrawal.create({
     seller: req.user._id, amount: available, currency, payoutMethod,
     payoutDetails: `${accountTitle.trim()} — ${payoutDetails.trim()}`, transactionId
+  }).catch((error) => {
+    if (error.code === 11000) throw new AppError('You already have a withdrawal request in progress for this currency.', 409);
+    throw error;
   });
   return created(res, withdrawal, `Withdrawal requested — receipt ${transactionId}.`);
 });
@@ -452,23 +464,23 @@ const mySellerWithdrawals = asyncHandler(async (req, res) => {
   return ok(res, withdrawals);
 });
 
-// PATCH /api/marketplace/sellers/withdrawals/:id/status — Super Admin processes it (no back-office
-// UI for this yet, same as the Agent's equivalent endpoint — usable for testing/ops today).
+// GET /api/marketplace/sellers/withdrawals/open — CareerZ finance's queue of seller payouts to send.
+const openSellerWithdrawals = asyncHandler(async (req, res) => {
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
+  const list = await SellerWithdrawal.find({ status: { $in: ['requested', 'processing'] } }).populate('seller', 'fullName email').sort({ createdAt: 1 });
+  return ok(res, list);
+});
+
+// PATCH /api/marketplace/sellers/withdrawals/:id/status — CareerZ finance processes it
+// (requested -> processing -> paid | rejected; paid and rejected are final). A rejected request
+// stops counting against the seller's balance, so that money can be requested again.
 const updateSellerWithdrawalStatus = asyncHandler(async (req, res) => {
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
   const { status } = req.body;
-  if (!['requested', 'processing', 'paid', 'rejected'].includes(status)) throw new AppError('Invalid status.', 422);
-
-  const withdrawal = await SellerWithdrawal.findById(req.params.id);
-  if (!withdrawal) throw new AppError('Withdrawal not found.', 404);
-
-  withdrawal.status = status;
-  if (status === 'paid') {
-    withdrawal.processedAt = new Date();
-    // The receipt was already generated at request time (shown to the seller then) — keep it,
-    // never overwrite it, so the same receipt id stays valid through the whole lifecycle.
-    if (!withdrawal.transactionId) withdrawal.transactionId = generateTransactionId();
-  }
-  await withdrawal.save();
+  // The receipt was generated at request time (shown to the seller then) and is kept as is.
+  const closing = status === 'paid' || status === 'rejected';
+  const withdrawal = await require('../utils/payoutStatus').advancePayout(SellerWithdrawal, req.params.id, status,
+    closing ? { processedAt: new Date(), open: false } : {});
 
   const TITLE = {
     requested: `Withdrawal requested: ${withdrawal.currency} ${withdrawal.amount}`,
@@ -553,6 +565,8 @@ const placeOrder = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
   if (!product) throw new AppError('Listing not found.', 404);
   if (product.status !== 'active') throw new AppError('This listing is not available.', 400);
+  // A seller "buying" their own listing would create earnings CareerZ never received.
+  if (product.seller.equals(req.user._id)) throw new AppError('You cannot order your own listing.', 403);
 
   const quantity = Number(req.body.quantity) || 1;
   if (isPhysical(product) && product.stock < quantity) {
@@ -721,6 +735,8 @@ const updatePaymentStatus = asyncHandler(async (req, res) => {
   if (!['pending', 'paid', 'failed', 'refunded'].includes(paymentStatus)) {
     throw new AppError('Invalid paymentStatus.', 422);
   }
+  // Only CareerZ marks an order paid, after checking the buyer's receipts.
+  if (paymentStatus === 'paid') throw new AppError("Orders are marked paid by CareerZ after it checks the buyer's receipts.", 403);
 
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found.', 404);
@@ -834,7 +850,7 @@ module.exports = {
   myWallet,
   requestSellerWithdrawal,
   mySellerWithdrawals,
-  updateSellerWithdrawalStatus,
+  updateSellerWithdrawalStatus, openSellerWithdrawals,
   mySellerReviews,
   respondToReview,
   reportReview,

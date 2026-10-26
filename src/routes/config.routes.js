@@ -20,6 +20,7 @@ router.patch('/languages/:id', ctrl.updateLanguage);
 router.get('/currencies', ctrl.listCurrencies);
 router.post('/currencies', ctrl.createCurrency);
 router.patch('/currencies/:id', ctrl.updateCurrency);
+router.post('/currencies/refresh-rates', ctrl.refreshRates);
 
 router.get('/feature-flags', ctrl.listFeatureFlags);
 router.post('/feature-flags', ctrl.upsertFeatureFlag);

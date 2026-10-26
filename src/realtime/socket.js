@@ -134,7 +134,7 @@ function initSocket(httpServer) {
 
     socket.on('live-video:join', async ({ sessionId, group, observeStudentId }  = {}, reply = () => {}) => {
       try {
-        if(String(sessionId).startsWith('ptm:')){const meeting=await require('../services/ptmVideo.service').access(String(sessionId).slice(4),socket.data.userId);const user=await User.findById(socket.data.userId).select('fullName');const members=videoRoomMembers.get(sessionId)||new Map();const existing=[...members.values()].filter(m=>m.userId!==socket.data.userId);const member={userId:socket.data.userId,name:user.fullName,role:String(meeting.teacher)===socket.data.userId?'teacher':'parent',group:'main'};members.set(socket.data.userId,member);videoRoomMembers.set(sessionId,members);socket.join('live-video:'+sessionId);socket.join('live-video:'+sessionId+':group:main');socket.data.videoSessionIds.add(sessionId);socket.to('live-video:'+sessionId+':group:main').emit('live-video:participant-joined',member);return reply({ok:true,participants:existing,self:member,group:'main'});}
+        if(require('./privateRooms').isPrivateRoom(sessionId)){const roomAccess=await require('./privateRooms').access(sessionId,socket.data.userId);const user=await User.findById(socket.data.userId).select('fullName');const members=videoRoomMembers.get(sessionId)||new Map();const existing=[...members.values()].filter(m=>m.userId!==socket.data.userId);const member={userId:socket.data.userId,name:user.fullName,role:roomAccess.role,group:'main'};members.set(socket.data.userId,member);videoRoomMembers.set(sessionId,members);socket.join('live-video:'+sessionId);socket.join('live-video:'+sessionId+':group:main');socket.data.videoSessionIds.add(sessionId);socket.to('live-video:'+sessionId+':group:main').emit('live-video:participant-joined',member);return reply({ok:true,participants:existing,self:member,group:'main'});}
         const session = await LiveClassSession.findById(sessionId).populate('teacher', 'fullName');
         if (!session || session.status !== 'live') throw new Error('This class is not live.');
         const isTeacher = String(session.teacher._id) === socket.data.userId;
@@ -167,7 +167,7 @@ function initSocket(httpServer) {
 
     socket.on('live-video:signal',async({sessionId,targetUserId,signal}={},reply=()=>{})=>{
       try{const members=videoRoomMembers.get(sessionId),sender=members?.get(socket.data.userId),target=members?.get(String(targetUserId));if(!sender||!target||sender.group!==target.group)throw new Error('Classroom signaling rejected.');
-      if(String(sessionId).startsWith('ptm:')){await require('../services/ptmVideo.service').access(String(sessionId).slice(4),sender.userId);await require('../services/ptmVideo.service').access(String(sessionId).slice(4),target.userId);}for(const member of [sender,target])if(member.role==='observer')await require('../services/guardianObservation.service').authorize(member.userId,sessionId,member.observedStudentId);
+      if(require('./privateRooms').isPrivateRoom(sessionId)){await require('./privateRooms').access(sessionId,sender.userId);await require('./privateRooms').access(sessionId,target.userId);}for(const member of [sender,target])if(member.role==='observer')await require('../services/guardianObservation.service').authorize(member.userId,sessionId,member.observedStudentId);
       if(sender.role==='observer'&&!require('../services/guardianObservation.service').receiveOnly(signal?.description))throw new Error('Observers may only receive classroom media.');
       io.to(`user:${targetUserId}`).emit('live-video:signal',{sessionId,fromUserId:socket.data.userId,signal});reply({ok:true});}catch(e){reply({ok:false,message:e.message});}
     });
@@ -177,7 +177,7 @@ function initSocket(httpServer) {
         const members = videoRoomMembers.get(sessionId);
         if (!members?.has(socket.data.userId)) throw new Error('Join the classroom first.');
         if(members.get(socket.data.userId).role==='observer')throw new Error('Observation is read-only.');
-        const session=String(sessionId).startsWith('ptm:')?(await require('../services/ptmVideo.service').access(String(sessionId).slice(4),socket.data.userId),{status:'live'}):await LiveClassSession.findById(sessionId);
+        const session=require('./privateRooms').isPrivateRoom(sessionId)?(await require('./privateRooms').access(sessionId,socket.data.userId),{status:'live'}):await LiveClassSession.findById(sessionId);
         if(!session||session.status!=='live')throw new Error('Class ended.');
         if(members.get(socket.data.userId).role!=='teacher'&&session.classroomPolicy?.chatAllowed===false)throw new Error('Teacher disabled student chat.');
         const clean = String(text || '').trim().slice(0, 1000);

@@ -8,14 +8,14 @@ const { ok, created } = require('../utils/apiResponse');
 // can't be populate()'d directly — this batch-fetches the 'user' targets for a page of
 // complaints in one query instead of one lookup per row.
 async function attachUserTargets(complaints) {
-  const userTargetIds = complaints.filter((c) => c.targetType === 'user' && c.targetId).map((c) => c.targetId);
+  const userTargetIds = complaints.filter((c) => ['user', 'agent'].includes(c.targetType) && c.targetId).map((c) => c.targetId);
   if (userTargetIds.length === 0) return complaints.map((c) => ({ ...c.toObject(), target: null }));
 
   const users = await User.find({ _id: { $in: userTargetIds } }).select('fullName email phone roles');
   const byId = new Map(users.map((u) => [String(u._id), u]));
   return complaints.map((c) => ({
     ...c.toObject(),
-    target: c.targetType === 'user' && c.targetId ? byId.get(String(c.targetId)) || null : null
+    target: ['user', 'agent'].includes(c.targetType) && c.targetId ? byId.get(String(c.targetId)) || null : null
   }));
 }
 
@@ -24,9 +24,11 @@ const createComplaint = asyncHandler(async (req, res) => {
   const { subject, category, description, targetType, targetId } = req.body;
   if (!subject || !description) throw new AppError('subject and description are required.', 422);
 
-  if (targetType === 'user' && targetId) {
-    const targetUser = await User.findById(targetId).select('_id');
+  if (['user', 'agent'].includes(targetType) && targetId) {
+    const targetUser = await User.findById(targetId).select('_id roles');
     if (!targetUser) throw new AppError('The selected person could not be found.', 404);
+    // A complaint about an agent is filed as one (master: agent ↔ institution complaints).
+    if (targetUser.roles.includes('education_agent')) req.body.targetType = 'agent';
   }
 
   const ids=req.body.messageIds||[],groupIds=req.body.groupMessageIds||[];
@@ -39,7 +41,7 @@ const createComplaint = asyncHandler(async (req, res) => {
     subject,
     category: category || 'other',
     description,
-    targetType: targetType || 'none',
+    targetType: req.body.targetType || 'none',
     targetId: targetId || null
   });
 

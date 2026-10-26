@@ -18,7 +18,7 @@ const fundingRequestSchema = new mongoose.Schema(
     purpose: { type: String, default: '' },
     requiredAmount: { type: Number, required: true, min: 0 },
     collectedAmount: { type: Number, default: 0 }, // incremented as real Donations come in
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     country: { type: String, default: '' },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     applicationDeadline: { type: Date, default: null },

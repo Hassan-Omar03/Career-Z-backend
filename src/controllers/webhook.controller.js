@@ -1,20 +1,18 @@
-const Fee = require('../models/Fee');
-const CoursePurchase = require('../models/CoursePurchase');
 const Enrollment = require('../models/Enrollment');
 const Institution = require('../models/Institution');
 const Wallet = require('../models/Wallet');
 const WalletTransaction = require('../models/WalletTransaction');
 const WebhookEvent = require('../models/WebhookEvent');
-const { getStripeClient, isStripeConfigured } = require('../services/stripe.service');
-const paddleService = require('../services/paddle.service');
 const nowPaymentsService = require('../services/nowpayments.service');
 const { transactionWithDuplicateRetry, sendSettlementNotifications, settle } = require('../services/settlement.service');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
-const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
 const AppError = require('../utils/AppError');
-const env = require('../config/env');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
+
+// Settlement shared by every gateway (JazzCash today, NOWPayments for crypto top-ups). Each
+// settle* function applies a confirmed payment to OUR stored record exactly once — amounts and
+// ownership always come from that record, never from the gateway payload.
 
 async function processWebhook(provider, eventId, type, work, res) {
   if (typeof eventId !== 'string' || !eventId || typeof type !== 'string' || !type) {
@@ -38,40 +36,6 @@ async function processWebhook(provider, eventId, type, work, res) {
   }
 }
 
-async function handleStripeWebhook(req, res) {
-  if (!isStripeConfigured()) return res.status(503).json({ success: false, message: 'Stripe is not configured.' });
-  let event;
-  try {
-    event = getStripeClient().webhooks.constructEvent(req.body, req.headers['stripe-signature'], env.stripe.webhookSecret);
-  } catch {
-    return res.status(400).send('Webhook signature verification failed.');
-  }
-  return processWebhook('stripe', event.id, event.type, async (session) => {
-    if (['checkout.session.completed', 'checkout.session.async_payment_succeeded'].includes(event.type)) {
-      const checkout = event.data.object;
-      // Checkout completion may precede payment for delayed payment methods.
-      if (checkout.metadata?.kind === 'fee' && checkout.payment_status === 'paid') {
-        return handleFeeCheckoutCompleted(checkout, session);
-      }
-      if (checkout.metadata?.kind === 'course' && checkout.payment_status === 'paid') {
-        return handleCourseStripeCompleted(checkout, session);
-      }
-    }
-    return [];
-  }, res);
-}
-
-async function handleFeeCheckoutCompleted(checkout, session) {
-  const fee = await Fee.findById(checkout.metadata.feeId).session(session);
-  if (!fee) throw new AppError('Fee record not found.', 404);
-  const transactionId = checkout.payment_intent || checkout.id;
-  if ((fee.paymentHistory || []).some((p) => p.transactionId === transactionId)) return [];
-  return settleOnlineFee(fee, {
-    amount: Number(checkout.metadata.feeAmount) || undefined, method: 'stripe', paidVia: 'Stripe (Card)',
-    transactionId, payerId: checkout.metadata.payerId, extra: { stripePaymentIntentId: checkout.payment_intent || null }
-  }, 'Stripe', session);
-}
-
 async function settleCoursePurchase(purchase, paymentId, session) {
   if (purchase.status === 'paid') return [];
   await Enrollment.updateOne(
@@ -83,79 +47,34 @@ async function settleCoursePurchase(purchase, paymentId, session) {
   purchase.paidAt = new Date();
   purchase.providerPaymentId = paymentId;
   await purchase.save({ session });
+  // The course's institute (else its teacher) is paid now, less CareerZ's course commission.
+  const course = await require('../models/Course').findById(purchase.course).select('title teacher institution').session(session);
+  const institution = course?.institution ? await Institution.findById(course.institution).select('owner').session(session) : null;
+  await require('../services/feeWalletSettlement.service').creditEarner({
+    recipient: institution?.owner || course?.teacher, amount: purchase.amountMinor / 100, currency: purchase.currency,
+    reference: `CRS-${paymentId}`, payerId: purchase.student, note: `Course sale: ${course?.title || 'course'}`, commissionKey: 'course_commission_percent'
+  }, session);
   return [{ userId: purchase.student, payload: {
     title: 'Course payment confirmed', body: 'Your course is ready in My Courses.'
   } }];
 }
 
-async function handleCourseStripeCompleted(checkout, session) {
-  const purchase = await CoursePurchase.findOne({ provider: 'stripe', providerCheckoutId: checkout.id }).session(session);
-  if (!purchase) throw new AppError('Course checkout not found.', 404);
-  if (checkout.metadata?.courseId !== purchase.course.toString()
-    || checkout.metadata?.studentId !== purchase.student.toString()
-    || checkout.currency?.toUpperCase() !== purchase.currency
-    || checkout.amount_total !== purchase.amountMinor) {
-    throw new AppError('Course checkout amount, currency or ownership does not match.', 422);
-  }
-  return settleCoursePurchase(purchase, checkout.payment_intent || checkout.id, session);
-}
-
-async function handleCoursePaddleCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'course') {
-      throw new AppError('Expected a completed course payment.', 422);
-    }
-    const purchase = await CoursePurchase.findOne({ provider: 'paddle', providerCheckoutId: transaction.id }).session(dbSession);
-    if (!purchase) throw new AppError('Course checkout not found.', 404);
-    const price = transaction.items?.[0]?.price?.unit_price;
-    // When the course's own currency isn't one Paddle accepts (e.g. PKR), checkout-creation
-    // converted it to USD for Paddle only — verify against THAT stored conversion instead of the
-    // course's real currency, which Paddle never actually saw.
-    const expectedAmount = purchase.gatewayAmountMinor ?? purchase.amountMinor;
-    const expectedCurrency = purchase.gatewayCurrency ?? purchase.currency;
-    if (transaction.custom_data.courseId !== purchase.course.toString()
-      || transaction.custom_data.studentId !== purchase.student.toString()
-      || transaction.currency_code !== expectedCurrency
-      || transaction.items?.length !== 1 || transaction.items[0].quantity !== 1
-      || Number(price?.amount) !== expectedAmount || price?.currency_code !== expectedCurrency) {
-      throw new AppError('Course transaction amount, currency or ownership does not match.', 422);
-    }
-    return settleCoursePurchase(purchase, transaction.id, dbSession);
-  }, session);
-}
-
-async function handlePaddleWebhook(req, res) {
-  if (!paddleService.isPaddleConfigured()) return res.status(503).json({ success: false, message: 'Paddle is not configured.' });
-  const rawBody = req.body.toString('utf8');
-  if (!paddleService.verifyWebhookSignature(rawBody, req.headers['paddle-signature'])) {
-    return res.status(400).send('Webhook signature verification failed.');
-  }
-  let event;
-  try { event = JSON.parse(rawBody); } catch { return res.status(400).send('Invalid JSON payload.'); }
-  return processWebhook('paddle', event?.event_id, event?.event_type, async (session) => {
-    if (event.event_type === 'transaction.completed') {
-      const transaction = event.data;
-      if (transaction.custom_data?.kind === 'fee') return handleFeePaddleCompleted(transaction, session);
-      if (transaction.custom_data?.kind === 'wallet_topup') return handleWalletTopupCompleted(transaction, session);
-      if (transaction.custom_data?.kind === 'course') return handleCoursePaddleCompleted(transaction, session);
-      if (transaction.custom_data?.kind === 'featured_job') return handleFeaturedJobPaddleCompleted(transaction, session);
-      if (transaction.custom_data?.kind === 'subscription') return handleSubscriptionPaddleCompleted(transaction, session);
-      if (transaction.custom_data?.kind === 'tutoring_fee') return handleTutoringFeePaddleCompleted(transaction, session);
-    }
-    return [];
-  }, res);
-}
-
 // The institution, the student and every approved parent hear about an online fee payment, with
 // who paid it; the payer gets a confirmation instead.
-// Shared by Paddle, Stripe and JazzCash: apply the payment (instalment + payer + status), issue
-// the receipt once fully paid, and pick the right notifications (normal or duplicate).
+// Apply the payment (instalment + payer + status), issue the receipt once fully paid, and pick
+// the right notifications (normal or duplicate).
 async function settleOnlineFee(fee, { amount, method, paidVia, transactionId, payerId, extra = {} }, provider, session) {
   const settlement = require('../services/feeSettlement.service');
+  const owedBefore = settlement.outstandingOf(fee);
   const result = settlement.applyOnlinePayment(fee, { amount, method, paidVia, transactionId, payerId });
   Object.assign(fee, extra);
+  // The gateway already confirmed the money, so it is not held: the institute's share goes to its
+  // wallet now and CareerZ keeps its commission. A duplicate payment is refunded, never credited.
+  if (!result.duplicate) {
+    await require('../services/feeWalletSettlement.service').creditInstitution(fee, { amount: Math.min(result.amount, owedBefore), reference: `GW-${transactionId}`, payerId }, session);
+  }
   if (!result.duplicate && fee.status === 'paid') {
-    Object.assign(fee, await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY), { escrowStatus: 'held' });
+    Object.assign(fee, await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY), { escrowStatus: 'released', escrowReleasedAt: new Date() });
     fee.receiptNumber = fee.receiptNumber || `RCPT-${Date.now().toString(36).toUpperCase()}-${String(transactionId).slice(-6).toUpperCase()}`;
   }
   await fee.save({ session });
@@ -170,54 +89,6 @@ async function feeNotification(fee, provider, session, amountPaid) {
     amountText: `${fee.currency} ${amountPaid ?? fee.amount} via ${provider}${fee.status === 'partially_paid' ? ` (remaining ${fee.currency} ${fee.outstandingAmount})` : ''}`, receipt: fee.receiptNumber || fee.transactionId,
     others: [institution?.owner]
   });
-}
-
-async function handleFeePaddleCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'fee') {
-      throw new AppError('Expected a completed fee payment.', 422);
-    }
-    const fee = await Fee.findById(transaction.custom_data.feeId).session(dbSession);
-    if (!fee) throw new AppError('Fee record not found.', 404);
-    // A webhook retry for a payment already recorded changes nothing.
-    if ((fee.paymentHistory || []).some((p) => p.transactionId === transaction.id)) return [];
-    return settleOnlineFee(fee, {
-      amount: Number(transaction.custom_data.feeAmount) || undefined, method: 'paddle', paidVia: 'Paddle (Card/Apple Pay/Google Pay)',
-      transactionId: transaction.id, payerId: transaction.custom_data.payerId, extra: { paddleTransactionId: transaction.id }
-    }, 'Paddle', dbSession);
-  }, session);
-}
-
-async function handleWalletTopupCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'wallet_topup' || !transaction.id) {
-      throw new AppError('Expected a completed wallet top-up.', 422);
-    }
-    // Credits from OUR pending record (set at checkout-creation time), never re-derived from
-    // Paddle's payload — this is what actually stays correct when the Paddle-side currency was
-    // converted to USD for an unsupported wallet currency like PKR (see PADDLE_DIRECT_CURRENCIES).
-    const pending = await WalletTransaction.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
-    if (!pending) throw new AppError('Wallet top-up record not found — it may predate this fix.', 404);
-    if (pending.status === 'completed') return [];
-
-    const price = transaction.items?.[0]?.price?.unit_price;
-    const minorAmount = Number(price?.amount);
-    // Top-ups created by this API contain exactly one unit. Never credit tax as wallet funds.
-    // The Paddle-side currency/amount may legitimately differ from the wallet's own currency
-    // (converted to USD) — only the item shape and a positive integer amount are verified here.
-    if (transaction.items?.length !== 1 || transaction.items[0].quantity !== 1 ||
-        !Number.isSafeInteger(minorAmount) || minorAmount <= 0 || price.currency_code !== transaction.currency_code) {
-      throw new AppError('Invalid wallet top-up amount or currency.', 422);
-    }
-
-    pending.status = 'completed';
-    await pending.save({ session: dbSession });
-    await Wallet.findOneAndUpdate(
-      { user: pending.user, currency: pending.currency }, { $inc: { available: pending.amount } },
-      { upsert: true, session: dbSession }
-    );
-    return [{ userId: pending.user, payload: { title: `Wallet topped up: ${pending.currency} ${pending.amount.toFixed(2)}`, body: `Receipt ${transaction.id}`, sentBy: null } }];
-  }, session);
 }
 
 // NOWPayments statuses: waiting -> confirming -> confirmed -> finished (settled), or
@@ -264,142 +135,88 @@ async function handleNowPaymentsWebhook(req, res) {
   }, res);
 }
 
-async function handleFeaturedJobPaddleCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'featured_job') {
-      throw new AppError('Expected a completed featured-job payment.', 422);
-    }
-    const FeaturedListing = require('../models/FeaturedListing');
-    const Job = require('../models/Job');
-    const listing = await FeaturedListing.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
-    if (!listing) throw new AppError('Featured job checkout not found.', 404);
-    if (listing.status === 'paid') return [];
+// A confirmed featured-job purchase: mark the listing paid and feature the job until expiry.
+async function settleFeaturedListing(listing, receiptId, session) {
+  if (listing.status === 'paid') return [];
+  const Job = require('../models/Job');
+  listing.status = 'paid';
+  listing.transactionId = receiptId;
+  await listing.save({ session });
 
-    if (transaction.custom_data.jobId !== listing.job.toString()
-      || transaction.custom_data.purchasedBy !== listing.purchasedBy.toString()
-      || transaction.currency_code !== listing.currency) {
-      throw new AppError('Featured job transaction amount, currency or ownership does not match.', 422);
-    }
-    const price = transaction.items?.[0]?.price?.unit_price;
-    if (Number(price?.amount) !== Math.round(listing.amount * 100) || price?.currency_code !== listing.currency) {
-      throw new AppError('Featured job transaction amount does not match the recorded fee.', 422);
-    }
+  const job = await Job.findById(listing.job).session(session);
+  if (job) {
+    job.featured = true;
+    job.featuredUntil = listing.expiresAt;
+    await job.save({ session });
+  }
 
-    listing.status = 'paid';
-    listing.transactionId = transaction.id;
-    await listing.save({ session: dbSession });
-
-    const job = await Job.findById(listing.job).session(dbSession);
-    if (job) {
-      job.featured = true;
-      job.featuredUntil = listing.expiresAt;
-      await job.save({ session: dbSession });
-    }
-
-    return [{ userId: listing.purchasedBy, payload: {
-      title: `Job featured: ${job?.title || 'Your listing'}`, body: `Receipt ${transaction.id}`, sentBy: null
-    } }];
-  }, session);
+  return [{ userId: listing.purchasedBy, payload: {
+    title: `Job featured: ${job?.title || 'Your listing'}`, body: `Receipt ${receiptId}`, sentBy: null
+  } }];
 }
 
-async function handleSubscriptionPaddleCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'subscription') {
-      throw new AppError('Expected a completed subscription payment.', 422);
-    }
-    const SubscriptionPurchase = require('../models/SubscriptionPurchase');
-    const purchase = await SubscriptionPurchase.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
-    if (!purchase) throw new AppError('Subscription checkout not found.', 404);
-    if (purchase.status === 'paid') return [];
+// A confirmed plan purchase: activate the plan. Stacks onto a still-active period of the SAME
+// plan; otherwise (new plan, or lapsed) starts a fresh period from now.
+async function settleSubscriptionPurchase(purchase, receiptId, session) {
+  if (purchase.status === 'paid') return [];
+  purchase.status = 'paid';
+  await purchase.save({ session });
 
-    if (transaction.custom_data.institutionId !== purchase.institution.toString()
-      || transaction.custom_data.plan !== purchase.plan
-      || transaction.custom_data.purchasedBy !== purchase.purchasedBy.toString()
-      || transaction.currency_code !== purchase.currency) {
-      throw new AppError('Subscription transaction plan, currency or ownership does not match.', 422);
-    }
-    const price = transaction.items?.[0]?.price?.unit_price;
-    if (Number(price?.amount) !== Math.round(purchase.amount * 100) || price?.currency_code !== purchase.currency) {
-      throw new AppError('Subscription transaction amount does not match the recorded price.', 422);
-    }
+  const institution = await Institution.findById(purchase.institution).session(session);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  const sameActivePlan = institution.subscription?.plan === purchase.plan
+    && institution.subscription?.status === 'active'
+    && institution.subscription?.currentPeriodEnd
+    && new Date(institution.subscription.currentPeriodEnd) > new Date();
+  const base = sameActivePlan ? new Date(institution.subscription.currentPeriodEnd) : new Date();
+  institution.subscription = {
+    plan: purchase.plan, status: 'active',
+    currentPeriodEnd: new Date(base.getTime() + purchase.periodDays * 24 * 60 * 60 * 1000)
+  };
+  await institution.save({ session });
 
-    purchase.status = 'paid';
-    await purchase.save({ session: dbSession });
-
-    const institution = await Institution.findById(purchase.institution).session(dbSession);
-    if (!institution) throw new AppError('Institution not found.', 404);
-    // Stacks onto a still-active period of the SAME plan; otherwise (new plan, or lapsed) starts
-    // a fresh 30-day period from now.
-    const sameActivePlan = institution.subscription?.plan === purchase.plan
-      && institution.subscription?.status === 'active'
-      && institution.subscription?.currentPeriodEnd
-      && new Date(institution.subscription.currentPeriodEnd) > new Date();
-    const base = sameActivePlan ? new Date(institution.subscription.currentPeriodEnd) : new Date();
-    institution.subscription = {
-      plan: purchase.plan, status: 'active',
-      currentPeriodEnd: new Date(base.getTime() + purchase.periodDays * 24 * 60 * 60 * 1000),
-      paddleTransactionId: transaction.id
-    };
-    await institution.save({ session: dbSession });
-
-    return [{ userId: purchase.purchasedBy, payload: {
-      title: `Subscription activated: ${purchase.plan} plan`,
-      body: `${institution.name} is now on the ${purchase.plan} plan until ${institution.subscription.currentPeriodEnd.toDateString()}. Receipt ${transaction.id}`,
-      sentBy: null
-    } }];
-  }, session);
+  return [{ userId: purchase.purchasedBy, payload: {
+    title: `Subscription activated: ${purchase.plan} plan`,
+    body: `${institution.name} is now on the ${purchase.plan} plan until ${institution.subscription.currentPeriodEnd.toDateString()}. Receipt ${receiptId}`,
+    sentBy: null
+  } }];
 }
 
-async function handleTutoringFeePaddleCompleted(transaction, session) {
-  return settle(async (dbSession) => {
-    if (transaction.status !== 'completed' || transaction.custom_data?.kind !== 'tutoring_fee') {
-      throw new AppError('Expected a completed tutoring fee payment.', 422);
-    }
-    const TeacherStudentLink = require('../models/TeacherStudentLink');
-    const link = await TeacherStudentLink.findOne({ paddleTransactionId: transaction.id }).session(dbSession);
-    if (!link) throw new AppError('Tutoring fee checkout not found.', 404);
-    if (link.feeReceipt === transaction.id || (link.extraPayments || []).some((p) => p.transactionId === transaction.id)) return [];
-    if (link.feePaidAt) {
-      // Paid twice (student and parent at once): keep a record and tell the teacher to refund it.
-      const payerId = transaction.custom_data.payerId || link.student;
-      link.extraPayments.push({ transactionId: transaction.id, payer: payerId, amount: link.feeAmount, currency: link.feeCurrency, at: new Date() });
-      await link.save({ session: dbSession });
-      const text = `${link.feeCurrency} ${link.feeAmount} (${transaction.id}) arrived after this tuition fee was already paid.`;
-      return [
-        { userId: link.teacher, payload: { title: 'Duplicate tuition payment — please refund', body: text, sentBy: payerId } },
-        { userId: payerId, payload: { title: 'Second tuition payment received', body: `${text} Your tutor has been asked to refund it.`, sentBy: null } }
-      ];
-    }
+// A confirmed tuition payment. If the fee was already paid (student and parent paid at once),
+// the second payment is recorded and the teacher is asked to refund it.
+async function settleTutoringFee(link, { receiptId, payerId, amount, currency }, session) {
+  if (link.feeReceipt === receiptId || (link.extraPayments || []).some((p) => p.transactionId === receiptId)) return [];
+  payerId = payerId || link.student;
+  if (link.feePaidAt) {
+    link.extraPayments.push({ transactionId: receiptId, payer: payerId, amount, currency, at: new Date() });
+    await link.save({ session });
+    const text = `${currency} ${amount} (${receiptId}) arrived after this tuition fee was already paid.`;
+    return [
+      { userId: link.teacher, payload: { title: 'Duplicate tuition payment — please refund', body: text, sentBy: payerId } },
+      { userId: payerId, payload: { title: 'Second tuition payment received', body: `${text} Your tutor has been asked to refund it.`, sentBy: null } }
+    ];
+  }
 
-    const chargedAmount = link.paddleAmount ?? link.feeAmount, chargedCurrency = link.paddleCurrency || link.feeCurrency;
-    if (transaction.custom_data.linkId !== link._id.toString() || transaction.custom_data.studentId !== link.student.toString()
-      || transaction.currency_code !== chargedCurrency) {
-      throw new AppError('Tutoring fee transaction ownership/currency does not match.', 422);
-    }
-    const price = transaction.items?.[0]?.price?.unit_price;
-    if (Number(price?.amount) !== Math.round(chargedAmount * 100) || price?.currency_code !== chargedCurrency) {
-      throw new AppError('Tutoring fee transaction amount does not match.', 422);
-    }
-
-    // The payer is the student or one of their approved guardians (checked at checkout).
-    const payerId = transaction.custom_data.payerId || link.student;
-    const payer = await require('../services/feePayer.service').payerInfo(payerId, link.student);
-    link.feePaidAt = new Date();
-    link.feePaidBy = payerId;
-    link.feePaidByRole = payer?.role || 'Student';
-    link.feeReceipt = transaction.id;
-    await link.save({ session: dbSession });
-
-    return require('../services/feePayer.service').paidNotifications({
-      studentId: link.student, payerId, what: 'Tuition fee', amountText: `${link.feeCurrency} ${link.feeAmount}`,
-      receipt: transaction.id, others: [link.teacher]
-    });
+  // The payer is the student or one of their approved guardians (checked at checkout).
+  const payer = await require('../services/feePayer.service').payerInfo(payerId, link.student);
+  link.feePaidAt = new Date();
+  link.feePaidBy = payerId;
+  link.feePaidByRole = payer?.role || 'Student';
+  link.feeReceipt = receiptId;
+  await link.save({ session });
+  // The tutor is paid now, less CareerZ's tutoring commission.
+  await require('../services/feeWalletSettlement.service').creditEarner({
+    recipient: link.teacher, amount, currency, reference: `TUT-${receiptId}`, payerId, note: 'Tuition fee', commissionKey: 'tutoring_commission_percent'
   }, session);
+
+  return require('../services/feePayer.service').paidNotifications({
+    studentId: link.student, payerId, what: 'Tuition fee', amountText: `${link.feeCurrency} ${link.feeAmount}`,
+    receipt: receiptId, others: [link.teacher]
+  });
 }
 
 module.exports = {
-  handleStripeWebhook, handlePaddleWebhook, handleFeePaddleCompleted, handleWalletTopupCompleted,
-  handleCoursePaddleCompleted, handleFeaturedJobPaddleCompleted, handleSubscriptionPaddleCompleted,
-  handleTutoringFeePaddleCompleted, handleNowPaymentsWebhook, handleNowPaymentsCompleted,
-  feeNotification, settleCoursePurchase, settleOnlineFee
+  handleNowPaymentsWebhook, handleNowPaymentsCompleted,
+  feeNotification, settleCoursePurchase, settleOnlineFee,
+  settleFeaturedListing, settleSubscriptionPurchase, settleTutoringFee
 };

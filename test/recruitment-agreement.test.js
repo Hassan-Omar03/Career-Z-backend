@@ -40,6 +40,7 @@ before(async () => {
   await mongoose.connect(mongo.getUri());
   await account('Owner', 'institution');
   await account('Agent', 'education_agent', 'agency');
+  await model('User').updateOne({ _id: u.Agent._id }, { $set: { payoutAccount: { method: 'bank_transfer', bankName: 'HBL', accountTitle: 'Agent Account', accountNumber: 'PK36HABB0000001123456702' } } });
   await account('Pending', 'education_agent', 'individual', false);
   await account('Other', 'education_agent', 'individual');
   await account('Cand', 'student');
@@ -91,12 +92,15 @@ test('agreement needs both sides; the agent can publish only under an active agr
   const v1 = await api('Owner', 'POST', `/recruitment/requests/${S.req}/agreements`, terms({ percentage: 40 }));
   expect(v1, 201);
   expect(await api('Agent', 'POST', '/jobs', job({ agreement: v1.body.data._id })), 403, 'only proposed, not active');
-  const v2 = await api('Agent', 'POST', `/recruitment/requests/${S.req}/agreements`, terms());
+  expect(await api('Agent', 'POST', `/recruitment/requests/${S.req}/agreements`, terms()), 403, 'only the institute proposes terms');
+  // The agent asks for changes; the institute sends a new version.
+  expect(await api('Agent', 'POST', `/recruitment/requests/${S.req}/messages`, { text: 'Please make it 50% instead of 40%.' }), 200);
+  const v2 = await api('Owner', 'POST', `/recruitment/requests/${S.req}/agreements`, terms());
   expect(v2, 201);
   assert.equal(v2.body.data.version, 2);
   assert.equal((await model('RecruitmentAgreement').findById(v1.body.data._id)).status, 'superseded');
-  expect(await api('Owner', 'POST', `/recruitment/agreements/${v1.body.data._id}/accept`), 409, 'old version');
-  const acc = await api('Owner', 'POST', `/recruitment/agreements/${v2.body.data._id}/accept`);
+  expect(await api('Agent', 'POST', `/recruitment/agreements/${v1.body.data._id}/accept`), 409, 'old version');
+  const acc = await api('Agent', 'POST', `/recruitment/agreements/${v2.body.data._id}/accept`);
   expect(acc, 200);
   assert.equal(acc.body.data.status, 'active');
   S.agreement = v2.body.data._id;
@@ -116,6 +120,10 @@ test('only the institute confirms joining; fee follows the agreement and platfor
   const a = await api('Cand', 'POST', `/jobs/${S.job}/apply`, { coverLetter: 'Hi' });
   expect(a, 201);
   S.app = a.body.data._id;
+  expect(await api('Agent', 'PATCH', `/jobs/applications/${S.app}/status`, { status: 'hired' }), 409, 'agent cannot move a candidate the institute has not selected');
+  expect(await api('Agent', 'PATCH', `/jobs/applications/${S.app}/status`, { status: 'shortlisted' }), 409, 'selection is made by the institute');
+  expect(await api('Owner', 'POST', `/recruitment/candidates/${S.app}/select`, { note: 'Good profile' }), 200);
+  assert.equal((await model('JobApplication').findById(S.app)).status, 'shortlisted');
   expect(await api('Agent', 'PATCH', `/jobs/applications/${S.app}/status`, { status: 'hired' }), 200);
   let app = await model('JobApplication').findById(S.app);
   assert.equal(app.joining.confirmed, false, 'agent alone cannot confirm');
@@ -149,25 +157,18 @@ test('payment: no destination until Super Admin sets it; proof → admin verifie
   expect(await api('Admin', 'PUT', '/admin/recruitment/settings', { platformFeePercent: 0, payment: { mode: 'platform', instructions: 'Bank: Test Bank\nIBAN: PK00TEST' } }), 200);
   assert.match((await api('Owner', 'GET', `/recruitment/invoices/${S.invoice}`)).body.data.payTo.text, /PK00TEST/);
   expect(await api('Cand', 'GET', `/recruitment/invoices/${S.invoice}`), 403);
-  expect(await api('Agent', 'POST', `/recruitment/invoices/${S.invoice}/proof`, { reference: 'T1', amount: 45000 }), 403, 'agent cannot submit proof');
-  expect(await api('Owner', 'POST', `/recruitment/invoices/${S.invoice}/proof`, { reference: 'T1', amount: 45000, file: { name: 'x.exe', data: 'data:application/x-msdownload;base64,AAAA' } }), 422);
   const png = 'data:image/png;base64,' + Buffer.from('fakepng').toString('base64');
-  const p = await api('Owner', 'POST', `/recruitment/invoices/${S.invoice}/proof`, { reference: 'TRX-778', amount: 45000, file: { name: 'slip.png', data: png } });
-  expect(p, 200);
-  assert.equal(p.body.data.status, 'pending_verification');
-  const proofId = p.body.data.proofs[0]._id;
-  const file = await api('Admin', 'GET', `/admin/recruitment/invoices/${S.invoice}/proofs/${proofId}`);
-  expect(file, 200);
-  assert.equal(file.type, 'image/png');
-  expect(await api('Other', 'GET', `/recruitment/invoices/${S.invoice}/proofs/${proofId}`), 403);
-  expect(await api('Owner', 'POST', `/admin/recruitment/invoices/${S.invoice}/verify`, { decision: 'approve' }), 403, 'not an admin');
-  expect(await api('Admin', 'POST', `/admin/recruitment/invoices/${S.invoice}/verify`, { decision: 'more_info' }), 422, 'reason needed');
-  expect(await api('Admin', 'POST', `/admin/recruitment/invoices/${S.invoice}/verify`, { decision: 'more_info', note: 'Slip is unreadable' }), 200);
-  assert.equal((await model('Commission').findOne({ application: S.app })).status, 'pending', 'not released before money is verified');
-  expect(await api('Owner', 'POST', `/recruitment/invoices/${S.invoice}/proof`, { reference: 'TRX-778', amount: 45000 }), 200);
-  expect(await api('Admin', 'POST', `/admin/recruitment/invoices/${S.invoice}/verify`, { decision: 'approve' }), 200);
+  expect(await api('Owner', 'POST', `/recruitment/invoices/${S.invoice}/proof`, { reference: 'TRX-778', amount: 45000, file: { name: 'slip.png', data: png } }), 410, 'one proof to CareerZ is replaced');
+  await model('Setting').updateOne({ key: 'platform_payment_account' }, { $set: { value: { accountTitle: 'CareerZ', bankName: 'UBL', accountNumber: '0833272270819' } } }, { upsert: true });
+  expect(await api('Agent', 'POST', `/manual-payments/recruitment_invoice/${S.invoice}`, { phone: '03001234567', seller: { amount: 45000 } }), 403, 'agent cannot pay its own invoice');
+  const q = (await api('Owner', 'GET', `/manual-payments/quote/recruitment_invoice/${S.invoice}`)).body.data;
+  assert.deepEqual([q.commission, q.sellerAmount, q.seller.account.accountNumber], [0, 45000, 'PK36HABB0000001123456702'], 'CareerZ fee 0%: the whole fee goes to the agent account named in the agreement');
+  const sent = await api('Owner', 'POST', `/manual-payments/recruitment_invoice/${S.invoice}`, { phone: '03001234567', seller: { amount: 45000, transactionId: 'TRX778001', paidOn: new Date().toISOString(), file: { name: 'slip.png', data: png } } });
+  expect(sent, 201);
+  expect(await api('Owner', 'PATCH', `/manual-payments/${sent.body.data._id}/decide`, { decision: 'approve' }), 403, 'not an admin');
+  expect(await api('Admin', 'PATCH', `/manual-payments/${sent.body.data._id}/decide`, { decision: 'approve' }), 200);
   assert.equal((await model('RecruitmentInvoice').findById(S.invoice)).status, 'paid');
-  assert.equal((await model('Commission').findOne({ application: S.app })).status, 'available');
+  assert.equal((await model('Commission').findOne({ application: S.app })).status, 'paid', 'the agent was paid directly');
 });
 
 test('replacement and refund follow the agreement terms and need an admin decision', async () => {
@@ -179,7 +180,7 @@ test('replacement and refund follow the agreement terms and need an admin decisi
   expect(await api('Agent', 'POST', `/recruitment/invoices/${S.invoice}/escalate`, { note: 'Cannot find a replacement' }), 200);
   let inv = await model('RecruitmentInvoice').findById(S.invoice);
   assert.equal(inv.replacement.status, 'refund_review');
-  assert.equal((await model('Commission').findOne({ application: S.app })).status, 'available', 'nothing refunded automatically');
+  assert.equal((await model('Commission').findOne({ application: S.app })).status, 'paid', 'nothing refunded automatically');
   expect(await api('Admin', 'POST', `/admin/recruitment/invoices/${S.invoice}/review`, { outcome: 'refunded' }), 422, 'decision must be recorded');
   expect(await api('Admin', 'POST', `/admin/recruitment/invoices/${S.invoice}/review`, { outcome: 'refunded', note: 'Full refund of PKR 45000 by bank transfer' }), 200);
   inv = await model('RecruitmentInvoice').findById(S.invoice);
@@ -190,14 +191,15 @@ test('replacement and refund follow the agreement terms and need an admin decisi
 test('a package fee is invoiced only when all covered hires are confirmed; ending closes jobs', async () => {
   const r = await api('Owner', 'POST', '/recruitment/requests', { institution: S.inst._id, agent: u.Agent._id, positions: [{ title: 'Clerk', vacancies: 2 }] });
   await api('Agent', 'POST', `/recruitment/requests/${r.body.data._id}/respond`, { action: 'accept' });
-  const ag = await api('Agent', 'POST', `/recruitment/requests/${r.body.data._id}/agreements`, terms({ feeModel: 'package', packageAmount: 60000, packageHires: 2, replacement: {} }));
-  await api('Owner', 'POST', `/recruitment/agreements/${ag.body.data._id}/accept`);
+  const ag = await api('Owner', 'POST', `/recruitment/requests/${r.body.data._id}/agreements`, terms({ feeModel: 'package', packageAmount: 60000, packageHires: 2, replacement: {} }));
+  await api('Agent', 'POST', `/recruitment/agreements/${ag.body.data._id}/accept`);
   const j = await api('Agent', 'POST', '/jobs', job({ title: 'Office Clerk', category: 'administration', agreement: ag.body.data._id, description: 'Office clerk for admissions records at our Lahore campus. Intermediate and MS Office required.' }));
   expect(j, 201);
   await account('Cand2', 'student');
   await model('Resume').create({ user: u.Cand2._id, skills: [] });
   const apps = [];
   for (const who of ['Cand', 'Cand2']) apps.push((await api(who, 'POST', `/jobs/${j.body.data._id}/apply`, {})).body.data._id);
+  for (const id of apps) await api('Owner', 'POST', `/recruitment/candidates/${id}/select`, {});
   for (const id of apps) await api('Agent', 'PATCH', `/jobs/applications/${id}/status`, { status: 'hired' });
   expect(await api('Owner', 'POST', `/recruitment/hires/${apps[1]}/decline`, {}), 422);
   const first = await api('Owner', 'POST', `/recruitment/hires/${apps[0]}/confirm`, {});

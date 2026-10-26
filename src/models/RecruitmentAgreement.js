@@ -42,6 +42,8 @@ const recruitmentAgreementSchema = new mongoose.Schema(
     status: { type: String, enum: ['proposed', 'active', 'superseded', 'declined', 'ended'], default: 'proposed', index: true },
     institutionAcceptance: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null } },
     agentAcceptance: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null } },
+    // The account the agent named when accepting: the institute pays the agent's share here.
+    agentPaymentAccount: { method: String, bankName: String, accountTitle: String, accountNumber: String },
     endedAt: { type: Date, default: null }
   },
   { timestamps: true }

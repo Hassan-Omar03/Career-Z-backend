@@ -10,6 +10,7 @@ const { MongoMemoryReplSet } = require('mongodb-memory-server');
 // homework, results, the parent's view, messaging, rating, meetings, revocation and isolation.
 // Real HTTP through src/app, so the account gate, permissions and validation all apply.
 process.env.NODE_ENV = 'test';
+process.env.ONLINE_PAYMENTS_ENABLED = 'true';
 process.env.DISABLE_SUBSCRIPTION_LIMITS = 'true';
 const notifications = require('../src/services/notification.service');
 const sent = [];
@@ -173,17 +174,14 @@ test('8. isolation: unrelated parent and teacher see nothing of the child', asyn
 });
 
 test('9. parent pays the tuition fee: everyone is told who paid; both lists show it as paid by the mother', async () => {
-  const { handleTutoringFeePaddleCompleted } = require('../src/controllers/webhook.controller');
+  const { applyOutcome } = require('../src/controllers/jazzcash.controller');
   const link = await model('TeacherStudentLink').findById(S.minorLink._id);
   // The revoke in step 7 ended this link; a paid fee is still shown, so reactivate for the payment.
-  // PKR is not a Paddle currency, so checkout charged the USD equivalent (as createFeeCheckout does).
-  link.status = 'active'; link.paddleTransactionId = 'txn_mother_pays'; link.paddleAmount = 14.4; link.paddleCurrency = 'USD'; await link.save();
+  link.status = 'active'; await link.save();
+  // The mother's JazzCash checkout (as POST /teacher-students/:id/fee-checkout stores it), then JazzCash confirms it.
+  await model('JazzCashPayment').create({ txnRefNo: 'T_MOTHER_PAYS', kind: 'tutoring_fee', payer: u.Mother._id, tutoringLink: link._id, amountPaisa: Math.round(link.feeAmount * 100), amount: link.feeAmount, currency: link.feeCurrency });
   sent.length = 0;
-  await handleTutoringFeePaddleCompleted({
-    id: 'txn_mother_pays', status: 'completed', currency_code: 'USD',
-    custom_data: { kind: 'tutoring_fee', linkId: String(link._id), studentId: String(u.Minor._id), payerId: String(u.Mother._id) },
-    items: [{ quantity: 1, price: { unit_price: { amount: '1440', currency_code: 'USD' } } }]
-  });
+  await applyOutcome('T_MOTHER_PAYS', { code: '000', rrn: 'txn_mother_pays' });
   const paid = await model('TeacherStudentLink').findById(link._id);
   assert.equal(String(paid.feePaidBy), String(u.Mother._id));
   assert.equal(paid.feePaidByRole, 'Mother');
@@ -201,16 +199,22 @@ test('9. parent pays the tuition fee: everyone is told who paid; both lists show
   }
 });
 
-test('10. institution fee: parent reports, student cannot double-pay, school verifies, all told who paid', async () => {
+test('10. institution fee: parent pays by bank transfer, CareerZ checks the receipt, all see who paid', async () => {
   await account('Principal', 'institution_owner');
+  await account('FinanceAdmin', 'super_admin');
   const school = await model('Institution').create({ name: 'Fee School', slug: 'fee-school', type: 'school', country: 'PK', owner: u.Principal._id, verificationStatus: 'approved' });
   const fee = await model('Fee').create({ institution: school._id, student: u.Minor._id, recordedBy: u.Principal._id, title: 'October tuition', amount: 3000, currency: 'PKR', status: 'pending', dueDate: new Date(Date.now() + 5 * 864e5) });
-  let r = await api('Mother', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 3000, method: 'cash', reference: 'CASH-77' });
-  expect(r, 200, 'mother reports payment');
-  expect(await api('Minor', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 3000, method: 'cash', reference: 'CASH-78' }), 409, 'second report while pending');
+  await model('User').updateOne({ _id: u.Principal._id }, { $set: { payoutAccount: { method: 'bank_transfer', bankName: 'UBL', accountTitle: 'Fee School', accountNumber: 'PK78UNIL0109000272270819' } } });
+  await model('Setting').updateOne({ key: 'platform_payment_account' }, { $set: { value: { accountTitle: 'CareerZ', bankName: 'UBL', accountNumber: '0833272270819' } } }, { upsert: true });
+  const receipt = (id) => ({ amount: 3000, transactionId: id, paidOn: new Date().toISOString(), file: { name: 'r.png', data: 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==' } });
+  let r = await api('Mother', 'POST', `/manual-payments/fee/${fee._id}`, { phone: '03001234567', seller: receipt('MOTHER-0077') });
+  expect(r, 201, 'mother sends the receipt');
+  const paymentId = data(r)._id;
+  expect(await api('Minor', 'POST', `/manual-payments/fee/${fee._id}`, { phone: '03001234568', seller: receipt('MINOR-0078') }), 409, 'second payment while one waits');
   sent.length = 0;
-  r = await api('Principal', 'PATCH', `/institution-fees/fees/${fee._id}/verify-payment`, { decision: 'verify' });
-  expect(r, 200, 'school verifies');
+  expect(await api('Principal', 'PATCH', `/manual-payments/${paymentId}/decide`, { decision: 'approve' }), 403, 'the school cannot approve payments');
+  r = await api('FinanceAdmin', 'PATCH', `/manual-payments/${paymentId}/decide`, { decision: 'approve' });
+  expect(r, 200, 'CareerZ approves');
   r = await api('Mother', 'GET', `/parents/children/${u.Minor._id}/fees`);
   const row = data(r).find((f) => f._id === String(fee._id));
   assert.equal(row.status, 'paid');
@@ -218,5 +222,5 @@ test('10. institution fee: parent reports, student cannot double-pay, school ver
   assert.equal(row.paymentHistory[0].paidByInfo.role, 'Mother');
   r = await api('Minor', 'GET', '/students/me/fees');
   assert.equal(data(r).find((f) => f._id === String(fee._id)).paidByInfo.role, 'Mother');
-  expect(await api('Mother', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 1, method: 'cash', reference: 'X' }), 400, 'pay a paid fee');
+  expect(await api('Mother', 'POST', `/manual-payments/fee/${fee._id}`, { phone: '03001234567', seller: receipt('MOTHER-0079') }), 400, 'pay a paid fee');
 });

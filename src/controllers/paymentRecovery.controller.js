@@ -1,7 +1,5 @@
 const WalletTransaction = require('../models/WalletTransaction');
 const JazzCashPayment = require('../models/JazzCashPayment');
-const Fee = require('../models/Fee');
-const CoursePurchase = require('../models/CoursePurchase');
 const payment = require('./payment.controller');
 const jazzcash = require('./jazzcash.controller');
 const asyncHandler = require('../utils/asyncHandler');
@@ -11,17 +9,13 @@ const { ok } = require('../utils/apiResponse');
 // of truth and existing settlement transactions prevent duplicate wallet/enrollment effects.
 const syncPendingPayments = asyncHandler(async (req, res) => {
   const since = new Date(Date.now() - 7 * 86400000);
-  const [wallets, jazz, fees, courses] = await Promise.all([
-    WalletTransaction.find({ user: req.user._id, type: 'topup', status: 'pending', createdAt: { $gte: since }, $or: [{ paddleTransactionId: { $type: 'string' } }, { nowPaymentsId: { $type: 'string' } }] }).sort({ createdAt: -1 }).limit(5),
-    JazzCashPayment.find({ payer: req.user._id, status: { $in: ['pending', 'awaiting_payment'] }, createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(5),
-    Fee.find({ student: req.user._id, status: 'processing', paddleTransactionId: { $type: 'string' }, updatedAt: { $gte: since } }).sort({ updatedAt: -1 }).limit(5),
-    CoursePurchase.find({ student: req.user._id, provider: 'paddle', status: 'pending', createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(5)
+  const [crypto, jazz] = await Promise.all([
+    WalletTransaction.find({ user: req.user._id, type: 'topup', status: 'pending', createdAt: { $gte: since }, nowPaymentsId: { $type: 'string' } }).sort({ createdAt: -1 }).limit(5),
+    JazzCashPayment.find({ payer: req.user._id, status: { $in: ['pending', 'awaiting_payment'] }, createdAt: { $gte: since } }).sort({ createdAt: -1 }).limit(5)
   ]);
   const jobs = [
-    ...wallets.map(row => ({ handler: row.nowPaymentsId ? payment.syncCryptoWalletTopup : payment.syncWalletTopup, params: row.nowPaymentsId ? { paymentId: row.nowPaymentsId } : { transactionId: row.paddleTransactionId } })),
-    ...jazz.map(row => ({ handler: jazzcash.syncPayment, params: { txnRefNo: row.txnRefNo } })),
-    ...fees.map(row => ({ handler: payment.syncPaddleFeeStatus, params: { feeId: row._id } })),
-    ...courses.map(row => ({ handler: payment.syncPaddleCourseStatus, params: { courseId: row.course, transactionId: row.providerCheckoutId } }))
+    ...crypto.map(row => ({ handler: payment.syncCryptoWalletTopup, params: { paymentId: row.nowPaymentsId } })),
+    ...jazz.map(row => ({ handler: jazzcash.syncPayment, params: { txnRefNo: row.txnRefNo } }))
   ];
   let completed = 0;
   await Promise.all(jobs.map(job => new Promise(resolve => {

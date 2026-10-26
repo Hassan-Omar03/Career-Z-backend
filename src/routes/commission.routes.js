@@ -11,6 +11,7 @@ router.get('/mine', ctrl.myCommissions);
 router.get('/mine/withdrawals', ctrl.myWithdrawals);
 router.post('/withdraw', ctrl.requestWithdrawal);
 router.patch('/:id/status', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.updateCommissionStatus);
+router.get('/withdrawals/open', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.openWithdrawals);
 router.patch('/withdrawals/:id/status', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.updateWithdrawalStatus);
 
 module.exports = router;

@@ -22,13 +22,13 @@ const teacherStudentLinkSchema = new mongoose.Schema(
     guardianApprovedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     guardianApprovedAt: { type: Date, default: null },
     feeAmount: { type: Number, default: null },
-    feeCurrency: { type: String, default: 'USD' },
+    feeCurrency: { type: String, default: 'PKR' },
     feePaidAt: { type: Date, default: null },
     // Who paid: the student or one of their approved guardians (shown to the family and teacher).
     feePaidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     feePaidByRole: { type: String, default: '' },
     feeReceipt: { type: String, default: '' },
-    // What Paddle was actually asked to charge (USD when the fee currency is not Paddle-supported).
+    // Legacy: what Paddle was asked to charge, for tuition paid before JazzCash.
     paddleAmount: { type: Number, default: null },
     paddleCurrency: { type: String, default: '' },
     // Payments that arrived after the fee was already paid (e.g. student and parent both paid): the
@@ -36,7 +36,7 @@ const teacherStudentLinkSchema = new mongoose.Schema(
     extraPayments: [{ transactionId: String, payer: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, amount: Number, currency: String, at: Date }],
     // No `default: null` — an explicit null still counts as "present" for a sparse index and
     // collides across documents that never set it (same bug class fixed earlier on Fee.receiptNumber).
-    paddleTransactionId: { type: String, unique: true, sparse: true },
+    paddleTransactionId: { type: String, unique: true, sparse: true }, // legacy Paddle payments only
     endedAt: { type: Date, default: null },
     endReason: { type: String, default: '' },
     endedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }

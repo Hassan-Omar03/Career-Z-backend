@@ -13,7 +13,7 @@ const feeSchema = new mongoose.Schema(
       default: 'other'
     },
     amount: { type: Number, required: true },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     dueDate: { type: Date, default: null },
     // 'scheduled'/'partially_paid'/'waived'/'cancelled' are new (spec 15D.7 lifecycle); every
     // pre-existing Fee document keeps working with its original status untouched.
@@ -129,7 +129,7 @@ const feeSchema = new mongoose.Schema(
     // Self-service payment fields — same honesty pattern as Donation: no real gateway, so the
     // payer (parent or student) self-confirms and gets a real, unique, server-generated receipt
     // reference. paidVia stays as free text for institution-recorded (cash/manual) payments.
-    paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'stripe', 'paddle', 'jazzcash', 'easypaisa', 'crypto', 'mobile_wallet', 'cash', 'other', ''], default: '' },
+    paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'stripe', 'paddle', 'jazzcash', 'safepay', 'easypaisa', 'crypto', 'mobile_wallet', 'cash', 'other', ''], default: '' },
     transactionId: { type: String, default: null },
     paidBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     // Full receipt breakdown (spec 3A.2) — grossAmount mirrors `amount` at payment time (kept

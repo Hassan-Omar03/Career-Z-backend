@@ -7,6 +7,8 @@ const interviewSchema = new mongoose.Schema(
     candidate: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     scheduledBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     scheduledDate: { type: Date, required: true },
+    // Master 12.10: first interview or final interview round.
+    round: { type: String, enum: ['interview', 'final_interview'], default: 'interview' },
     mode: { type: String, enum: ['online', 'physical'], default: 'online' },
     location: { type: String, default: '' }, // physical address, when mode is 'physical'
     meetingLink: { type: String, default: '' }, // when mode is 'online'

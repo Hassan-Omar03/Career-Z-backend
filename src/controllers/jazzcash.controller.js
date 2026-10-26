@@ -12,12 +12,22 @@ const { settle } = require('../services/settlement.service');
 const jazzCash = require('../services/jazzcash.service');
 const env = require('../config/env');
 const { isAllowedOrigin } = require('../utils/allowedOrigins');
+const safepay = require('../services/safepay.service');
 
 const FEE_COMMISSION_KEY = 'fee_commission_percent';
 // A checkout JazzCash still has no record of after this long was never completed on its page.
 const NEVER_REACHED_AFTER_MS = 60 * 60 * 1000;
 
-function assertConfigured() {
+// Each checkout picks its gateway: { gateway: 'safepay' } in the body, else JazzCash.
+const gatewayOf = (req) => (req.body?.gateway === 'safepay' ? 'safepay' : 'jazzcash');
+const GATEWAY_NAME = { jazzcash: 'JazzCash', safepay: 'Safepay' };
+
+function assertConfigured(gateway = 'jazzcash') {
+  if (!require('../utils/onlinePayments').onlinePaymentsEnabled()) throw new AppError('Online payment is switched off. Pay by bank transfer and upload the receipts.', 503);
+  if (gateway === 'safepay') {
+    if (!safepay.isConfigured()) throw new AppError('Safepay is not set up yet — ask the Super Admin to configure SAFEPAY_API_KEY and SAFEPAY_SECRET_KEY.', 503);
+    return;
+  }
   if (!jazzCash.isJazzCashConfigured()) {
     throw new AppError('JazzCash is not set up yet — ask the Super Admin to configure JAZZCASH_MERCHANT_ID, JAZZCASH_PASSWORD and JAZZCASH_INTEGRITY_SALT.', 503);
   }
@@ -60,7 +70,21 @@ function returnUrlFor(req) {
   return `${proto}://${host}/api/payments/jazzcash/return`;
 }
 
-function checkoutResponse(req, res, payment, description) {
+// The public address of this backend's Safepay return/cancel endpoints.
+function safepayUrl(req, path) {
+  const proto = String(req.headers?.['x-forwarded-proto'] || req.protocol || 'http').split(',')[0].trim();
+  const host = req.headers?.['x-forwarded-host'] || req.headers?.host || `localhost:${env.port}`;
+  return `${process.env.SAFEPAY_RETURN_BASE || `${proto}://${host}`}/api/payments/safepay/${path}`;
+}
+
+async function checkoutResponse(req, res, payment, description) {
+  if (payment.provider === 'safepay') {
+    const tracker = await safepay.createTracker(payment.amountPaisa / 100);
+    payment.gatewayTracker = tracker;
+    await payment.save();
+    const redirectUrl = safepay.checkoutUrl({ tracker, orderId: payment.txnRefNo, redirectUrl: safepayUrl(req, 'return'), cancelUrl: `${safepayUrl(req, 'cancel')}?ref=${encodeURIComponent(payment.txnRefNo)}` });
+    return ok(res, { gateway: 'safepay', redirectUrl, txnRefNo: payment.txnRefNo });
+  }
   const fields = jazzCash.buildCheckoutFields({
     txnRefNo: payment.txnRefNo, amountPaisa: payment.amountPaisa,
     billReference: payment.kind, description, returnUrl: returnUrlFor(req)
@@ -70,7 +94,8 @@ function checkoutResponse(req, res, payment, description) {
 
 // POST /api/payments/jazzcash/fees/:feeId/checkout
 const createFeeCheckout = asyncHandler(async (req, res) => {
-  assertConfigured();
+  const gateway = gatewayOf(req);
+  assertConfigured(gateway);
   const { assertCanPayFee } = require('./payment.controller');
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
@@ -79,7 +104,7 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
 
   const amountPaisa = await toPaisa(owed, fee.currency || 'PKR');
   const payment = await JazzCashPayment.create({
-    txnRefNo: jazzCash.newTxnRefNo(), kind: 'fee', payer: req.user._id, fee: fee._id,
+    txnRefNo: jazzCash.newTxnRefNo(), provider: gateway, kind: 'fee', payer: req.user._id, fee: fee._id,
     amountPaisa, amount: owed, currency: normalizeCurrency(fee.currency || 'PKR'),
     previousFeeStatus: fee.status === 'processing' ? 'pending' : fee.status, returnOrigin: returnOriginOf(req)
   });
@@ -90,17 +115,18 @@ const createFeeCheckout = asyncHandler(async (req, res) => {
 
 // POST /api/payments/jazzcash/courses/:courseId/checkout
 const createCourseCheckout = asyncHandler(async (req, res) => {
-  assertConfigured();
+  const gateway = gatewayOf(req);
+  assertConfigured(gateway);
   const { loadPayableCourse } = require('./payment.controller');
   const { course, amountMinor, currency } = await loadPayableCourse(req.params.courseId, req.user._id);
   const amountPaisa = await toPaisa(amountMinor / 100, currency);
   const txnRefNo = jazzCash.newTxnRefNo();
   const purchase = await CoursePurchase.create({
-    course: course._id, student: req.user._id, provider: 'jazzcash', providerCheckoutId: txnRefNo,
+    course: course._id, student: req.user._id, provider: gateway, providerCheckoutId: txnRefNo,
     amountMinor, currency, gatewayAmountMinor: amountPaisa, gatewayCurrency: 'PKR'
   });
   const payment = await JazzCashPayment.create({
-    txnRefNo, kind: 'course', payer: req.user._id, coursePurchase: purchase._id,
+    txnRefNo, provider: gateway, kind: 'course', payer: req.user._id, coursePurchase: purchase._id,
     amountPaisa, amount: amountMinor / 100, currency, returnOrigin: returnOriginOf(req)
   });
   return checkoutResponse(req, res, payment, course.title);
@@ -108,26 +134,58 @@ const createCourseCheckout = asyncHandler(async (req, res) => {
 
 // POST /api/payments/jazzcash/wallet/topup
 const createWalletTopup = asyncHandler(async (req, res) => {
-  assertConfigured();
+  const gateway = gatewayOf(req);
+  assertConfigured(gateway);
   const { amount, currency } = req.body;
   validateAmount(amount);
   const cur = normalizeCurrency(currency);
   const amountPaisa = await toPaisa(amount, cur);
   const txnRefNo = jazzCash.newTxnRefNo();
   const pending = await WalletTransaction.create({
-    user: req.user._id, type: 'topup', amount, currency: cur, status: 'pending', reference: txnRefNo, note: 'JazzCash top-up'
+    user: req.user._id, type: 'topup', amount, currency: cur, status: 'pending', reference: txnRefNo, note: `${GATEWAY_NAME[gateway]} top-up`
   });
   const payment = await JazzCashPayment.create({
-    txnRefNo, kind: 'wallet_topup', payer: req.user._id, walletTransaction: pending._id,
+    txnRefNo, provider: gateway, kind: 'wallet_topup', payer: req.user._id, walletTransaction: pending._id,
     amountPaisa, amount, currency: cur, returnOrigin: returnOriginOf(req)
   });
   return checkoutResponse(req, res, payment, `Wallet top-up ${cur} ${amount}`);
 });
 
+// Shared by the featured-job, plan and tuition checkouts: one JazzCash attempt pointing at the
+// record it pays for. `createRefs` makes that record (only once the amount converts) and returns
+// its reference: { featuredListing } / { subscriptionPurchase } / { tutoringLink }.
+async function startCheckout(req, res, { kind, amount, currency, description, createRefs }) {
+  const gateway = gatewayOf(req);
+  assertConfigured(gateway);
+  const amountPaisa = await toPaisa(amount, currency);
+  const refs = await createRefs();
+  const payment = await JazzCashPayment.create({
+    txnRefNo: jazzCash.newTxnRefNo(), provider: gateway, kind, payer: req.user._id, ...refs,
+    amountPaisa, amount, currency: normalizeCurrency(currency), returnOrigin: returnOriginOf(req)
+  });
+  return checkoutResponse(req, res, payment, description);
+}
+
+// POST /api/payments/jazzcash/jobs/:jobId/feature-checkout
+const createFeaturedJobCheckout = asyncHandler(async (req, res) => {
+  const { loadFeaturableJob } = require('./job.controller');
+  const { job, fee, days } = await loadFeaturableJob(req.params.jobId, req.user._id);
+  const FeaturedListing = require('../models/FeaturedListing');
+  return startCheckout(req, res, {
+    kind: 'featured_job', amount: fee, currency: 'USD', description: `Featured job ${job.title}`,
+    createRefs: async () => ({ featuredListing: (await FeaturedListing.create({
+      listingType: 'job', job: job._id, purchasedBy: req.user._id, amount: fee, currency: 'USD',
+      paymentMethod: gatewayOf(req), status: 'pending',
+      expiresAt: new Date(Date.now() + days * 24 * 60 * 60 * 1000)
+    }))._id })
+  });
+});
+
 // Applies a JazzCash outcome to the stored checkout, exactly once. Everything credited comes
 // from our own JazzCashPayment / Fee / CoursePurchase / WalletTransaction records.
-async function applyOutcome(txnRefNo, { code, message = '', rrn = '' }) {
-  const outcome = jazzCash.outcomeOf(code);
+// `outcome` is given directly by gateways that report a state rather than a JazzCash code.
+async function applyOutcome(txnRefNo, { code, message = '', rrn = '', outcome: given }) {
+  const outcome = given || jazzCash.outcomeOf(code);
   return settle(async (session) => {
     const payment = await JazzCashPayment.findOne({ txnRefNo }).session(session);
     if (!payment) throw new AppError('JazzCash payment not found.', 404);
@@ -147,6 +205,9 @@ async function applyOutcome(txnRefNo, { code, message = '', rrn = '' }) {
     const receiptId = rrn || txnRefNo;
     if (payment.kind === 'fee') return settleFee(payment, receiptId, session);
     if (payment.kind === 'course') return settleCourse(payment, receiptId, session);
+    if (payment.kind === 'featured_job') return settleFeaturedJob(payment, receiptId, session);
+    if (payment.kind === 'subscription') return settleSubscription(payment, receiptId, session);
+    if (payment.kind === 'tutoring_fee') return settleTutoring(payment, receiptId, session);
     return settleWalletTopup(payment, receiptId, session);
   });
 }
@@ -156,7 +217,29 @@ async function releaseFailed(payment, session) {
     await Fee.updateOne({ _id: payment.fee, status: 'processing' }, { $set: { status: payment.previousFeeStatus || 'pending' } }, { session });
   } else if (payment.kind === 'wallet_topup') {
     await WalletTransaction.updateOne({ _id: payment.walletTransaction, status: 'pending' }, { $set: { status: 'rejected' } }, { session });
+  } else if (payment.kind === 'featured_job') {
+    await require('../models/FeaturedListing').updateOne({ _id: payment.featuredListing, status: 'pending' }, { $set: { status: 'failed' } }, { session });
+  } else if (payment.kind === 'subscription') {
+    await require('../models/SubscriptionPurchase').updateOne({ _id: payment.subscriptionPurchase, status: 'pending' }, { $set: { status: 'failed' } }, { session });
   }
+}
+
+async function settleFeaturedJob(payment, receiptId, session) {
+  const listing = await require('../models/FeaturedListing').findById(payment.featuredListing).session(session);
+  if (!listing) throw new AppError('Featured job checkout not found.', 404);
+  return require('./webhook.controller').settleFeaturedListing(listing, receiptId, session);
+}
+
+async function settleSubscription(payment, receiptId, session) {
+  const purchase = await require('../models/SubscriptionPurchase').findById(payment.subscriptionPurchase).session(session);
+  if (!purchase) throw new AppError('Subscription checkout not found.', 404);
+  return require('./webhook.controller').settleSubscriptionPurchase(purchase, receiptId, session);
+}
+
+async function settleTutoring(payment, receiptId, session) {
+  const link = await require('../models/TeacherStudentLink').findById(payment.tutoringLink).session(session);
+  if (!link) throw new AppError('Tuition checkout not found.', 404);
+  return require('./webhook.controller').settleTutoringFee(link, { receiptId, payerId: payment.payer, amount: payment.amount, currency: payment.currency }, session);
 }
 
 async function settleFee(payment, receiptId, session) {
@@ -166,7 +249,8 @@ async function settleFee(payment, receiptId, session) {
   // JazzCash marks the fee 'processing' while the customer is on its page; settle from the real status.
   if (fee.status === 'processing') fee.status = payment.previousFeeStatus || 'pending';
   const { settleOnlineFee } = require('./webhook.controller');
-  return settleOnlineFee(fee, { amount: payment.amount, method: 'jazzcash', paidVia: 'JazzCash', transactionId: receiptId, payerId: payment.payer }, 'JazzCash', session);
+  const name = GATEWAY_NAME[payment.provider] || 'JazzCash';
+  return settleOnlineFee(fee, { amount: payment.amount, method: payment.provider || 'jazzcash', paidVia: name, transactionId: receiptId, payerId: payment.payer }, name, session);
 }
 
 async function settleCourse(payment, receiptId, session) {
@@ -186,7 +270,7 @@ async function settleWalletTopup(payment, receiptId, session) {
     { user: pending.user, currency: pending.currency }, { $inc: { available: pending.amount } },
     { upsert: true, session }
   );
-  return [{ userId: pending.user, payload: { title: `Wallet topped up: ${pending.currency} ${pending.amount.toFixed(2)}`, body: `JazzCash receipt ${receiptId}`, sentBy: null } }];
+  return [{ userId: pending.user, payload: { title: `Wallet topped up: ${pending.currency} ${pending.amount.toFixed(2)}`, body: `${GATEWAY_NAME[payment.provider] || 'JazzCash'} receipt ${receiptId}`, sentBy: null } }];
 }
 
 function frontendUrl(payment) {
@@ -240,6 +324,7 @@ const handleReturn = asyncHandler(async (req, res) => {
 const syncPayment = asyncHandler(async (req, res) => {
   const payment = await JazzCashPayment.findOne({ txnRefNo: req.params.txnRefNo, payer: req.user._id });
   if (!payment) throw new AppError('JazzCash payment not found.', 404);
+  if (payment.provider === 'safepay') return require('./safepay.controller').syncPayment(req, res);
   if (payment.status !== 'paid') {
     assertConfigured();
     const inquiry = await jazzCash.inquire(payment.txnRefNo);
@@ -271,6 +356,9 @@ const handleIpn = asyncHandler(async (req, res) => {
 // GET /api/payments/jazzcash/config — whether to show "Pay with JazzCash" at all.
 // returnUrl is public (it's posted in every checkout form) — shown so an admin can check it
 // matches the Return URL registered on the JazzCash portal.
-const getConfig = asyncHandler(async (req, res) => ok(res, { enabled: jazzCash.isJazzCashConfigured(), environment: env.jazzCash.environment, returnUrl: returnUrlFor(req) }));
+const getConfig = asyncHandler(async (req, res) => ok(res, { enabled: require('../utils/onlinePayments').onlinePaymentsEnabled() && jazzCash.isJazzCashConfigured(), environment: env.jazzCash.environment, returnUrl: returnUrlFor(req) }));
 
-module.exports = { createFeeCheckout, createCourseCheckout, createWalletTopup, handleReturn, handleIpn, syncPayment, getConfig, applyOutcome };
+module.exports = {
+  createFeeCheckout, createCourseCheckout, createWalletTopup, createFeaturedJobCheckout, startCheckout,
+  handleReturn, handleIpn, syncPayment, getConfig, applyOutcome, frontendUrl, assertConfigured
+};

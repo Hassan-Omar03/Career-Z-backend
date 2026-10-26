@@ -46,6 +46,7 @@ router.use('/security', require('./security.routes'));
 router.use('/webauthn', require('./webauthn.routes'));
 router.use('/media', require('./media.routes'));
 router.use('/wallet', require('./wallet.routes'));
+router.use('/manual-payments', require('./manualPayment.routes'));
 router.use('/subscriptions', require('./subscription.routes'));
 router.use('/teacher-feedback', require('./teacherFeedback.routes'));
 router.use('/teacher-employments', require('./teacherEmployment.routes'));

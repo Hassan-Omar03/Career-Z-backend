@@ -65,14 +65,14 @@ async function institutionRecipients(institutionId) {
 }
 async function tellInstitution(institutionId, payload) {
   const { ids } = await institutionRecipients(institutionId);
-  for (const id of ids) await notify(id, { ...payload, category: 'recruitment' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+  for (const id of ids) await notify(id, { ...payload, link: require('../utils/dashLinks').institutionAgents, category: 'recruitment' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
 }
-const tellAgent = (agentId, payload) => notify(agentId, { ...payload, category: 'recruitment' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+const tellAgent = (agentId, payload) => notify(agentId, { ...payload, link: /Payment verified|Earning/i.test(payload.title || '') ? require('../utils/dashLinks').agentCommission : require('../utils/dashLinks').agentRequests, category: 'recruitment' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
 
 // ---------------------------------------------------------------- agents directory
 function agentCard(u, agencyName, stats) {
   const p = u.agentProfile || {};
-  return { _id: u._id, name: agencyName || u.fullName, person: u.fullName, city: u.city || '', country: u.country || '', specialties: p.specialties || [], serviceCities: p.serviceCities || [],
+  return { _id: u._id, name: agencyName || u.fullName, person: u.fullName, city: u.city || '', country: u.country || '', specialties: p.specialties || [], serviceCountries: p.serviceCountries || [], serviceCities: p.serviceCities || [],
     experienceYears: p.experienceYears || 0, bio: p.bio || '', acceptingRequests: p.acceptingRequests !== false, verified: true, ...stats };
 }
 async function listAgents(query = {}) {
@@ -86,19 +86,21 @@ async function listAgents(query = {}) {
   const subtypeOf = new Map(requests.map((r) => [String(r.user), r.subtype || '']));
   const hires = await JobApplication.aggregate([{ $match: { status: { $in: ['hired', 'completed'] }, 'joining.confirmed': true } }, { $lookup: { from: 'jobs', localField: 'job', foreignField: '_id', as: 'j' } }, { $unwind: '$j' }, { $match: { 'j.postedBy': { $in: approved } } }, { $group: { _id: '$j.postedBy', n: { $sum: 1 } } }]);
   const hiresOf = new Map(hires.map((h) => [String(h._id), h.n]));
-  const q = String(query.q || '').trim().toLowerCase(), city = String(query.city || '').trim().toLowerCase(), category = query.category;
+  const q = String(query.q || '').trim().toLowerCase(), city = String(query.city || '').trim().toLowerCase(), country = String(query.country || '').trim().toLowerCase(), category = query.category;
   return users.map((u) => agentCard(u, agencyOf.get(String(u._id)), { agency: subtypeOf.get(String(u._id)) === 'agency', confirmedHires: hiresOf.get(String(u._id)) || 0 }))
     .filter((a) => a.acceptingRequests)
     .filter((a) => !q || `${a.name} ${a.person} ${a.bio}`.toLowerCase().includes(q))
     .filter((a) => !city || a.city.toLowerCase() === city || a.serviceCities.some((c) => c.toLowerCase() === city))
+    .filter((a) => !country || a.country.toLowerCase() === country || a.serviceCountries.some((c) => c.toLowerCase() === country))
     .filter((a) => !category || a.specialties.includes(category))
     .sort((a, b) => b.confirmedHires - a.confirmedHires || a.name.localeCompare(b.name));
 }
 async function saveAgentProfile(user, body = {}) {
   const specialties = [...new Set(Array.isArray(body.specialties) ? body.specialties : [])];
   if (specialties.some((c) => !JOB_CATEGORIES.includes(c))) throw fail('Choose valid specialties.');
-  const cities = (Array.isArray(body.serviceCities) ? body.serviceCities : String(body.serviceCities || '').split(',')).map((c) => String(c).trim()).filter(Boolean).slice(0, 20);
-  const set = { 'agentProfile.specialties': specialties, 'agentProfile.serviceCities': cities, 'agentProfile.experienceYears': Math.max(0, Math.min(60, Number(body.experienceYears) || 0)),
+  const list = (v, n) => [...new Set((Array.isArray(v) ? v : String(v || '').split(',')).map((c) => String(c).trim().slice(0, 80)).filter(Boolean))].slice(0, n);
+  const cities = list(body.serviceCities, 50), countries = list(body.serviceCountries, 30);
+  const set = { 'agentProfile.specialties': specialties, 'agentProfile.serviceCities': cities, 'agentProfile.serviceCountries': countries, 'agentProfile.experienceYears': Math.max(0, Math.min(60, Number(body.experienceYears) || 0)),
     'agentProfile.bio': String(body.bio || '').slice(0, 1500), 'agentProfile.acceptingRequests': body.acceptingRequests !== false };
   return (await User.findByIdAndUpdate(user._id, { $set: set }, { new: true }).select('agentProfile')).agentProfile;
 }
@@ -210,6 +212,8 @@ function cleanTerms(body, request) {
 async function proposeTerms(user, requestId, body) {
   const { request, side } = await requestFor(requestId, user);
   if (!['accepted', 'agreed'].includes(request.status)) throw fail('Terms can be proposed once the agent has accepted the request.', 409);
+  // The institute writes the terms; the agent reads them, accepts, or messages to ask for changes.
+  if (side !== 'institution') throw fail('Only the institute proposes the terms. Message the institute to ask for changes.', 403);
   const terms = cleanTerms(body, request);
   const last = await RecruitmentAgreement.findOne({ request: request._id }).sort({ version: -1 }).select('version');
   await RecruitmentAgreement.updateMany({ request: request._id, status: 'proposed' }, { $set: { status: 'superseded' } });
@@ -232,7 +236,15 @@ async function acceptTerms(user, id) {
   const { agreement, request, side } = await agreementFor(id, user);
   if (agreement.status !== 'proposed') throw fail('Only the latest proposed version can be accepted.', 409);
   if (side === 'institution') agreement.institutionAcceptance = { by: user._id, at: new Date() };
-  else agreement.agentAcceptance = { by: user._id, at: new Date() };
+  else {
+    // The agent's own bank or wallet account (with the account holder's name) is where the
+    // institute pays the agent's share; it is part of what the agent accepts.
+    const me = await require('../models/User').findById(user._id).select('+payoutAccount');
+    if (!me?.payoutAccount?.accountNumber) throw fail('Add your bank or wallet account (with the account holder name) in Wallet → Account where buyers pay you, then accept. The institute pays your fee there.', 409);
+    const { method, bankName, accountTitle, accountNumber } = me.payoutAccount;
+    agreement.agentPaymentAccount = { method, bankName, accountTitle, accountNumber };
+    agreement.agentAcceptance = { by: user._id, at: new Date() };
+  }
   if (agreement.institutionAcceptance?.by && agreement.agentAcceptance?.by) {
     await RecruitmentAgreement.updateMany({ request: request._id, status: 'active', _id: { $ne: agreement._id } }, { $set: { status: 'superseded' } });
     agreement.status = 'active';
@@ -334,6 +346,7 @@ async function confirmHire(user, applicationId, body = {}) {
   application.statusHistory.push({ status: 'hired', by: user._id, byRole: 'hiring_organization', note: 'Institute confirmed joining' });
   await application.save();
   if (application.job.status !== 'filled') { application.job.status = 'filled'; await application.job.save(); }
+  if (!guest) await require('./institutionHire.service').onInstituteJoining(application);
 
   const jobsOfAgreement = await Job.distinct('_id', { agreement: agreement._id });
   const confirmed = (await JobApplication.countDocuments({ job: { $in: jobsOfAgreement }, 'joining.confirmed': true })) + (await GuestApplication.countDocuments({ job: { $in: jobsOfAgreement }, 'joining.confirmed': true }));
@@ -375,6 +388,48 @@ async function declineHire(user, applicationId, reason) {
   return application;
 }
 
+async function candidatesForInstitution(user, institutionId) {
+  await institutionRecruiter(institutionId, user);
+  const jobs = await Job.find({ institution: institutionId, agreement: { $ne: null } }).select('_id title company city country currency salaryMin salaryMax type agreement postedBy').populate('postedBy', 'fullName').lean();
+  const apps = await JobApplication.find({ job: { $in: jobs.map((j) => j._id) }, status: { $ne: 'withdrawn' } })
+    .populate('applicant', 'fullName email phone city country').sort({ updatedAt: -1 }).lean();
+  const Employment = require('../models/Employment'), Interview = require('../models/Interview');
+  const [emps, interviews] = await Promise.all([
+    Employment.find({ application: { $in: apps.map((a) => a._id) } }).lean(),
+    Interview.find({ application: { $in: apps.map((a) => a._id) }, status: 'scheduled', scheduledDate: { $gte: new Date(Date.now() - 4 * 3600000) } }).sort({ scheduledDate: 1 }).lean()
+  ]);
+  const byJob = new Map(jobs.map((j) => [String(j._id), j]));
+  const empOf = new Map(emps.map((e) => [String(e.application), e]));
+  const ivOf = new Map(); for (const i of interviews) if (!ivOf.has(String(i.application))) ivOf.set(String(i.application), i);
+  return apps.map((a) => ({ _id: a._id, applicant: a.applicant, status: a.status, offerRequest: a.offerRequest, institutionSelection: a.institutionSelection, resumeSnapshot: a.resumeSnapshot, coverLetter: a.coverLetter, createdAt: a.createdAt,
+    job: byJob.get(String(a.job)), agent: byJob.get(String(a.job))?.postedBy?.fullName || '', employment: empOf.get(String(a._id)) || null, nextInterview: ivOf.get(String(a._id)) || null, joining: a.joining }));
+}
+
+// The institute picks the candidates its agent may take forward, or turns one down.
+async function selectCandidate(user, applicationId, { decision = 'select', note = '' } = {}) {
+  if (!oid(applicationId)) throw fail('Application not found.', 404);
+  const application = await JobApplication.findById(applicationId).populate('job').populate('applicant', 'fullName');
+  if (!application?.job?.agreement) throw fail('Application not found.', 404);
+  await institutionRecruiter(application.job.institution, user);
+  if (['hired', 'completed', 'withdrawn'].includes(application.status)) throw fail('This application is already closed.', 409);
+  const text = String(note || '').trim().slice(0, 1000);
+  if (decision === 'reject') {
+    application.status = 'rejected';
+    application.statusHistory.push({ status: 'rejected', by: user._id, byRole: 'hiring_organization', note: text || 'Not selected by the institute' });
+  } else {
+    if (application.institutionSelection?.at) throw fail('Already selected.', 409);
+    // 'direct': chosen from the CV, no interview needed; the institute goes on to the offer.
+    const direct = decision === 'direct';
+    application.institutionSelection = { by: user._id, at: new Date(), note: text, direct };
+    if (['pending', 'viewed'].includes(application.status)) application.status = 'shortlisted';
+    application.statusHistory.push({ status: application.status, by: user._id, byRole: 'hiring_organization', note: `${direct ? 'Selected by the institute (no interview needed)' : 'Selected by the institute for interview'}${text ? `: ${text}` : ''}` });
+  }
+  await application.save();
+  await notify(application.job.postedBy, { title: decision === 'reject' ? `Not selected by the institute: ${application.applicant.fullName}` : `Selected by the institute: ${application.applicant.fullName}`, body: `${application.job.title}${text ? ` · ${text}` : ''}${decision === 'reject' ? '' : decision === 'direct' ? '. No interview needed: the institute will send the offer to you.' : '. Please interview this candidate.'}`, sentBy: user._id, link: require('../utils/dashLinks').manager(application.job), category: 'recruitment' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+  if (decision === 'reject') await notify(application.applicant._id, { title: `${application.job.title} @ ${application.job.company}: Not selected`, body: 'Thank you for applying.', link: require('../utils/dashLinks').candidate('applications'), category: 'application' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+  return application;
+}
+
 async function invoicesFor(user, { institution } = {}) {
   if (institution) { await institutionRecruiter(institution, user); return RecruitmentInvoice.find({ institution }).sort({ issuedAt: -1 }).lean(); }
   return RecruitmentInvoice.find({ agent: user._id }).populate('institution', 'name').sort({ issuedAt: -1 }).lean();
@@ -398,6 +453,8 @@ async function paymentInstructions() {
   return { mode: '', text: '' };
 }
 async function submitProof(user, id, body = {}) {
+  throw fail('Pay this invoice with Pay by bank transfer: the CareerZ service fee first, then the agent\'s share to the agent\'s account.', 410);
+  // eslint-disable-next-line no-unreachable
   const { invoice, isInstitution } = await invoiceForParty(user, id);
   if (!isInstitution) throw fail('Only the institute can submit payment proof.', 403);
   if (!['issued', 'more_info_requested'].includes(invoice.status)) throw fail(`This invoice is ${invoice.status.replace(/_/g, ' ')}.`, 409);
@@ -405,6 +462,7 @@ async function submitProof(user, id, body = {}) {
   if (!reference) throw fail('Enter the bank transfer reference number.');
   const amount = Number(body.amount);
   if (!(amount > 0)) throw fail('Enter the amount you transferred.');
+  if (!body.file?.data) throw fail('Attach the bank transfer receipt (PDF or image) so CareerZ can check it.');
   let file = null;
   if (body.file?.data) {
     const PrivateFile = require('../models/PrivateFile');
@@ -423,21 +481,48 @@ async function submitProof(user, id, body = {}) {
   return invoice;
 }
 // Admin: approve (money received), reject (back to issued with a reason) or ask for more.
+// POST /api/recruitment/invoices/:id/pay-wallet — the institute pays from its CareerZ wallet.
+async function payInvoiceFromWallet(user, id) {
+  const { invoice, isInstitution } = await invoiceForParty(user, id);
+  if (!isInstitution) throw fail('Only the institute can pay this invoice.', 403);
+  if (!['issued', 'more_info_requested'].includes(invoice.status)) throw fail(`This invoice is ${invoice.status.replace(/_/g, ' ')}.`, 409);
+  await require('./invoiceWallet.service').payFromWallet(invoice, user);
+  await tellAgent(invoice.agent, { title: `Payment received: ${invoice.number}`, body: `${invoice.currency} ${invoice.agentEarning} was added to your CareerZ wallet.`, link: '/dashboard', sentBy: user._id });
+  return invoice;
+}
 async function verifyPayment(admin, id, { decision, note }) {
   const { invoice } = await invoiceForParty(admin, id, { asAdmin: true });
   if (invoice.status !== 'pending_verification') throw fail('Only an invoice waiting for verification can be decided.', 409);
   if (!['approve', 'reject', 'more_info'].includes(decision)) throw fail('decision must be approve, reject or more_info.');
   const text = String(note || '').trim().slice(0, 1000);
   if (decision !== 'approve' && !text) throw fail('Write the reason so the institute knows what to do.');
-  invoice.status = decision === 'approve' ? 'paid' : decision === 'reject' ? 'issued' : 'more_info_requested';
-  invoice.history.push({ action: decision === 'approve' ? 'payment_verified' : decision === 'reject' ? 'payment_rejected' : 'more_info_requested', by: admin._id, note: text });
-  await invoice.save();
+  const walletPaid = Boolean(invoice.wallet?.reference && !invoice.wallet.releasedAt && !invoice.wallet.returnedAt);
+  // A bank transfer counts only if the latest proof covers the whole invoice; otherwise ask for more.
+  const latestProof = invoice.proofs[invoice.proofs.length - 1];
+  if (decision === 'approve' && !walletPaid && !(Number(latestProof?.amount) + 0.01 >= invoice.grossFee)) {
+    throw fail(`The proof shows ${invoice.currency} ${Number(latestProof?.amount || 0).toLocaleString()} but the invoice is ${invoice.currency} ${invoice.grossFee.toLocaleString()}. Ask the institute for the rest (more info) instead of approving.`);
+  }
+  // Claim the decision in one conditional write, so a double-click (or two admins) decides once.
+  const next = decision === 'approve' ? 'paid' : decision === 'reject' ? 'issued' : 'more_info_requested';
+  const claimed = await RecruitmentInvoice.findOneAndUpdate({ _id: invoice._id, status: 'pending_verification' }, { $set: { status: next } }, { new: true });
+  if (!claimed) throw fail('This invoice was already decided.', 409);
+  try {
+    // Wallet payment: approve releases the money; reject or more-info returns it to the institute.
+    if (walletPaid && decision === 'approve') await require('./invoiceWallet.service').release(claimed, admin);
+    if (walletPaid && decision !== 'approve') await require('./invoiceWallet.service').returnHeld(claimed, admin, text);
+  } catch (error) {
+    await RecruitmentInvoice.updateOne({ _id: invoice._id, status: next }, { $set: { status: 'pending_verification' } });
+    throw error;
+  }
+  claimed.history.push({ action: decision === 'approve' ? 'payment_verified' : decision === 'reject' ? 'payment_rejected' : 'more_info_requested', by: admin._id, note: text });
+  await claimed.save();
   if (decision === 'approve') {
-    await Commission.updateOne({ _id: invoice.commission, status: 'pending' }, { $set: { status: 'available' } });
-    await tellAgent(invoice.agent, { title: `Payment verified: ${invoice.number}`, body: `Your earning of ${invoice.currency} ${invoice.agentEarning} is available to withdraw.`, link: '/dashboard', sentBy: admin._id });
+    // Wallet payment: the agent's share is already in their wallet, so the commission is settled.
+    await Commission.updateOne({ _id: invoice.commission, status: 'pending' }, { $set: { status: walletPaid ? 'paid' : 'available' } });
+    await tellAgent(invoice.agent, { title: `Payment verified: ${invoice.number}`, body: walletPaid ? `${invoice.currency} ${invoice.agentEarning} was added to your CareerZ wallet.` : `Your earning of ${invoice.currency} ${invoice.agentEarning} is available to withdraw.`, link: '/dashboard', sentBy: admin._id });
   }
   await tellInstitution(invoice.institution, { title: decision === 'approve' ? `Payment received: ${invoice.number}` : `Payment not verified: ${invoice.number}`, body: text || 'Thank you.', link: '/dashboard', sentBy: admin._id });
-  return invoice;
+  return claimed;
 }
 async function proofFile(user, invoiceId, proofId, asAdmin = false) {
   const { invoice } = await invoiceForParty(user, invoiceId, { asAdmin });
@@ -505,7 +590,8 @@ async function resolveReview(admin, invoiceId, { outcome, note }) {
   invoice.history.push({ action: `review_${outcome}`, by: admin._id, note: text });
   if (outcome === 'refunded') {
     if (invoice.status !== 'paid') invoice.status = 'cancelled';
-    await Commission.updateOne({ _id: invoice.commission, status: { $in: ['pending', 'approved', 'available'] } }, { $set: { status: 'cancelled' } });
+    // Paid straight to the agent's bank (not a CareerZ wallet): the refund is the agent's to return, so the earning is cancelled too.
+    await Commission.updateOne({ _id: invoice.commission, status: { $in: invoice.wallet?.reference ? ['pending', 'approved', 'available'] : ['pending', 'approved', 'available', 'paid'] } }, { $set: { status: 'cancelled' } });
   }
   await invoice.save();
   const payload = { title: `Recruitment review decided: ${invoice.number}`, body: `${outcome}: ${text}`, link: '/dashboard', sentBy: admin._id };
@@ -516,6 +602,6 @@ async function resolveReview(admin, invoiceId, { outcome, note }) {
 module.exports = {
   listAgents, saveAgentProfile, createRequest, listRequests, respond, addMessage, cancelRequest,
   proposeTerms, acceptTerms, declineTerms, endAgreement, agreementsOf, publishingAuthority,
-  hiresForInstitution, confirmHire, declineHire, invoicesFor, invoiceForParty, paymentInstructions, submitProof, verifyPayment, proofFile,
+  hiresForInstitution, candidatesForInstitution, selectCandidate, payInvoiceFromWallet, confirmHire, declineHire, invoicesFor, invoiceForParty, paymentInstructions, submitProof, verifyPayment, proofFile,
   reportLeft, replacementDone, escalate, resolveReview, feeSettings, tellInstitution, PLATFORM_FEE_KEY, PAYMENT_KEY
 };

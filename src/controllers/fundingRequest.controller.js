@@ -126,6 +126,7 @@ const myFundingRequests = asyncHandler(async (req, res) => {
 // POST /api/funding-requests/:id/donate — "Donate Now" (type=donation) or "Sponsor Student"
 // (type=sponsorship). Both create a real Donation record and bump collectedAmount for real.
 const donate = asyncHandler(async (req, res) => {
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer: pay the CareerZ fee and the seller, then upload both receipts.', 410);
   if (!(await isRoleVerified(req.user._id, 'donor'))) {
     throw new AppError('Your Donor account is pending Super Admin verification. You can browse requests but cannot donate until it is approved.', 403);
   }
@@ -137,6 +138,9 @@ const donate = asyncHandler(async (req, res) => {
 
   const request = await FundingRequest.findById(req.params.id).populate('requestedBy', 'fullName');
   if (!request) throw new AppError('Funding request not found.', 404);
+  // The receiver confirms donations, so the requester donating to their own request would let
+  // them mark it funded with money that never came from anyone else.
+  if (request.requestedBy._id.equals(req.user._id)) throw new AppError('You cannot donate to your own funding request.', 403);
   if (request.status !== 'open') throw new AppError('This request is no longer open for donations.', 400);
   if (request.applicationStatus === 'rejected') throw new AppError('This request was rejected and cannot receive donations.', 400);
   if (request.verificationStatus !== 'verified') {
@@ -195,21 +199,25 @@ const verifyReceivedDonation = asyncHandler(async (req, res) => {
   const { decision, rejectionReason } = req.body;
   if (decision === 'reject') {
     if (!String(rejectionReason || '').trim()) throw new AppError('A rejection reason is required.', 422);
-    donation.status = 'rejected'; donation.rejectedBy = req.user._id; donation.rejectedAt = new Date(); donation.rejectionReason = String(rejectionReason).trim();
-    await donation.save();
+    // Claimed atomically: of two clicks at the same moment, only one decides.
+    const rejected = await Donation.findOneAndUpdate({ _id: donation._id, status: 'pending' }, { $set: { status: 'rejected', rejectedBy: req.user._id, rejectedAt: new Date(), rejectionReason: String(rejectionReason).trim() } }, { new: true });
+    if (!rejected) throw new AppError('This donation is not awaiting verification.', 409);
+    Object.assign(donation, rejected.toObject());
     await notify(donation.donor, { title: `Donation payment rejected: ${donation.currency} ${donation.amount}`, body: donation.rejectionReason, sentBy: req.user._id }).catch(() => {});
     return ok(res, donation, 'Donation payment rejected.');
   }
   if (decision !== 'verify') throw new AppError('decision must be verify or reject.', 422);
-  donation.status = 'successful'; donation.verifiedBy = req.user._id; donation.verifiedAt = new Date(); donation.escrowStatus = 'released'; donation.escrowReleasedAt = new Date(); donation.escrowReleasedBy = req.user._id;
-  const request = await FundingRequest.findById(donation.fundingRequest);
+  const now = new Date();
+  const verified = await Donation.findOneAndUpdate({ _id: donation._id, status: 'pending' }, { $set: { status: 'successful', verifiedBy: req.user._id, verifiedAt: now, escrowStatus: 'released', escrowReleasedAt: now, escrowReleasedBy: req.user._id } }, { new: true });
+  if (!verified) throw new AppError('This donation is not awaiting verification.', 409);
+  Object.assign(donation, verified.toObject());
+  // Counted with $inc, so the total is right even when two donations are verified together.
+  const request = await FundingRequest.findByIdAndUpdate(donation.fundingRequest, { $inc: { collectedAmount: donation.amount } }, { new: true });
   if (request) {
-    request.collectedAmount += donation.amount;
     if (request.collectedAmount >= request.requiredAmount) { request.status = 'fulfilled'; request.applicationStatus = 'funded'; }
     else request.applicationStatus = 'partially_funded';
     await request.save();
   }
-  await donation.save();
   await notify(donation.donor, { title: `Donation received and verified: ${donation.currency} ${donation.amount}`, sentBy: req.user._id }).catch(() => {});
   return ok(res, donation, 'Donation received and verified.');
 });

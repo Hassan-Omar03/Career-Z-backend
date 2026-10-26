@@ -8,7 +8,7 @@ const orderSchema = new mongoose.Schema(
     quantity: { type: Number, required: true, min: 1, default: 1 },
     unitPrice: { type: Number, required: true },
     totalPrice: { type: Number, required: true },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     shippingAddress: { type: String, default: '' },
     note: { type: String, default: '' },
     // Fulfillment lifecycle. DB keeps 'pending' as the first value for backward compatibility —

@@ -20,6 +20,13 @@ const jobApplicationSchema = new mongoose.Schema(
     }],
     // Joining is confirmed by the hiring organization, or by the candidate when an agent posted
     // the job; an agent alone cannot confirm it.
+    // Agent jobs: the institute picks which applicants go forward; only then may the agent
+    // interview them and move their stage.
+    institutionSelection: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, note: { type: String, default: '' }, direct: { type: Boolean, default: false } },
+    // Agent jobs: the agent asks the institute to make this candidate an offer.
+    offerRequest: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, note: { type: String, default: '' } },
+    // Messages between the hiring side and the candidate about this application.
+    messages: [{ by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, side: { type: String, enum: ['candidate', 'employer'] }, name: String, text: String, at: { type: Date, default: Date.now } }],
     joining: {
       confirmed: { type: Boolean, default: false },
       confirmedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

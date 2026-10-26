@@ -68,7 +68,7 @@ const create = asyncHandler(async (req, res) => {
     doc.review = { status: 'pending' };
   }
   const scholarship = await Scholarship.create(doc);
-  if (doc.donor) await notify(doc.donor, { title: `Confirm a scholarship listing: ${scholarship.title}`, body: `${req.user.fullName} (Agent) wants to list this scholarship with you as the provider. You decide applications and fund awards; confirm only if you agreed to it.`, sentBy: req.user._id, link: '/dashboard', category: 'scholarship' }, { email: true }).catch(() => {});
+  if (doc.donor) await notify(doc.donor, { title: `Confirm a scholarship listing: ${scholarship.title}`, body: `${req.user.fullName} (Agent) wants to list this scholarship with you as the provider. You decide applications and fund awards; confirm only if you agreed to it.`, sentBy: req.user._id, link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }, { email: true }).catch(() => {});
   else await notifyAdmins({ title: `Scholarship listing to review: ${scholarship.title}`, body: `Agent ${req.user.fullName} for ${provider.name}.` }).catch(() => {});
   return created(res, scholarship, doc.donor ? 'Sent to the donor to confirm, then to admin review.' : 'Sent to admin review before it goes live.');
 });
@@ -99,7 +99,7 @@ const update = asyncHandler(async (req, res) => {
   s.status = 'pending_review';
   s.review = { status: s.donor ? 'awaiting_donor' : 'pending' };
   await s.save();
-  if (s.donor) await notify(s.donor, { title: `Scholarship listing changed, confirm again: ${s.title}`, sentBy: req.user._id, link: '/dashboard', category: 'scholarship' }).catch(() => {});
+  if (s.donor) await notify(s.donor, { title: `Scholarship listing changed, confirm again: ${s.title}`, sentBy: req.user._id, link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }).catch(() => {});
   else await notifyAdmins({ title: `Scholarship listing to review: ${s.title}` }).catch(() => {});
   return ok(res, s, 'Changes sent for review.');
 });
@@ -119,7 +119,7 @@ const donorConfirm = asyncHandler(async (req, res) => {
     s.review = { status: 'rejected', note: `Declined by the donor. ${String(req.body?.note || '').slice(0, 500)}`.trim(), reviewedAt: new Date() };
   }
   await s.save();
-  await notify(s.publishedBy, { title: decision === 'confirm' ? `Donor confirmed: ${s.title}` : `Donor declined: ${s.title}`, body: decision === 'confirm' ? 'It is now with an admin for approval.' : String(req.body?.note || ''), sentBy: req.user._id, link: '/dashboard', category: 'scholarship' }).catch(() => {});
+  await notify(s.publishedBy, { title: decision === 'confirm' ? `Donor confirmed: ${s.title}` : `Donor declined: ${s.title}`, body: decision === 'confirm' ? 'It is now with an admin for approval.' : String(req.body?.note || ''), sentBy: req.user._id, link: require('../utils/dashLinks').agentScholarships, category: 'scholarship' }).catch(() => {});
   return ok(res, s, decision === 'confirm' ? 'Confirmed. An admin will review it.' : 'Declined.');
 });
 
@@ -142,7 +142,7 @@ const decide = asyncHandler(async (req, res) => {
   await s.save();
   if (decision === 'approve') await onScholarshipPublished(s);
   await notify(s.publishedBy, { title: decision === 'approve' ? `Scholarship published: ${s.title}` : `Scholarship not approved: ${s.title}`, body: note, sentBy: req.user._id, link: decision === 'approve' ? `/scholarships/${s._id}` : '/dashboard', category: 'scholarship' }, { email: true }).catch(() => {});
-  if (s.donor && decision === 'approve') await notify(s.donor, { title: `Scholarship published: ${s.title}`, body: 'Applications will reach you in Scholarships.', sentBy: req.user._id, link: '/dashboard', category: 'scholarship' }).catch(() => {});
+  if (s.donor && decision === 'approve') await notify(s.donor, { title: `Scholarship published: ${s.title}`, body: 'Applications will reach you in Scholarships.', sentBy: req.user._id, link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }).catch(() => {});
   return ok(res, s, decision === 'approve' ? 'Published.' : 'Rejected.');
 });
 

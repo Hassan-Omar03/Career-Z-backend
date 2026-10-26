@@ -48,6 +48,15 @@ async function canManageJob(job, user) {
   return Boolean(institution && hasStaffPermission(institution, user._id, PERMISSION));
 }
 
+// The institute behind an agent's agreement job: it makes the offer and confirms joining, and may
+// see the candidates the agent puts forward (CV, interviews), but does not run the job itself.
+async function isAgreementInstitute(job, user) {
+  if (!job?.agreement || !job.institution) return false;
+  const institution = job.institution.owner ? job.institution : await Institution.findById(job.institution?._id || job.institution).select('owner staff');
+  return Boolean(institution && hasStaffPermission(institution, user._id, PERMISSION));
+}
+async function canSeeCandidates(job, user) { return (await canManageJob(job, user)) || isAgreementInstitute(job, user); }
+
 async function assertCanManageJob(job, user) {
   if (!(await canManageJob(job, user))) throw new AppError('You cannot manage this job.', 403);
 }
@@ -58,4 +67,4 @@ async function manageableInstitutionIds(user) {
   return list.filter((i) => hasStaffPermission(i, user._id, PERMISSION)).map((i) => i._id);
 }
 
-module.exports = { publisherFor, canManageJob, assertCanManageJob, manageableInstitutionIds, PERMISSION };
+module.exports = { publisherFor, canManageJob, assertCanManageJob, manageableInstitutionIds, isAgreementInstitute, canSeeCandidates, PERMISSION };

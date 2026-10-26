@@ -12,6 +12,8 @@ router.use(protect, requireRole('admin', 'super_admin', 'platform_staff'));
 router.get('/finance', requireDepartment('finance'), ctrl.getFinanceSummary);
 router.get('/institution-fee-commission-rate', requireDepartment('finance'), ctrl.getInstitutionFeeCommissionRate);
 router.patch('/institution-fee-commission-rate', requireRole('super_admin'), ctrl.setInstitutionFeeCommissionRate);
+router.get('/commission-rates', requireDepartment('finance'), ctrl.getCommissionRates);
+router.patch('/commission-rates', requireRole('super_admin'), ctrl.setCommissionRates);
 
 // AI provider availability — Super Admin controls which BYOK providers users/institutions may connect.
 router.get('/ai-providers', ctrl.getAiProviderConfig);
@@ -44,6 +46,13 @@ router.post('/jobs/:id/decision', requireDepartment('verification'), jobReview.d
 const agentScholarships = require('../controllers/agentScholarship.controller');
 router.get('/scholarships/review', requireDepartment('verification'), agentScholarships.reviewQueue);
 router.post('/scholarships/:id/decision', requireDepartment('verification'), agentScholarships.decide);
+router.get('/fee-payments', requireDepartment('finance'), require('../controllers/institutionFee.controller').adminFeeQueue);
+// Agent management (master: list, activity, verify, suspend, posting ban, licence cancellation).
+const agentAdmin = require('../controllers/agentWork.controller');
+router.get('/agents', requireRole('admin', 'super_admin'), agentAdmin.listAgents);
+router.get('/agents/:id/activity', requireRole('admin', 'super_admin'), agentAdmin.activity);
+router.patch('/agents/:id/posting-ban', requireRole('admin', 'super_admin'), agentAdmin.postingBan);
+router.post('/agents/:id/cancel-licence', requireRole('super_admin'), agentAdmin.cancelLicence);
 const recruitmentAdmin = require('../controllers/recruitment.controller').admin;
 router.get('/recruitment/invoices', requireDepartment('finance'), recruitmentAdmin.listInvoices);
 router.get('/recruitment/invoices/:id/proofs/:proofId', requireDepartment('finance'), recruitmentAdmin.proof);

@@ -6,7 +6,7 @@ const donorDepositSchema = new mongoose.Schema(
   {
     donor: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     amount: { type: Number, required: true },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'mobile_wallet', 'cash', 'other'], required: true },
     paymentReference: { type: String, default: '' },
     paymentProofUrl: { type: String, default: '' },

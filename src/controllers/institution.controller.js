@@ -575,6 +575,9 @@ const requestFeeRefund = asyncHandler(async (req, res) => {
     if (!isLinkedParent && !isStaff) throw new AppError('You are not authorized to request a refund for this fee.', 403);
   }
 
+  // One refund at a time: an open request (including an automatic duplicate-payment refund) is
+  // decided by the institute before anyone can ask again.
+  if (['requested', 'approved'].includes(fee.refund?.status)) throw new AppError('A refund for this fee is already open. Wait for the institute to decide it.', 409);
   const { reason } = req.body;
   fee.refund = { status: 'requested', reason: reason || '', amount: fee.amount, requestedAt: new Date(), processedAt: null, processedBy: null };
   await fee.save();
@@ -605,7 +608,8 @@ const decideFeeRefund = asyncHandler(async (req, res) => {
     throw new AppError('This refund is not in a state that allows that decision.', 400);
   }
 
-  if(decision==='refunded'&&await require('../models/FamilyWalletSettlement').exists({fee:fee._id})){const refunded=await require('./familyWallet.controller').refund(fee._id,req.user._id);await require('../services/notification.service').notifyParentsOfStudent(fee.student,{title:'Wallet fee refund completed',body:fee.currency+' '+fee.refund.amount,sentBy:req.user._id}).catch(()=>{});return ok(res,refunded,'Wallet refund completed.');}
+  // A duplicate payment is refunded on its own; the real payment's wallet settlement stays.
+  if(decision==='refunded'&&!fee.refund.duplicate&&await require('../models/FamilyWalletSettlement').exists({fee:fee._id})){const refunded=await require('./familyWallet.controller').refund(fee._id,req.user._id);await require('../services/notification.service').notifyParentsOfStudent(fee.student,{title:'Wallet fee refund completed',body:fee.currency+' '+fee.refund.amount,sentBy:req.user._id}).catch(()=>{});return ok(res,refunded,'Wallet refund completed.');}
   fee.refund.status = decision;
   fee.refund.processedAt = new Date();
   fee.refund.processedBy = req.user._id;
@@ -635,6 +639,9 @@ const listFees = asyncHandler(async (req, res) => {
 });
 
   const markFeePaid = asyncHandler(async (req, res) => {
+  // Cash at the counter skips CareerZ's fee: the student pays through the app instead.
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer: pay the CareerZ fee and the seller, then upload both receipts.', 410);
+  // eslint-disable-next-line no-unreachable
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
 
@@ -652,6 +659,23 @@ const listFees = asyncHandler(async (req, res) => {
       throw new AppError('Specify a verified manual payment method; online payments require gateway confirmation.', 422);
     }
     if (!String(reference || '').trim()) throw new AppError('Cash receipt/reference number is required.', 422);
+  // Counter payments count only after the CareerZ admin checks the receipt proof.
+  const proofUrl = String(req.body.proofUrl || '').trim();
+  if (!proofUrl) throw new AppError('Attach a photo or scan of the receipt; CareerZ verifies it before the fee counts as paid.', 422);
+  if ((fee.paymentHistory || []).some((p) => p.verificationStatus === 'pending')) throw new AppError('A payment for this fee is already awaiting CareerZ verification.', 409);
+  // One conditional write: a second record sent at the same moment finds the pending one and stops.
+  const recorded = await Fee.findOneAndUpdate(
+    { _id: fee._id, status: fee.status, 'paymentHistory.verificationStatus': { $ne: 'pending' } },
+    {
+      $push: { paymentHistory: { amount: fee.outstandingAmount ?? fee.amount, method: paidVia, transactionId: String(reference).trim(), reference: String(reference).trim(), proofUrl, verificationStatus: 'pending', previousFeeStatus: fee.status, recordedBy: req.user._id, notes: 'Recorded at the institute counter' } },
+      $set: { status: 'processing', paymentMethod: /cash/i.test(paidVia) ? 'cash' : /bank/i.test(paidVia) ? 'bank_transfer' : /wallet|easypaisa|jazz/i.test(paidVia) ? 'mobile_wallet' : 'other' }
+    },
+    { new: true, runValidators: true }
+  );
+  if (!recorded) throw new AppError('A payment for this fee is already awaiting CareerZ verification.', 409);
+  await require('../services/notification.service').notifyAdmins({ title: `Counter payment to verify: ${fee.title}`, body: `${fee.currency} ${fee.outstandingAmount ?? fee.amount} by ${paidVia}, receipt ${String(reference).trim()} (${institution.name}).` }).catch(() => {});
+  return ok(res, recorded, 'Recorded. CareerZ will verify the receipt; then the fee is marked paid.');
+  // eslint-disable-next-line no-unreachable
   const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
   fee.status = 'paid';
   fee.paidAt = new Date();
@@ -661,7 +685,7 @@ const listFees = asyncHandler(async (req, res) => {
   fee.gatewayCharges = receipt.gatewayCharges;
   fee.taxAmount = receipt.taxAmount;
   fee.netAmount = receipt.netAmount;
-  fee.escrowStatus = 'held';
+  fee.escrowStatus = 'released';
   fee.receiptNumber = `RCPT-${Date.now().toString(36).toUpperCase()}-${crypto.randomBytes(3).toString('hex').toUpperCase()}`;
   if (!fee.verifyCode) fee.verifyCode = crypto.randomBytes(10).toString('hex');
   // Offline/cash collection still creates a real, immutable payment-history entry and audit trail
@@ -691,20 +715,27 @@ const releaseFeeEscrow = asyncHandler(async (req, res) => {
   if (!fee) throw new AppError('Fee record not found.', 404);
 
   const institution = await Institution.findById(fee.institution);
-  assertOwnerOrStaff(institution, req.user._id);
-  if (!family.same(institution.owner,req.user._id) && !institution.staff.some(staff=>family.same(staff.user,req.user._id)&&(staff.permissions||[]).includes('fee:manage'))) throw new AppError('Fee management permission is required.',403);
+  // Held fee money is released by the CareerZ admin after checking the payment, not by the institute.
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
   assertInstitutionVerified(institution);
 
   if (fee.status !== 'paid') throw new AppError('Only a paid fee can be released.', 400);
   if (fee.escrowStatus === 'released') throw new AppError('This fee has already been released.', 400);
   if (fee.escrowStatus !== 'held') throw new AppError('This fee has no held funds to release.', 400);
 
-  fee.escrowStatus = 'released';
-  fee.escrowReleasedAt = new Date();
-  fee.escrowReleasedBy = req.user._id;
-  await fee.save();
+  let credited = 0;
+  await require('mongoose').connection.transaction(async (session) => {
+    const held = await Fee.findById(fee._id).session(session);
+    if (held.escrowStatus !== 'held') throw new AppError('This fee has already been released.', 400);
+    credited = await require('../services/feeWalletSettlement.service').creditHeldGatewayPayments(held, session);
+    held.escrowStatus = 'released';
+    held.escrowReleasedAt = new Date();
+    held.escrowReleasedBy = req.user._id;
+    await held.save({ session });
+  });
+  if (credited > 0) await notify(institution.owner, { title: `Fee paid to your wallet: ${fee.title}`, body: `${fee.currency} ${credited} was added to your CareerZ wallet.`, sentBy: req.user._id }).catch(() => {});
 
-  return ok(res, fee, 'Escrow released.');
+  return ok(res, await Fee.findById(fee._id), credited > 0 ? `Released. ${fee.currency} ${credited} added to the institute's wallet.` : 'Released. This fee was paid outside CareerZ, so nothing was added to the wallet.');
 });
 
 // ---- Timetable ----
@@ -1294,7 +1325,7 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
     try {
       const transfer = await stripe.transfers.create({
         amount: Math.round(payslip.netAmount * 100),
-        currency: (payslip.currency || 'USD').toLowerCase(),
+        currency: (payslip.currency || 'PKR').toLowerCase(),
         destination: teacherProfile.payout.stripeAccountId,
         description: `Salary ${payslip.month}/${payslip.year} — ${institution.name}`
       });
@@ -1353,7 +1384,8 @@ const markPayslipPaid = asyncHandler(async (req, res) => {
 const getInstitutionReports = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertOwnerOrStaff(institution, req.user._id);
+  // Whole-institute figures (fees, staff, students): the owner, or staff allowed to see operations.
+  if (!require('../utils/staffRoles').hasStaffPermission(institution, req.user._id, 'ops:manage')) throw new AppError('Only the institute owner or staff with operations access can see these reports.', 403);
 
   const HelpDeskTicket = require('../models/HelpDeskTicket');
   const InstitutionEvent = require('../models/InstitutionEvent');

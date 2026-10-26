@@ -26,6 +26,23 @@ const hash = (t) => crypto.createHash('sha256').update(String(t)).digest('hex');
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 function trackUrl(token) { return `${siteUrl()}/application-status?token=${token}`; }
+// Sign-up link with the guest's email filled in; teaching jobs open the Teacher account type.
+function signupUrl(a, job) { return `${siteUrl()}/signup?type=${job?.category === 'teaching' ? 'teacher' : 'student'}&email=${encodeURIComponent(a.email)}&name=${encodeURIComponent(a.name)}`; }
+const ACCOUNT_STAGES = ['selected', 'accepted', 'hired', 'completed'];
+// The guest's path to a full account, shown in every guest email (guests only).
+function stepsHtml(a, job, { confirmed = false } = {}) {
+  const kind = job?.category === 'teaching' ? 'Teacher' : 'Student';
+  const li = (s) => `<li style="margin:0 0 6px">${s}</li>`;
+  return `<div style="border:1px solid #e5e7eb;border-radius:8px;padding:12px 16px;margin:14px 0"><p style="margin:0 0 8px"><b>How to follow your application on CareerZ</b></p><ol style="margin:0;padding-left:20px">`
+    + (confirmed ? '' : li(`<b>Confirm</b> this application with the button above.`))
+    + li(`<b>Create your free CareerZ ${kind} account</b> with this same email (${escapeHtml(a.email)}): <a href="${signupUrl(a, job)}">create my account</a>.`)
+    + li('<b>Verify your email</b> with the code we send you.')
+    + li('<b>Upload your verification documents</b> (CNIC and the documents the form asks for) and submit them.')
+    + li('<b>Wait for the CareerZ admin team to verify your account.</b> You get an email when it is approved.')
+    + li('<b>Complete your profile</b>, then open your dashboard.')
+    + li('Go to <b>Jobs &amp; Applications → My Applications</b> to see your application status, offers and messages. This application moves into your account by itself.')
+    + '</ol></div>';
+}
 async function sendEmail(to, subject, html) {
   const { sendEmail: send } = require('./email.service');
   return send({ to, subject, html }).catch((e) => console.error('[guest] email failed:', e.message));
@@ -39,6 +56,8 @@ async function apply(job, body = {}, ip = '') {
   const name = String(body.name || '').trim().slice(0, 120);
   const email = String(body.email || '').trim().toLowerCase();
   if (name.length < 2) throw fail('Enter your full name.');
+  const phone = String(body.phone || '').trim();
+  if (!/^\+?[0-9][0-9\s-]{6,18}$/.test(phone)) throw fail('Enter your phone number, e.g. 03001234567.');
   if (!EMAIL.test(email) || email.length > 160) throw fail('Enter a valid email address.');
   if (body.consent !== true) throw fail('Agree to share your details with the hiring organization.');
   const m = /^data:([\w./+-]+);base64,([A-Za-z0-9+/=]+)$/.exec(String(body.cv?.data || ''));
@@ -52,23 +71,24 @@ async function apply(job, body = {}, ip = '') {
   const cv = await PrivateFile.create({ purpose: 'guest_cv', filename: String(body.cv.name || `cv.${CV_TYPES[m[1]]}`).slice(0, 160), mimeType: m[1], size: data.length, data });
   const token = crypto.randomBytes(24).toString('hex');
   const application = await GuestApplication.create({
-    job: job._id, name, email, phone: String(body.phone || '').slice(0, 40), city: String(body.city || '').slice(0, 80), coverLetter: String(body.coverLetter || '').slice(0, 4000),
+    job: job._id, name, email, phone: phone.slice(0, 40), city: String(body.city || '').slice(0, 80), coverLetter: String(body.coverLetter || '').slice(0, 4000),
     cv: cv._id, trackingTokenHash: hash(token), consentAt: new Date(), ip: String(ip).slice(0, 64), statusHistory: [{ status: 'pending', byRole: 'applicant' }]
   });
   await sendEmail(email, `Confirm your application: ${job.title}`,
-    `<p>Hi ${escapeHtml(name)},</p><p>To send your application for <b>${escapeHtml(job.title)}</b> at ${escapeHtml(job.company)}, confirm your email. The same link shows your application status later, so keep this email.</p>${button(trackUrl(token), 'Confirm and track my application')}<p>If you did not apply, ignore this email; the application is deleted in ${UNVERIFIED_HOURS} hours.</p>`);
+    `<p>Hi ${escapeHtml(name)},</p><p>To send your application for <b>${escapeHtml(job.title)}</b> at ${escapeHtml(job.company)}, confirm your email. The same link shows your application status later, so keep this email.</p>${button(trackUrl(token), 'Confirm and track my application')}${stepsHtml({ name, email }, job)}<p>If you did not apply, ignore this email; the application is deleted in ${UNVERIFIED_HOURS} hours.</p>`);
   return { application, token };
 }
 
 async function byToken(token) {
   if (!/^[a-f0-9]{48}$/.test(String(token || ''))) throw fail('This link is not valid.', 404);
-  const application = await GuestApplication.findOne({ trackingTokenHash: hash(token) }).populate('job', 'title company city country postedBy institution agreement status');
+  const application = await GuestApplication.findOne({ trackingTokenHash: hash(token) }).populate('job', 'title company city country postedBy institution agreement status category');
   if (!application) throw fail('This application was not found. It may have been deleted after the retention period.', 404);
   return application;
 }
 function view(a) {
   return { _id: a._id, name: a.name, job: a.job ? { _id: a.job._id, title: a.job.title, company: a.job.company, city: a.job.city, country: a.job.country } : null, status: a.status, stage: STAGE_LABEL[a.status],
     history: a.statusHistory.map((h) => ({ status: h.status, stage: STAGE_LABEL[h.status], at: h.at, note: h.note || '' })), submittedAt: a.createdAt,
+    signupUrl: signupUrl(a, a.job), accountType: a.job?.category === 'teaching' ? 'teacher' : 'student',
     canWithdraw: !['hired', 'completed', 'rejected', 'withdrawn'].includes(a.status), canConfirmJoining: a.status === 'hired' && !a.joining.confirmed && !a.job?.agreement && a.joining.via !== 'hiring_organization' };
 }
 // Opening the link: first time it verifies the email and the application reaches the employer.
@@ -77,7 +97,7 @@ async function track(token) {
   if (!a.emailVerified) {
     a.emailVerified = true; a.verifiedAt = new Date();
     await a.save();
-    if (a.job) await notify(a.job.postedBy, { title: `New application (guest): ${a.job.title}`, body: `${a.name} applied without an account.`, link: '/dashboard', category: 'application' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
+    if (a.job) await notify(a.job.postedBy, { title: `New application (guest): ${a.job.title}`, body: `${a.name} applied without an account.`, link: require('../utils/dashLinks').manager(a.job), category: 'application' }, { email: true, emailPreference: 'applicationEmails' }).catch(() => {});
   }
   return view(a);
 }
@@ -87,7 +107,7 @@ async function withdraw(token, reason) {
   a.status = 'withdrawn';
   a.statusHistory.push({ status: 'withdrawn', byRole: 'applicant', note: String(reason || '').slice(0, 300) });
   await a.save();
-  if (a.emailVerified && a.job) await notify(a.job.postedBy, { title: `Application withdrawn: ${a.job.title}`, body: `${a.name} (guest) withdrew.`, link: '/dashboard', category: 'application' }).catch(() => {});
+  if (a.emailVerified && a.job) await notify(a.job.postedBy, { title: `Application withdrawn: ${a.job.title}`, body: `${a.name} (guest) withdrew.`, link: require('../utils/dashLinks').manager(a.job), category: 'application' }).catch(() => {});
   return view(a);
 }
 // Existing Agent commission rule for an agent's own job (Master 13), as for registered candidates.
@@ -95,12 +115,13 @@ async function agentCommission(a, job) {
   if (job.institution || job.agreement || await Commission.exists({ guestApplication: a._id })) return;
   const poster = await User.findById(job.postedBy).select('roles');
   if (!poster?.roles?.includes('education_agent') || (poster.roles.includes('employer') && await require('../utils/roleVerification').isRoleVerified(poster._id, 'employer'))) return;
-  const rateSetting = await Setting.findOne({ key: 'commission_rate_percent' });
-  const rate = rateSetting ? rateSetting.value : 10;
-  const full = await Job.findById(job._id).select('salaryMin salaryMax currency title');
-  const base = full.salaryMin || full.salaryMax || 0;
-  const c = await Commission.create({ agent: job.postedBy, job: job._id, guestApplication: a._id, candidateName: a.name, rate, amount: Math.round((base * rate) / 100), currency: full.currency || 'USD' });
-  await notify(job.postedBy, { title: `Commission generated: ${c.currency} ${c.amount}`, body: `${full.title}: joining confirmed.`, link: '/dashboard', category: 'commission' }).catch(() => {});
+  const full = await Job.findById(job._id).select('salaryMin salaryMax currency title representedEmployer employerConsent');
+  const agentWork = require('./agentWork.service');
+  const due = await agentWork.commissionFor(full, full.salaryMin || full.salaryMax || 0);
+  if (!due) return; // no employer on CareerZ accepted this job, so nobody owes a commission
+  const c = await Commission.create({ agent: job.postedBy, employer: due.employer, job: job._id, guestApplication: a._id, candidateName: a.name, rate: due.rate, amount: due.amount, currency: full.currency || 'PKR' });
+  await agentWork.tellEmployerToPay(c, full.title);
+  await notify(job.postedBy, { title: `Commission generated: ${c.currency} ${c.amount}`, body: `${full.title}: joining confirmed.`, link: require('../utils/dashLinks').agentCommission, category: 'commission' }).catch(() => {});
 }
 async function confirmJoining(token) {
   const a = await byToken(token);
@@ -110,7 +131,7 @@ async function confirmJoining(token) {
   await a.save();
   if (a.job.status !== 'filled') await Job.updateOne({ _id: a.job._id }, { status: 'filled' });
   await agentCommission(a, a.job);
-  await notify(a.job.postedBy, { title: `Joining confirmed: ${a.job.title}`, body: `${a.name} confirmed they joined.`, link: '/dashboard', category: 'application' }).catch(() => {});
+  await notify(a.job.postedBy, { title: `Joining confirmed: ${a.job.title}`, body: `${a.name} confirmed they joined.`, link: require('../utils/dashLinks').manager(a.job), category: 'application' }).catch(() => {});
   return view(a);
 }
 
@@ -138,8 +159,14 @@ async function managed(user, id) {
 async function updateStatus(user, id, { status, note }) {
   if (!STATUSES.includes(status)) throw fail('Invalid status.');
   const a = await managed(user, id);
-  if (status === 'completed' && !(a.status === 'hired' && a.joining.confirmed)) throw fail('Mark Completed only after joining is confirmed.', 409);
   const job = a.job;
+  // An offer and joining need a CareerZ account: invite the guest to sign up with this email.
+  // Their application then moves into the account and continues there.
+  if (ACCOUNT_STAGES.includes(status)) {
+    await sendEmail(a.email, `Next step for ${job.title}: create your CareerZ account`,
+      `<p>Hi ${escapeHtml(a.name)},</p><p>Good news: ${escapeHtml(job.company)} wants to move forward with your application for <b>${escapeHtml(job.title)}</b>.</p><p>To receive the offer and join, create your free CareerZ account with this same email (${escapeHtml(a.email)}). Your application moves into your account automatically.</p>${button(signupUrl(a, job), 'Create my CareerZ account')}${stepsHtml(a, job, { confirmed: true })}`);
+    throw fail(`${a.name} applied without an account. We emailed them a link to create a CareerZ account with ${a.email}; once they do, the application moves to their account and you can continue from Offer.`, 409);
+  }
   const { isHiringOrganization } = require('../controllers/job.controller');
   const hiringOrg = await isHiringOrganization(job, user);
   const text = String(note || '').trim().slice(0, 500);
@@ -158,7 +185,7 @@ async function updateStatus(user, id, { status, note }) {
   // The guest has no account: the update goes by email, with the tracking link's page.
   const asksConfirm = status === 'hired' && !a.joining.confirmed && !job.agreement;
   await sendEmail(a.email, `${job.title} @ ${job.company}: ${STAGE_LABEL[status]}`,
-    `<p>Hi ${escapeHtml(a.name)},</p><p>Your application for <b>${escapeHtml(job.title)}</b> is now at: <b>${STAGE_LABEL[status]}</b>.</p>${text ? `<p>${escapeHtml(text)}</p>` : ''}${asksConfirm ? '<p>Please confirm that you have joined, using the link in your first email from us.</p>' : ''}<p>Open the tracking link from your first email to see the full status.</p>`);
+    `<p>Hi ${escapeHtml(a.name)},</p><p>Your application for <b>${escapeHtml(job.title)}</b> is now at: <b>${STAGE_LABEL[status]}</b>.</p>${text ? `<p>${escapeHtml(text)}</p>` : ''}${asksConfirm ? '<p>Please confirm that you have joined, using the link in your first email from us.</p>' : ''}<p>Open the tracking link from your first email to see the full status.</p>${status !== 'rejected' ? `<p>Create your free CareerZ account with this email now; you will need it to receive an offer.</p>${stepsHtml(a, job, { confirmed: true })}` : ''}`);
   return a;
 }
 async function cvFile(user, id) {

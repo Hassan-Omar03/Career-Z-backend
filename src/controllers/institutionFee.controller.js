@@ -149,6 +149,7 @@ const addDiscount = asyncHandler(async (req, res) => {
 // POST /api/institution-fees/fees/:feeId/report-payment — student/authorized parent reports a
 // manual payment with proof/reference; goes to 'processing' until the institution verifies it.
 const reportManualPayment = asyncHandler(async (req, res) => {
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer: pay the CareerZ fee and the seller, then upload both receipts.', 410);
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
   const isStudent = fee.student.toString() === req.user._id.toString();
@@ -160,7 +161,7 @@ const reportManualPayment = asyncHandler(async (req, res) => {
   // Parent and student can both pay: once either reports a payment, nobody can report another until
   // the institution has verified or rejected it, so the same fee is never paid twice.
   if ((fee.paymentHistory || []).some((p) => p.verificationStatus === 'pending')) {
-    throw new AppError('A payment for this fee is already awaiting the institution’s verification.', 409);
+    throw new AppError('A payment for this fee is already awaiting CareerZ verification.', 409);
   }
 
   const { amount, method, reference, proofUrl, bankName, paidOn, notes } = req.body;
@@ -170,7 +171,7 @@ const reportManualPayment = asyncHandler(async (req, res) => {
   if (method !== 'cash' && !String(proofUrl || '').trim()) throw new AppError('Payment proof is required for this payment method.', 422);
   if (['bank_transfer', 'mobile_wallet'].includes(method) && !String(bankName || '').trim()) throw new AppError('Bank or wallet/provider name is required.', 422);
   if (fee.paymentHistory.some((p) => p.verificationStatus === 'pending' || (!p.verificationStatus && !p.verifiedAt && !p.rejectedAt))) {
-    throw new AppError('A payment report is already awaiting institution verification.', 409);
+    throw new AppError('A payment report is already awaiting CareerZ verification.', 409);
   }
   const outstanding = fee.outstandingAmount ?? fee.amount;
   const payAmount = amount != null ? Number(amount) : outstanding;
@@ -186,32 +187,39 @@ const reportManualPayment = asyncHandler(async (req, res) => {
     }
   }
 
+  // Added in one conditional write, so two reports sent at the same moment cannot both wait.
   const previousFeeStatus = fee.status;
-  fee.paymentHistory.push({
-    amount: feeSchedule.round2(payAmount), method, transactionId: String(reference).trim(), reference: String(reference).trim(),
-    proofUrl: String(proofUrl || '').trim(), bankName: String(bankName || '').trim(), paidOn: paidOn || new Date(),
-    notes: String(notes || '').trim(), verificationStatus: 'pending', previousFeeStatus, recordedBy: req.user._id
-  });
-  fee.status = 'processing';
-  fee.paymentMethod = method;
-  fee.paidBy = req.user._id;
-  await fee.save();
+  const reported = await Fee.findOneAndUpdate(
+    { _id: fee._id, status: previousFeeStatus, 'paymentHistory.verificationStatus': { $ne: 'pending' } },
+    {
+      $push: { paymentHistory: {
+        amount: feeSchedule.round2(payAmount), method, transactionId: String(reference).trim(), reference: String(reference).trim(),
+        proofUrl: String(proofUrl || '').trim(), bankName: String(bankName || '').trim(), paidOn: paidOn || new Date(),
+        notes: String(notes || '').trim(), verificationStatus: 'pending', previousFeeStatus, recordedBy: req.user._id
+      } },
+      $set: { status: 'processing', paymentMethod: method, paidBy: req.user._id }
+    },
+    { new: true, runValidators: true }
+  );
+  if (!reported) throw new AppError('A payment for this fee is already awaiting CareerZ verification.', 409);
 
   const institution = await Institution.findById(fee.institution);
   if (institution) {
-    await notify(institution.owner, { title: `Payment reported: ${fee.title}`, body: `${fee.currency} ${payAmount} — awaiting your verification.`, sentBy: req.user._id }).catch(() => {});
+    await notify(institution.owner, { title: `Payment reported: ${fee.title}`, body: `${fee.currency} ${payAmount}. CareerZ is verifying the proof.`, sentBy: req.user._id }).catch(() => {});
   }
-  return ok(res, require('../services/familyAccess.service').safeFee(fee), 'Payment reported — awaiting institution verification.');
+  await require('../services/notification.service').notifyAdmins({ title: `Fee payment to verify: ${fee.title}`, body: `${fee.currency} ${payAmount} by ${method}, reference ${String(reference).trim()}.` }).catch(() => {});
+  return ok(res, require('../services/familyAccess.service').safeFee(reported), 'Payment reported. CareerZ will verify the proof.');
 });
 
 // PATCH /api/institution-fees/fees/:feeId/verify-payment  body:{decision:'verify'|'reject', paymentIndex}
-// Only institution verification actually moves money — never the client's self-report alone.
+// Only the CareerZ admin's verification of the proof makes a payment count — never the payer's
+// self-report, and never the institute alone, so the platform stands behind every receipt.
 const verifyManualPayment = asyncHandler(async (req, res) => {
   const fee = await Fee.findById(req.params.feeId);
   if (!fee) throw new AppError('Fee record not found.', 404);
   const institution = await Institution.findById(fee.institution);
   if (!institution) throw new AppError('Institution not found.', 404);
-  assertFeeManage(institution, req.user._id);
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
 
   const { decision, rejectionReason } = req.body;
   const pending = [...fee.paymentHistory].reverse().find((p) => p.verificationStatus === 'pending' || (!p.verificationStatus && !p.verifiedAt && !p.rejectedAt));
@@ -252,7 +260,8 @@ const verifyManualPayment = asyncHandler(async (req, res) => {
     fee.restrictionActive = false;
     if (!fee.receiptNumber) fee.receiptNumber = `RCPT-${Date.now().toString(36).toUpperCase()}-${fee.id.slice(-6).toUpperCase()}`;
     if (!fee.verifyCode) fee.verifyCode = crypto.randomBytes(10).toString('hex');
-    fee.escrowStatus = fee.escrowStatus === 'none' ? 'held' : fee.escrowStatus;
+    // Paid outside CareerZ and now verified: nothing is held.
+    if (fee.escrowStatus !== 'released') { fee.escrowStatus = 'released'; fee.escrowReleasedAt = new Date(); fee.escrowReleasedBy = req.user._id; }
   }
   await fee.save();
   // Says who made the payment, so a parent knows when the student paid and vice versa.
@@ -265,6 +274,17 @@ const verifyManualPayment = asyncHandler(async (req, res) => {
 });
 
 // GET /api/institution-fees/:institutionId/payments-awaiting-verification
+// GET /api/admin/fee-payments — CareerZ's queue: every fee payment waiting for proof
+// verification, and every online fee payment held until release.
+const adminFeeQueue = asyncHandler(async (req, res) => {
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
+  const [pending, held] = await Promise.all([
+    Fee.find({ paymentHistory: { $elemMatch: { verificationStatus: 'pending' } } }).populate('student', 'fullName email').populate('institution', 'name').sort({ updatedAt: 1 }).limit(300),
+    Fee.find({ status: 'paid', escrowStatus: 'held' }).populate('student', 'fullName email').populate('institution', 'name').sort({ paidAt: 1 }).limit(300)
+  ]);
+  return ok(res, { pending: await require('../services/feePayer.service').withPayersMany(pending), held });
+});
+
 const listAwaitingVerification = asyncHandler(async (req, res) => {
   const institution = await loadInstitution(req.params.institutionId);
   assertOwnerOrStaff(institution, req.user._id);
@@ -563,7 +583,7 @@ const verifyReceipt = asyncHandler(async (req, res) => {
   });
 });
 
-module.exports = {
+module.exports = { adminFeeQueue,
   updateProgramBilling, listSchedules, previewGeneration, generateForSchedule, generateForAllEligible,
   addDiscount, reportManualPayment, verifyManualPayment, listAwaitingVerification,
   listDefaulters, waiveFee, cancelInvoice, setPaymentArrangement, getMyRestriction,

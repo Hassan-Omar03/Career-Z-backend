@@ -5,6 +5,8 @@ const { MongoMemoryReplSet } = require('mongodb-memory-server');
 const crypto = require('node:crypto');
 
 process.env.NODE_ENV = 'test';
+// These tests cover the online checkouts, which are switched off in production for now.
+process.env.ONLINE_PAYMENTS_ENABLED = 'true';
 process.env.NOWPAYMENTS_API_KEY = 'test-nowpayments-key';
 process.env.NOWPAYMENTS_IPN_SECRET = 'test-nowpayments-ipn-secret';
 

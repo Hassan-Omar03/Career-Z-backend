@@ -11,7 +11,7 @@ const complaintSchema = new mongoose.Schema(
       default: 'other'
     },
     description: { type: String, required: true },
-    targetType: { type: String, enum: ['user', 'institution', 'job', 'product', 'none'], default: 'none' },
+    targetType: { type: String, enum: ['user', 'agent', 'institution', 'job', 'product', 'none'], default: 'none' },
     targetId: { type: mongoose.Schema.Types.ObjectId, default: null },
     status: { type: String, enum: ['open', 'in_review', 'resolved', 'dismissed'], default: 'open' },
     resolvedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

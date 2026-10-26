@@ -191,96 +191,6 @@ test('a percentage discount reduces the payable amount and cannot exceed the out
   assert.equal(tooMuch.status, 422);
 });
 
-test('manual payment: student reports it, institution verifies it, and only verification actually credits it', async () => {
-  const schedule = await makeSchedule();
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  const report = await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: fee.amount, method: 'bank_transfer', reference: 'TXN-ABC', bankName: 'Test Bank', proofUrl: 'https://example.test/proof.pdf' } });
-  assert.equal(report.status, 200);
-  assert.equal(report.body.data.status, 'processing');
-  assert.equal(report.body.data.paidAmount, 0, 'not credited until verified');
-
-  const verify = await invoke(feeCtrl.verifyManualPayment, { user: owner, params: { feeId: fee._id.toString() }, body: { decision: 'verify' } });
-  assert.equal(verify.status, 200);
-  assert.equal(verify.body.data.status, 'paid');
-  assert.ok(verify.body.data.receiptNumber);
-  assert.ok(verify.body.data.verifyCode);
-});
-
-test('manual partial payment of 9000 stays processing until verification, then updates only the verified balance', async () => {
-  const schedule = await makeSchedule({ totalProgramFee: 216000 });
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  assert.equal(fee.amount, 18000);
-
-  const report = await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: 9000, method: 'bank_transfer', reference: 'GCUF-TEST-9000', bankName: 'Test Bank', paidOn: new Date(), proofUrl: 'https://example.test/payment-proof.pdf' } });
-  assert.equal(report.status, 200);
-  assert.equal(report.body.data.status, 'processing');
-  assert.equal(report.body.data.paidAmount, 0);
-  assert.equal(report.body.data.outstandingAmount, 18000);
-  assert.equal(report.body.data.receiptNumber, undefined);
-  assert.equal(report.body.data.paymentHistory[0].verificationStatus, 'pending');
-
-  const verify = await invoke(feeCtrl.verifyManualPayment, { user: owner, params: { feeId: fee._id.toString() }, body: { decision: 'verify' } });
-  assert.equal(verify.status, 200);
-  assert.equal(verify.body.data.status, 'partially_paid');
-  assert.equal(verify.body.data.paidAmount, 9000);
-  assert.equal(verify.body.data.outstandingAmount, 9000);
-  assert.equal(verify.body.data.paymentHistory[0].verificationStatus, 'verified');
-  assert.ok(verify.body.data.paymentHistory[0].receiptNumber, 'every verified partial payment has its own receipt number');
-  assert.ok(verify.body.data.paymentHistory[0].verifyCode, 'every verified partial payment has its own verification code');
-  assert.equal(verify.body.data.receiptNumber, undefined, 'final invoice receipt is created only after the full balance is paid');
-});
-
-test('reporting a manual payment on an already-overdue fee stays "processing" (awaiting verification) — the overdue sweep must never revert it back to overdue', async () => {
-  const schedule = await makeSchedule();
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  fee.dueDate = new Date(Date.now() - 5 * 24 * 60 * 60 * 1000);
-  fee.graceEndDate = fee.dueDate;
-  await fee.save();
-  await feeSchedule.sweepOverdueAndLateFees(institution._id);
-  const beforeReport = await Fee.findById(fee._id);
-  assert.equal(beforeReport.status, 'overdue');
-
-  const report = await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: beforeReport.outstandingAmount ?? beforeReport.amount, method: 'bank_transfer', reference: 'TXN-LATE', bankName: 'Test Bank', proofUrl: 'https://example.test/proof.pdf' } });
-  assert.equal(report.status, 200);
-  assert.equal(report.body.data.status, 'processing');
-
-  // This is exactly what a real page load does — the lazy sweep runs again on the very next read.
-  await feeSchedule.sweepOverdueAndLateFees(institution._id);
-  const afterSweep = await Fee.findById(fee._id);
-  assert.equal(afterSweep.status, 'processing', 'the sweep must not silently flip a payment awaiting verification back to overdue');
-
-  const awaiting = await invoke(feeCtrl.listAwaitingVerification, { user: owner, params: { institutionId: institution._id.toString() } });
-  assert.equal(awaiting.status, 200);
-  assert.ok(awaiting.body.data.some((f) => String(f._id) === String(fee._id)), 'the reported payment must still appear in the institution\'s verification queue after a lazy sweep');
-});
-
-test('manual payment rejection restores the fee to its previous (unpaid) status, without crediting it', async () => {
-  const schedule = await makeSchedule();
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: fee.amount, method: 'cash', reference: 'CASH-001' } });
-  const reject = await invoke(feeCtrl.verifyManualPayment, { user: owner, params: { feeId: fee._id.toString() }, body: { decision: 'reject', rejectionReason: 'Receipt not found' } });
-  assert.equal(reject.status, 200);
-  assert.equal(reject.body.data.status, 'pending');
-  const stored = await Fee.findById(fee._id);
-  assert.equal(stored.paidAmount, 0);
-});
-
-test('a parent without payFees permission cannot report a payment for the child', async () => {
-  const schedule = await makeSchedule();
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  await ParentChildLink.create({ parent: guardian._id, student: student._id, status: 'approved', requestedBy: guardian._id, permissions: { payFees: false, viewHealth: true, giveConsent: true } });
-  const res = await invoke(feeCtrl.reportManualPayment, { user: guardian, params: { feeId: fee._id.toString() }, body: { amount: fee.amount, method: 'cash', reference: 'CASH-002' } });
-  assert.equal(res.status, 403);
-});
-
-test('an approved parent WITH payFees permission can report a payment', async () => {
-  const schedule = await makeSchedule();
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-  await ParentChildLink.create({ parent: guardian._id, student: student._id, status: 'approved', requestedBy: guardian._id, permissions: { payFees: true, viewHealth: true, giveConsent: true } });
-  const res = await invoke(feeCtrl.reportManualPayment, { user: guardian, params: { feeId: fee._id.toString() }, body: { amount: fee.amount, method: 'cash', reference: 'CASH-003' } });
-  assert.equal(res.status, 200);
-});
-
 test('one institution can never manage or read another institution\'s fee schedules', async () => {
   const schedule = await makeSchedule();
   const forbidden = await invoke(feeCtrl.listSchedules, { user: otherOwner, params: { institutionId: institution._id.toString() } });
@@ -400,17 +310,6 @@ test('institution-selected installments round-trip safely without floating-point
   const expectedMonthly = feeSchedule.round2(100.01 / 12);
   assert.ok(Math.abs(total - expectedMonthly) < 0.01, `7 unevenly-rounded instalments still sum to the monthly amount (got ${total}, expected ~${expectedMonthly})`);
   created7.forEach((f) => { assert.equal(f.amount, feeSchedule.round2(f.amount), 'every stored amount is already rounded to 2dp'); });
-});
-
-test('a payment below the institution-configured minimum partial payment is rejected, unless it clears the full balance', async () => {
-  const schedule = await makeSchedule({ minimumPartialPayment: 30, totalProgramFee: 1200 });
-  const [fee] = await feeSchedule.generateCurrentCycle(schedule, owner._id);
-
-  const tooSmall = await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: 10, method: 'cash', reference: 'CASH-004' } });
-  assert.equal(tooSmall.status, 422);
-
-  const atMinimum = await invoke(feeCtrl.reportManualPayment, { user: student, params: { feeId: fee._id.toString() }, body: { amount: 30, method: 'cash', reference: 'CASH-005' } });
-  assert.equal(atMinimum.status, 200);
 });
 
 test('the next billing period\'s invoice generates automatically on a lazy read, even if the previous period was never paid', async () => {

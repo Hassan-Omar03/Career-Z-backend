@@ -53,6 +53,15 @@ async function notifySponsorsOfProgress(studentId, studentName) {
 }
 
 // GET /api/students/me
+// Everything in the person's CareerZ wallets, in PKR (other currencies at the platform rates).
+async function walletInPkr(userId) {
+  const wallets = await require('../models/Wallet').find({ user: userId, available: { $gt: 0 } }).lean();
+  if (!wallets.length) return 0;
+  const rates = Object.fromEntries((await require('../models/Currency').find({ code: { $in: ['PKR', ...wallets.map((w) => w.currency)] } }).select('code exchangeRateToUSD').lean()).map((c) => [c.code, c.exchangeRateToUSD]));
+  const total = wallets.reduce((sum, w) => sum + (w.currency === 'PKR' ? w.available : rates[w.currency] && rates.PKR ? (w.available * rates[w.currency]) / rates.PKR : 0), 0);
+  return Math.round(total * 100) / 100;
+}
+
 const getMyProfile = asyncHandler(async (req, res) => {
   let profile = await StudentProfile.findOne({ user: req.user._id })
     .populate('primaryInstitution', 'name type country')
@@ -464,7 +473,7 @@ const getMyDashboard = asyncHandler(async (req, res) => {
     },
     scholarships: { recommended: recommendedScholarships, applied: scholarshipApps },
     savedJobs: savedJobsUser?.savedJobs || [],
-    wallet: { availableBalance: 0, pendingFeeTotal, pendingFeeCount: pendingFees.length, recentTransactions, pendingFees },
+    wallet: { availableBalance: await walletInPkr(req.user._id), walletCurrency: 'PKR', pendingFeeTotal, pendingFeeCount: pendingFees.length, recentTransactions, pendingFees },
     applicationsOverview,
     recentActivity
   });

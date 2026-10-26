@@ -45,7 +45,12 @@ const generate = asyncHandler(async (req, res) => {
   const system = 'You are a careful career counselor. Return ONLY JSON: {"steps":[{"title":string,"detail":string,"category":"skill"|"course"|"project"|"certification"|"experience","month":integer}]} with 5-12 ordered, concrete, realistic steps. "month" is the month number (1..plan length) the step should be finished by. No text outside the JSON.';
   let text;
   try { text = await require('../services/ai.service').generate(req.user._id, system, facts, req.body.institutionId || undefined); }
-  catch (e) { throw new AppError(e.statusCode && e.statusCode < 500 ? e.message : 'The AI provider could not create a roadmap right now. Try again or build it manually.', e.statusCode && e.statusCode < 500 ? e.statusCode : 502); }
+  catch (e) {
+    // No AI key connected: say so plainly instead of a generic provider error.
+    if (e.statusCode === 503 && /configured/i.test(e.message || '')) throw new AppError('Connect your AI provider first: Jobs & Applications → Career Tools → AI provider. Or build the roadmap manually.', 409);
+    console.error('[roadmap] AI provider error:', e.statusCode || '', e.message);
+    throw new AppError(e.statusCode && e.statusCode < 500 ? e.message : `The AI provider could not create a roadmap right now${e.message ? ` (${String(e.message).slice(0, 160)})` : ''}. Try again in a minute or build it without AI.`, e.statusCode && e.statusCode < 500 ? e.statusCode : 502);
+  }
   let parsed;
   try { parsed = JSON.parse(String(text).slice(String(text).indexOf('{'), String(text).lastIndexOf('}') + 1)); } catch { parsed = null; }
   const raw = Array.isArray(parsed?.steps) ? parsed.steps.slice(0, 20) : [];

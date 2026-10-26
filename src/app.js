@@ -13,7 +13,7 @@ const { notFound, errorHandler } = require('./middleware/errorHandler');
 const { maintenanceGate } = require('./middleware/maintenance');
 const { metricsMiddleware } = require('./services/platformMetrics');
 const { emergencyControls } = require('./middleware/emergencyControls');
-const { handleStripeWebhook, handlePaddleWebhook, handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
+const { handleNowPaymentsWebhook } = require('./controllers/webhook.controller');
 
 const app = express();
 // One reverse proxy (Nginx) sits in front in production. Trusting exactly that hop gives req.ip the
@@ -30,39 +30,14 @@ app.use(
     credentials: true
   })
 );
-// Stripe webhook signature verification needs the exact raw request bytes, so this route is
-// registered with express.raw() BEFORE the global express.json() below — a JSON-parsed-and-
-// restringified body would never match the signature Stripe sends. Connects the DB itself
-// (the /api-wide connectDB middleware below hasn't run yet at this point in the chain).
-app.post('/api/webhooks/stripe', express.raw({ type: 'application/json' }), async (req, res, next) => {
-  try {
-    await connectDB();
-    await handleStripeWebhook(req, res);
-  } catch (err) {
-    next(err);
-  }
-});
-
-// Paddle's HMAC signature is computed over the exact request bytes, so this route is
-// registered with express.raw() BEFORE the global express.json() below. Connects the DB itself
-// (the /api-wide connectDB middleware below hasn't run yet at this point in the chain).
-app.post('/api/webhooks/paddle', express.raw({ type: 'application/json' }), async (req, res, next) => {
-  try {
-    await connectDB();
-    await handlePaddleWebhook(req, res);
-  } catch (err) {
-    next(err);
-  }
-});
-
 // 2mb was fine before real file uploads existed anywhere in the app; Digital Locker documents
 // and profile photos now arrive as base64 data URIs in this same JSON body (no S3/Cloudinary is
 // connected), which inflates a file's raw size by ~33% — raised to comfortably fit a few-MB PDF.
 app.use(express.json({ limit: '6mb' }));
 
 // NOWPayments' IPN signature is computed over the PARSED body's keys re-sorted alphabetically
-// (their own documented rule), not the raw bytes — so unlike Paddle above, this can safely
-// sit after express.json() instead of needing express.raw().
+// (their own documented rule), not the raw bytes — so this can safely sit after
+// express.json() instead of needing express.raw(). Connects the DB itself.
 app.post('/api/webhooks/nowpayments', async (req, res, next) => {
   try {
     await connectDB();

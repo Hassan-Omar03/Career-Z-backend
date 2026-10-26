@@ -7,7 +7,7 @@ const scholarshipSchema = new mongoose.Schema(
     title: { type: String, required: true, trim: true },
     description: { type: String, default: '' },
     amount: { type: Number, required: true, min: 0 },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     eligibilityCriteria: { type: String, default: '' },
     country: { type: String, default: '' },
     applicationDeadline: { type: Date },

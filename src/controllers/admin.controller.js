@@ -21,9 +21,9 @@ const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
 
 const INSTITUTION_FEE_COMMISSION_KEY = 'institution_fee_commission_percent';
-const DEFAULT_INSTITUTION_FEE_COMMISSION = 5;
+const DEFAULT_INSTITUTION_FEE_COMMISSION = 0; // unset = no commission until the Super Admin sets one
 const MARKETPLACE_COMMISSION_KEY = 'marketplace_commission_percent';
-const DEFAULT_MARKETPLACE_COMMISSION = 10;
+const DEFAULT_MARKETPLACE_COMMISSION = 0;
 const AI_PROVIDER_CONFIG_KEY = 'ai_enabled_providers';
 const AI_MODEL_CONFIG_KEY = 'ai_provider_models';
 const ALL_AI_PROVIDERS = {
@@ -126,6 +126,24 @@ const setSubscriptionPlanConfig = asyncHandler(async (req, res) => {
   const merged = {};
   for (const key of Object.keys(DEFAULT_PLANS)) merged[key] = { ...DEFAULT_PLANS[key], ...(setting.value[key] || {}) };
   return ok(res, merged, 'Subscription plan configuration updated.');
+});
+
+// GET/PATCH /api/admin/commission-rates — CareerZ's share of course sales, tutoring fees and
+// donations (the fee, marketplace and recruitment rates have their own settings).
+const { SERVICES: COMMISSION_SERVICES, asRate } = require('../utils/commissionSettings');
+const SERVICE_RATES = Object.fromEntries(COMMISSION_SERVICES.map((s) => [s.id, s.key]));
+const getCommissionRates = asyncHandler(async (req, res) => {
+  const rows = await Setting.find({ key: { $in: Object.values(SERVICE_RATES) } }).lean();
+  const byKey = Object.fromEntries(rows.map((r) => [r.key, asRate(r.value)]));
+  const rates = Object.fromEntries(Object.entries(SERVICE_RATES).map(([name, key]) => [name, byKey[key] ?? 0]));
+  return ok(res, req.query.detail ? { rates, services: COMMISSION_SERVICES.map(({ id, label, about }) => ({ id, label, about, rate: rates[id] })) } : rates);
+});
+const setCommissionRates = asyncHandler(async (req, res) => {
+  const updates = Object.entries(req.body || {}).filter(([name]) => SERVICE_RATES[name]);
+  if (!updates.length) throw new AppError('Send at least one service rate.', 422);
+  for (const [, rate] of updates) if (typeof rate !== 'number' || !Number.isFinite(rate) || rate < 0 || rate > 100) throw new AppError('Each rate must be a number between 0 and 100.', 422);
+  for (const [name, rate] of updates) await Setting.findOneAndUpdate({ key: SERVICE_RATES[name] }, { key: SERVICE_RATES[name], value: rate }, { upsert: true });
+  return getCommissionRates(req, res);
 });
 
 // GET /api/admin/institution-fee-commission-rate
@@ -352,7 +370,7 @@ const getWorldMap = asyncHandler(async (req, res) => {
   return ok(res, { points, unplottedCodes });
 });
 
-module.exports = {
+module.exports = { getCommissionRates, setCommissionRates,
   getFinanceSummary, getPlatformReports, getDashboard, getWorldMap, getAiInsights,
   getInstitutionFeeCommissionRate, setInstitutionFeeCommissionRate,
   getAiProviderConfig, setAiProviderConfig,

@@ -13,6 +13,15 @@ const jobSchema = new mongoose.Schema(
     // Set when an agent publishes under an active Institute–Agent agreement.
     recruitmentRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'RecruitmentRequest', default: null },
     agreement: { type: mongoose.Schema.Types.ObjectId, ref: 'RecruitmentAgreement', default: null, index: true },
+    // An agent's own job is posted for an employer on CareerZ, who must accept; that employer pays
+    // the agent's commission on a successful hire (master: commission between agents and employers).
+    representedEmployer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
+    employerConsent: {
+      status: { type: String, enum: ['', 'pending', 'accepted', 'declined'], default: '' },
+      ratePercent: { type: Number, default: null }, // commission % of the salary the employer agreed to
+      at: { type: Date, default: null },
+      note: { type: String, default: '' }
+    },
     title: { type: String, required: true, trim: true },
     company: { type: String, required: true, trim: true },
     type: {
@@ -27,7 +36,7 @@ const jobSchema = new mongoose.Schema(
     city: { type: String, default: '' },
     salaryMin: { type: Number, default: null },
     salaryMax: { type: Number, default: null },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     experienceYears: { type: Number, default: 0 },
     education: { type: String, default: '' },
     skills: [{ type: String }],

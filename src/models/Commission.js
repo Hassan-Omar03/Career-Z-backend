@@ -5,6 +5,8 @@ const mongoose = require('mongoose');
 const commissionSchema = new mongoose.Schema(
   {
     agent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
+    // Who pays it: the employer the agent recruited for (agent's own job), or the institute (agreement).
+    employer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null, index: true },
     job: { type: mongoose.Schema.Types.ObjectId, ref: 'Job', required: true },
     // One of these two: a registered candidate's application or a guest's (see GuestApplication).
     application: { type: mongoose.Schema.Types.ObjectId, ref: 'JobApplication' },
@@ -13,7 +15,7 @@ const commissionSchema = new mongoose.Schema(
     candidateName: { type: String, default: '' },
     rate: { type: Number, default: 10 }, // percentage of salaryMin used to compute amount
     amount: { type: Number, default: 0 },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     // pending: just earned, awaiting review -> approved: reviewed, confirmed legitimate
     // -> available: cleared for withdrawal -> paid: included in a completed withdrawal.
     // cancelled: the underlying hire fell through (application status moved off "hired").
@@ -26,7 +28,9 @@ const commissionSchema = new mongoose.Schema(
     grossFee: { type: Number, default: null },
     platformFee: { type: Number, default: null },
     processingCharges: { type: Number, default: null },
-    calculation: { type: String, default: '' }
+    calculation: { type: String, default: '' },
+    // The open withdrawal this commission is reserved by; null when it can be withdrawn.
+    withdrawal: { type: mongoose.Schema.Types.ObjectId, ref: 'Withdrawal', default: null }
   },
   { timestamps: true }
 );

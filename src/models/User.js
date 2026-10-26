@@ -63,14 +63,29 @@ const userSchema = new mongoose.Schema(
     // Secret used in one-click unsubscribe links in alert emails (no login needed).
     unsubscribeToken: { type: String, default: null, index: { sparse: true } },
     // Public recruitment profile institutes see in Find Agents (agents only).
+    // Super Admin sanctions on an agent (master: job-posting ban, agent licence cancellation).
+    agentSanctions: {
+      postingBanned: { type: Boolean, default: false },
+      postingBanUntil: { type: Date, default: null },
+      reason: { type: String, default: '' },
+      licenceCancelledAt: { type: Date, default: null },
+      by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }
+    },
     agentProfile: {
       specialties: [{ type: String }],   // job categories the agent recruits for
+      serviceCountries: [{ type: String }],
       serviceCities: [{ type: String }],
       experienceYears: { type: Number, default: 0, min: 0, max: 60 },
       bio: { type: String, default: '', maxlength: 1500 },
       acceptingRequests: { type: Boolean, default: true }
     },
-    lastDigestAt: { type: Date, default: null }
+    lastDigestAt: { type: Date, default: null },
+    // Where this person's wallet withdrawals are paid (utils/payoutAccount.js). Never shown to others.
+    payoutAccount: {
+      type: { method: String, bankName: String, accountTitle: String, accountNumber: String, updatedAt: Date },
+      default: undefined,
+      select: false
+    }
   },
   { timestamps: true }
 );

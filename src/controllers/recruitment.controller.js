@@ -30,6 +30,8 @@ const decline = asyncHandler(async (req, res) => ok(res, await svc.declineTerms(
 const end = asyncHandler(async (req, res) => ok(res, await svc.endAgreement(req.user, req.params.id), 'Agreement ended.'));
 
 const hires = asyncHandler(async (req, res) => ok(res, await svc.hiresForInstitution(req.user, req.query.institution)));
+const candidates = asyncHandler(async (req, res) => ok(res, await svc.candidatesForInstitution(req.user, req.query.institution)));
+const selectCandidate = asyncHandler(async (req, res) => { const a = await svc.selectCandidate(req.user, req.params.appId, req.body || {}); return ok(res, a, req.body?.decision === 'reject' ? 'Candidate turned down. The agent and candidate were told.' : 'Candidate selected. The agent can now interview them.'); });
 const confirmHire = asyncHandler(async (req, res) => {
   const { invoice } = await svc.confirmHire(req.user, req.params.appId, req.body || {});
   return ok(res, { invoice }, invoice ? `Joining confirmed. Invoice ${invoice.number} issued.` : 'Joining confirmed.');
@@ -40,9 +42,14 @@ const invoices = asyncHandler(async (req, res) => ok(res, await svc.invoicesFor(
 const invoiceDetail = asyncHandler(async (req, res) => {
   const { invoice, isInstitution } = await svc.invoiceForParty(req.user, req.params.id);
   const out = invoice.toObject();
-  if (isInstitution) out.payTo = await svc.paymentInstructions();
+  if (isInstitution) {
+    out.payTo = await svc.paymentInstructions();
+    const { payerId, walletBalance } = require('../services/invoiceWallet.service');
+    out.walletBalance = await walletBalance((await payerId(invoice)).owner, invoice.currency);
+  }
   return ok(res, out);
 });
+const payWallet = asyncHandler(async (req, res) => ok(res, await svc.payInvoiceFromWallet(req.user, req.params.id), 'Paid from your wallet. CareerZ will approve it and release the agent\'s share.'));
 const submitProof = asyncHandler(async (req, res) => ok(res, await svc.submitProof(req.user, req.params.id, req.body || {}), 'Payment proof sent. An admin will verify it.'));
 const sendFile = (res, file) => {
   res.setHeader('Content-Type', file.mimeType);
@@ -85,6 +92,6 @@ const admin = {
 
 module.exports = {
   listAgents, myAgentProfile, saveAgentProfile, createRequest, listRequests, respond, message, cancel,
-  agreements, propose, accept, decline, end, hires, confirmHire, declineHire,
-  invoices, invoiceDetail, submitProof, proof, reportLeft, replacementDone, escalate, admin
+  agreements, propose, accept, decline, end, hires, candidates, selectCandidate, confirmHire, declineHire,
+  invoices, invoiceDetail, payWallet, submitProof, proof, reportLeft, replacementDone, escalate, admin
 };

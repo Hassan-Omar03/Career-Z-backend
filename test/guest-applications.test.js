@@ -56,6 +56,7 @@ beforeEach(() => { emails.length = 0; });
 test('a guest applies with a CV; nothing reaches the employer until the emailed link is opened', async () => {
   expect(await api(null, 'POST', `/jobs/${S.job}/guest-apply`, form({ consent: false })), 422);
   expect(await api(null, 'POST', `/jobs/${S.job}/guest-apply`, form({ email: 'nope' })), 422);
+  expect(await api(null, 'POST', `/jobs/${S.job}/guest-apply`, form({ phone: '' })), 422, 'phone is required');
   expect(await api(null, 'POST', `/jobs/${S.job}/guest-apply`, form({ cv: { name: 'x.exe', data: 'data:application/x-msdownload;base64,AAAA' } })), 422);
   const r = await api(null, 'POST', `/jobs/${S.job}/guest-apply`, form());
   expect(r, 201);
@@ -90,28 +91,35 @@ test('the employer downloads the CV and moves stages; each change is emailed to 
   assert.equal(emails[0].to, 'ayesha@mail.test');
   assert.match(emails[0].html, /Interview/);
   assert.match(emails[0].html, /Monday 10am/);
-  expect(await api('Employer', 'PATCH', `/jobs/guest-applications/${S.app}/status`, { status: 'completed' }), 409);
-  expect(await api('Employer', 'PATCH', `/jobs/guest-applications/${S.app}/status`, { status: 'hired' }), 200);
-  const a = await model('GuestApplication').findById(S.app);
-  assert.equal(a.joining.via, 'hiring_organization', 'the employer is the hiring organization');
-  assert.equal((await model('Job').findById(S.job)).status, 'filled');
+  // Offer and joining need an account: the guest is invited to sign up with the same email.
+  emails.length = 0;
+  const offer = await api('Employer', 'PATCH', `/jobs/guest-applications/${S.app}/status`, { status: 'selected' });
+  expect(offer, 409);
+  assert.match(offer.body.message, /applied without an account/);
+  assert.equal(emails.length, 1);
+  assert.ok(emails[0].html.includes('/signup?type=teacher&email=ayesha%40mail.test'), 'teaching job opens the Teacher sign-up with the email filled');
+  expect(await api('Employer', 'PATCH', `/jobs/guest-applications/${S.app}/status`, { status: 'hired' }), 409);
+  assert.equal((await api(null, 'GET', `/jobs/guest/track?token=${S.token}`)).body.data.accountType, 'teacher');
 });
 
-test('an agent job: the guest confirms joining by the link and the agent commission is created', async () => {
-  await api(null, 'POST', `/jobs/${S.agentJob}/guest-apply`, form({ email: 'bilal@mail.test', name: 'Bilal' }));
-  const token = tokenFrom(emails[0]);
-  await api(null, 'GET', `/jobs/guest/track?token=${token}`);
-  const [g] = (await api('Agent', 'GET', `/jobs/${S.agentJob}/guest-applicants`)).body.data;
-  expect(await api('Agent', 'PATCH', `/jobs/guest-applications/${g._id}/status`, { status: 'hired' }), 200);
-  assert.equal(await model('Commission').countDocuments({ guestApplication: g._id }), 0, 'agent alone cannot confirm');
-  const t = (await api(null, 'GET', `/jobs/guest/track?token=${token}`)).body.data;
-  assert.equal(t.canConfirmJoining, true);
-  expect(await api(null, 'POST', '/jobs/guest/confirm-joining', { token }), 200);
-  const c = await model('Commission').findOne({ guestApplication: g._id });
-  assert.equal(c.candidateName, 'Bilal');
-  assert.equal(c.application, undefined);
-  expect(await api(null, 'POST', '/jobs/guest/confirm-joining', { token }), 409);
-  expect(await api(null, 'POST', '/jobs/guest/withdraw', { token }), 409, 'cannot withdraw after joining');
+test('the guest creates an account with the same email: the application moves in and continues to offer and joining', async () => {
+  u.Ayesha = await model('User').create({ fullName: 'Ayesha Khan', email: 'ayesha@mail.test', passwordHash: 'x', emailVerified: true, roles: ['teacher'], status: 'active' });
+  await model('RoleRequest').create({ user: u.Ayesha._id, requestedRole: 'teacher', status: 'approved', approvedAt: new Date(Date.now() - 864e5) });
+  await model('UserProfile').create({ user: u.Ayesha._id, role: 'teacher', completed: true, percent: 100 });
+  expect(await api('Ayesha', 'GET', '/onboarding/status'), 200);
+  assert.equal(await model('GuestApplication').countDocuments({ email: 'ayesha@mail.test' }), 0, 'guest record moved');
+  const app = await model('JobApplication').findOne({ applicant: u.Ayesha._id, job: S.job });
+  assert.ok(app, 'now a normal application');
+  assert.equal(app.status, 'interview', 'same stage');
+  assert.ok(app.statusHistory.length >= 3, 'history kept');
+  const cv = await api('Employer', 'GET', `/jobs/applications/${app._id}/cv-file`);
+  expect(cv, 200);
+  assert.match(cv.text, /guest cv/, 'the CV sent as a guest is still there');
+  expect(await api('Employer', 'POST', `/jobs/applications/${app._id}/offer`, { salary: 70000, currency: 'PKR' }), 200);
+  const emp = await model('Employment').findOne({ application: app._id });
+  expect(await api('Ayesha', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api('Employer', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' }), 200);
+  assert.equal((await model('Employment').findById(emp._id)).status, 'active');
 });
 
 test('withdraw by link; honeypot is silently dropped; retention removes the application and CV', async () => {

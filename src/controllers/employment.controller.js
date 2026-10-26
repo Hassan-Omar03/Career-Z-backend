@@ -7,10 +7,12 @@ const { notify } = require('../services/notification.service');
 // GET /api/employment/mine — the candidate's own employment offers + history.
 const myEmployments = asyncHandler(async (req, res) => {
   const employments = await Employment.find({ employee: req.user._id })
-    .populate('job', 'title company')
+    .populate('job', 'title company companyLogo city country type')
     .populate('employer', 'fullName')
     .sort({ createdAt: -1 });
-  return ok(res, employments);
+  // On an agent's job the candidate sees the offer and letter only once the agent forwards them.
+  const { candidateView } = require('../services/jobOffer.service');
+  return ok(res, employments.map((e) => candidateView(e.toObject())).filter(Boolean));
 });
 
 // GET /api/employment/posted — the employer's own records across all their job postings.
@@ -31,6 +33,9 @@ const respondToOffer = asyncHandler(async (req, res) => {
   if (!employment) throw new AppError('Employment offer not found.', 404);
   if (employment.employee.toString() !== req.user._id.toString()) throw new AppError('This offer is not yours to respond to.', 403);
   if (employment.status !== 'offered') throw new AppError('This offer has already been responded to.', 400);
+  // An offer made at the Offer stage: accepting moves the application to "Offer accepted";
+  // joining comes later (Employment becomes active when the candidate is marked as joined).
+  if (employment.offer?.sentAt) return ok(res, await require('../services/jobOffer.service').answerOffer(employment, req.user, decision), `Offer ${decision}.`);
 
   employment.respondedAt = new Date();
   if (decision === 'accepted') {

@@ -2,7 +2,7 @@ const mongoose = require('mongoose');
 
 // One real balance ledger per (user, currency) — Available (usable now) vs Pending (topped-up
 // but not yet confirmed, or withdrawal-in-progress). Real money only ever enters via a confirmed
-// Paddle webhook (see webhook.controller.js) — never incremented on a client-side claim.
+// JazzCash or crypto payment (see jazzcash.controller.js / webhook.controller.js) — never incremented on a client-side claim.
 const walletSchema = new mongoose.Schema(
   {
     user: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

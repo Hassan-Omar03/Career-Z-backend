@@ -13,7 +13,7 @@ const feeScheduleSchema = new mongoose.Schema(
     programName: { type: String, required: true },
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
 
-    currency: { type: String, required: true, default: 'USD' },
+    currency: { type: String, required: true, default: 'PKR' },
     totalProgramFee: { type: Number, required: true, min: 0 },
     billingFrequency: { type: String, enum: ['monthly', 'term', 'semester', 'quarterly', 'biannual', 'annual', 'one_time', 'custom'], required: true },
     billingIntervalCount: { type: Number, min: 1, default: 1 },

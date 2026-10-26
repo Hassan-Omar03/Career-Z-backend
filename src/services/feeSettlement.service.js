@@ -1,6 +1,6 @@
 const AppError = require('../utils/AppError');
 
-// One set of rules for every way an institution fee gets paid online (Paddle, Stripe, JazzCash):
+// One set of rules for every way an institution fee gets paid online (JazzCash):
 // charge only what is still owed, record each payment as an instalment with its payer, keep
 // paid/outstanding/status right, and never silently swallow money that arrives for a fee that
 // is already settled (it is recorded and a refund is requested instead).

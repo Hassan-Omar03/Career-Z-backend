@@ -11,7 +11,7 @@ const productSchema = new mongoose.Schema(
       default: 'other'
     },
     price: { type: Number, required: true, min: 0 },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     stock: { type: Number, default: 0, min: 0 },
     images: [{ type: String }],
     views: { type: Number, default: 0 }, // real page views, incremented on getProduct

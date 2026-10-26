@@ -18,7 +18,7 @@ const sponsorshipSchema = new mongoose.Schema(
       reportedAt: { type: Date, default: Date.now }, verifiedAt: Date, rejectedAt: Date, rejectionReason: String
     }],
     nextPaymentDate: { type: Date, default: null },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     // pending: approved, funds not yet disbursed -> active: disbursed, ongoing -> paused: temporarily
     // on hold -> completed: sponsorship period finished -> cancelled: fell through
     status: { type: String, enum: ['pending', 'active', 'paused', 'completed', 'cancelled'], default: 'pending' }

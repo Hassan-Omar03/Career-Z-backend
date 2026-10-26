@@ -4,7 +4,6 @@ const SubscriptionPurchase = require('../models/SubscriptionPurchase');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const paddleService = require('../services/paddle.service');
 const { PAID_PLAN_KEYS } = require('../config/subscriptionPlans');
 const { getEffectivePlans, effectivePlanKey } = require('../utils/subscriptionGate');
 
@@ -43,11 +42,10 @@ const getInstitutionSubscription = asyncHandler(async (req, res) => {
   });
 });
 
-// POST /api/subscriptions/institutions/:id/checkout — creates a real Paddle transaction for one
-// 30-day period of the chosen plan. Same pending-record pattern as Featured Job / Course
-// checkout: nothing on the institution changes until the webhook/sync confirms actual payment.
+// POST /api/subscriptions/institutions/:id/checkout — starts a JazzCash checkout for one 30-day
+// period of the chosen plan (renewed by paying again). Same pending-record pattern as Featured
+// Job / Course checkout: nothing on the institution changes until JazzCash confirms payment.
 const createSubscriptionCheckout = asyncHandler(async (req, res) => {
-  if (!paddleService.isPaddleConfigured()) throw new AppError('Paddle checkout is not configured.', 503);
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
   if (institution.owner.toString() !== req.user._id.toString()) {
@@ -61,38 +59,15 @@ const createSubscriptionCheckout = asyncHandler(async (req, res) => {
   const amount = plans[plan].monthlyPriceUSD;
   if (!(amount > 0)) throw new AppError('This plan has no configured price yet — ask the Super Admin to set one.', 503);
 
-  const transaction = await paddleService.createTransaction({
-    title: `CareerZ ${plans[plan].label} plan — 30 days — ${institution.name}`,
-    amount, currencyCode: 'USD',
-    customerEmail: req.user.email,
-    metadata: { kind: 'subscription', institutionId: institution._id.toString(), plan, purchasedBy: req.user._id.toString() }
+  // Confirmation arrives through JazzCash's return/IPN or /api/payments/jazzcash/:txnRefNo/sync.
+  const { startCheckout } = require('./jazzcash.controller');
+  return startCheckout(req, res, {
+    kind: 'subscription', amount, currency: 'USD', description: `CareerZ ${plans[plan].label} plan 30 days`,
+    createRefs: async () => ({ subscriptionPurchase: (await SubscriptionPurchase.create({
+      institution: institution._id, plan, purchasedBy: req.user._id,
+      amount, currency: 'USD', paymentMethod: req.body?.gateway === 'safepay' ? 'safepay' : 'jazzcash', status: 'pending'
+    }))._id })
   });
-
-  await SubscriptionPurchase.create({
-    institution: institution._id, plan, purchasedBy: req.user._id,
-    amount, currency: 'USD', paddleTransactionId: transaction.id, status: 'pending'
-  });
-
-  return ok(res, { transactionId: transaction.id, status: transaction.status });
 });
 
-// GET /api/subscriptions/institutions/:id/checkout/:transactionId/sync — local-dev fallback,
-// same shape as the fee/course/featured-job sync endpoints (Paddle's webhook can't reach localhost).
-const syncSubscriptionCheckout = asyncHandler(async (req, res) => {
-  const purchase = await SubscriptionPurchase.findOne({
-    institution: req.params.id, paddleTransactionId: req.params.transactionId
-  });
-  if (!purchase) throw new AppError('Subscription checkout not found.', 404);
-  if (purchase.status !== 'paid') {
-    const transaction = await paddleService.getTransaction(purchase.paddleTransactionId);
-    if (transaction.status === 'completed') {
-      const { handleSubscriptionPaddleCompleted } = require('./webhook.controller');
-      await handleSubscriptionPaddleCompleted(transaction);
-    }
-  }
-  const refreshed = await SubscriptionPurchase.findById(purchase._id);
-  const institution = await Institution.findById(req.params.id);
-  return ok(res, { status: refreshed.status, subscription: institution.subscription });
-});
-
-module.exports = { getPlans, getInstitutionSubscription, createSubscriptionCheckout, syncSubscriptionCheckout };
+module.exports = { getPlans, getInstitutionSubscription, createSubscriptionCheckout };

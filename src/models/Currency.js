@@ -7,7 +7,11 @@ const currencySchema = new mongoose.Schema(
     symbol: { type: String, required: true },
     symbolPosition: { type: String, enum: ['left', 'right'], default: 'left' },
     decimalPlaces: { type: Number, default: 2 },
-    exchangeRateToUSD: { type: Number, default: 1 }, // updated via configured rate feed
+    exchangeRateToUSD: { type: Number, default: 1 }, // updated daily from the rate feed (services/exchangeRates.service.js)
+    // A rate the Super Admin set by hand is kept; the daily feed does not overwrite it.
+    rateManual: { type: Boolean, default: false },
+    rateUpdatedAt: { type: Date, default: null },
+    rateSource: { type: String, default: '' },
     active: { type: Boolean, default: true },
     isDefault: { type: Boolean, default: false }
   },

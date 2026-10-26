@@ -7,7 +7,7 @@ const withdrawalSchema = new mongoose.Schema(
   {
     agent: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     amount: { type: Number, required: true },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     commissions: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Commission' }],
     // How the agent wants to receive this payout, and their account reference — provided at
     // request time so whoever processes it knows where to send the money.

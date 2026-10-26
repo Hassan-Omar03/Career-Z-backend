@@ -78,6 +78,8 @@ const verifyEmail = asyncHandler(async (req, res) => {
 
   req.user.emailVerified = true;
   await req.user.save();
+  // Applications made as a guest with this email move into the account.
+  await require('../services/guestClaim.service').claimFor(req.user).catch(() => {});
 
   return ok(res, { user: req.user.toSafeJSON() }, 'Email verified successfully.');
 });

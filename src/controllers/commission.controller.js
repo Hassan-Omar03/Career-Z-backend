@@ -1,3 +1,4 @@
+const mongoose = require('mongoose');
 const Commission = require('../models/Commission');
 const Withdrawal = require('../models/Withdrawal');
 const Setting = require('../models/Setting');
@@ -9,7 +10,7 @@ const { generateTransactionId } = require('../utils/transactionId');
 const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 
 const COMMISSION_RATE_KEY = 'commission_rate_percent';
-const DEFAULT_COMMISSION_RATE = 10;
+const DEFAULT_COMMISSION_RATE = 0; // unset = 0 until the Super Admin sets it
 
 // GET /api/commissions/rate — the current platform-wide commission percentage. Any
 // authenticated user can read it (it's shown on the Post-a-Job / Commission pages).
@@ -41,10 +42,11 @@ const myCommissions = asyncHandler(async (req, res) => {
   // Grouped by currency — summing across different currencies would be a false total.
   const totalsByCurrency = {};
   commissions.forEach((c) => {
-    const t = totalsByCurrency[c.currency] || { earned: 0, pending: 0, available: 0, paid: 0, cancelled: 0 };
+    const t = totalsByCurrency[c.currency] || { earned: 0, pending: 0, available: 0, withdrawing: 0, paid: 0, cancelled: 0 };
     if (c.status !== 'cancelled') t.earned += c.amount;
     if (c.status === 'pending' || c.status === 'approved') t.pending += c.amount;
-    if (c.status === 'available') t.available += c.amount;
+    // Available earnings already in an open withdrawal request are not available again.
+    if (c.status === 'available') t[c.withdrawal ? 'withdrawing' : 'available'] += c.amount;
     if (c.status === 'paid') t.paid += c.amount;
     if (c.status === 'cancelled') t.cancelled += c.amount;
     totalsByCurrency[c.currency] = t;
@@ -95,21 +97,31 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
   if (!payoutDetails || !payoutDetails.trim()) throw new AppError('payoutDetails (e.g. account number) is required.', 422);
   if (!accountTitle || !accountTitle.trim()) throw new AppError("The account holder's name (accountTitle) is required.", 422);
 
-  const available = await Commission.find({ agent: req.user._id, status: 'available', currency });
-  if (available.length === 0) throw new AppError('No available commission balance in that currency.', 422);
+  if (!Withdrawal.schema.path('payoutMethod').enumValues.includes(payoutMethod)) {
+    throw new AppError('Commission payouts go by bank transfer, mobile wallet or other.', 422);
+  }
 
-  const amount = available.reduce((sum, c) => sum + c.amount, 0);
+  // Reserve the available commissions for this withdrawal in the same transaction that creates it,
+  // so the same earnings can never sit in two withdrawal requests (sequential or parallel).
+  const withdrawalId = new mongoose.Types.ObjectId();
   // A findable receipt exists from the moment the request is made, not only once an admin
   // processes it — same reasoning as the main Wallet withdrawal flow.
   const transactionId = generateTransactionId();
-  const withdrawal = await Withdrawal.create({
-    agent: req.user._id,
-    amount,
-    currency,
-    commissions: available.map((c) => c._id),
-    payoutMethod,
-    payoutDetails: `${accountTitle.trim()} — ${payoutDetails.trim()}`,
-    transactionId
+  const withdrawal = await mongoose.connection.transaction(async (session) => {
+    await Commission.updateMany({ agent: req.user._id, status: 'available', currency, withdrawal: null }, { $set: { withdrawal: withdrawalId } }, { session });
+    const reserved = await Commission.find({ withdrawal: withdrawalId }).session(session);
+    if (reserved.length === 0) throw new AppError('No available commission balance in that currency.', 422);
+    const [row] = await Withdrawal.create([{
+      _id: withdrawalId,
+      agent: req.user._id,
+      amount: reserved.reduce((sum, c) => sum + c.amount, 0),
+      currency,
+      commissions: reserved.map((c) => c._id),
+      payoutMethod,
+      payoutDetails: `${accountTitle.trim()} — ${payoutDetails.trim()}`,
+      transactionId
+    }], { session });
+    return row;
   });
 
   return created(res, withdrawal, `Withdrawal requested — receipt ${transactionId}.`);
@@ -121,25 +133,20 @@ const myWithdrawals = asyncHandler(async (req, res) => {
   return ok(res, withdrawals);
 });
 
-// PATCH /api/commissions/withdrawals/:id/status — admin processes a withdrawal; marking it
-// "paid" cascades the linked commissions to "paid" too, so the two ledgers stay consistent.
+// PATCH /api/commissions/withdrawals/:id/status — CareerZ finance processes a withdrawal
+// (requested -> processing -> paid | rejected; paid and rejected are final). Paid settles the
+// reserved commissions; rejected releases them so they can be withdrawn again.
 const updateWithdrawalStatus = asyncHandler(async (req, res) => {
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
   const { status } = req.body;
-  if (!['requested', 'processing', 'paid', 'rejected'].includes(status)) {
-    throw new AppError('Invalid status.', 422);
-  }
-  const withdrawal = await Withdrawal.findById(req.params.id);
-  if (!withdrawal) throw new AppError('Withdrawal not found.', 404);
-
-  withdrawal.status = status;
+  // The receipt was generated at request time (shown to the agent then) and is kept as is.
+  const withdrawal = await require('../utils/payoutStatus').advancePayout(Withdrawal, req.params.id, status,
+    status === 'paid' || status === 'rejected' ? { processedAt: new Date() } : {});
   if (status === 'paid') {
-    withdrawal.processedAt = new Date();
-    // The receipt was already generated at request time (shown to the agent then) — keep it,
-    // never overwrite it, so the same receipt id stays valid through the whole lifecycle.
-    if (!withdrawal.transactionId) withdrawal.transactionId = generateTransactionId();
-    await Commission.updateMany({ _id: { $in: withdrawal.commissions } }, { status: 'paid' });
+    await Commission.updateMany({ _id: { $in: withdrawal.commissions }, withdrawal: withdrawal._id }, { $set: { status: 'paid' } });
+  } else if (status === 'rejected') {
+    await Commission.updateMany({ _id: { $in: withdrawal.commissions }, withdrawal: withdrawal._id }, { $set: { withdrawal: null } });
   }
-  await withdrawal.save();
 
   const WITHDRAWAL_NOTIFY_TITLE = {
     requested: `Withdrawal requested: ${withdrawal.currency} ${withdrawal.amount}`,
@@ -155,7 +162,14 @@ const updateWithdrawalStatus = asyncHandler(async (req, res) => {
   return ok(res, withdrawal, 'Withdrawal updated.');
 });
 
+// GET /api/commissions/withdrawals/open — CareerZ finance's queue of agent payouts to send.
+const openWithdrawals = asyncHandler(async (req, res) => {
+  await require('../utils/platformFinance').assertPlatformFinance(req.user);
+  const list = await Withdrawal.find({ status: { $in: ['requested', 'processing'] } }).populate('agent', 'fullName email').sort({ createdAt: 1 });
+  return ok(res, list);
+});
+
 module.exports = {
-  myCommissions, updateCommissionStatus, requestWithdrawal, myWithdrawals, updateWithdrawalStatus,
+  myCommissions, updateCommissionStatus, requestWithdrawal, myWithdrawals, updateWithdrawalStatus, openWithdrawals,
   getCommissionRate, setCommissionRate
 };

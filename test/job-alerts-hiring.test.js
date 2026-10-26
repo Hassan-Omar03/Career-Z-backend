@@ -133,13 +133,22 @@ test('weekly digest emails matching new jobs once a week, and respects unsubscri
 });
 
 test('hiring stages: history, notes, agent joining needs the candidate, then commission; employers confirm directly', async () => {
-  const agentJob = await api('Agent', 'POST', '/jobs', job({ title: 'Sales Officer', category: 'sales_marketing', skills: [], description: 'Field sales for an FMCG distributor in Lahore. Graduates welcome; training provided.' }));
+  const agentJob = await api('Agent', 'POST', '/jobs', job({ employerEmail: u.Employer.email, title: 'Sales Officer', category: 'sales_marketing', skills: [], description: 'Field sales for an FMCG distributor in Lahore. Graduates welcome; training provided.' }));
   assert.equal(agentJob.body.data.status, 'active');
+  // The agent recruits for an employer on CareerZ, who accepts and will pay the commission.
+  expect(await api('Skilled', 'PATCH', `/jobs/${agentJob.body.data._id}/agent-request`, { accept: true }), 404, 'only that employer answers');
+  expect(await api('Employer', 'PATCH', `/jobs/${agentJob.body.data._id}/agent-request`, { accept: true }), 200, 'employer accepts');
   expect(await api('Skilled', 'POST', `/jobs/${agentJob.body.data._id}/apply`, { coverLetter: 'Hello' }), 201);
   assert.ok(emailsTo('Agent').some((e) => /New application/.test(e.subject)), 'agent emailed about the application');
   assert.ok(emailsTo('Skilled').some((e) => /Application received/.test(e.subject)), 'applicant receipt');
   const app = await model('JobApplication').findOne({ job: agentJob.body.data._id });
-  for (const s of ['viewed', 'shortlisted', 'interview', 'final_interview', 'selected', 'accepted']) expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: s, note: s === 'interview' ? 'Interview on Monday at 10am.' : '' }), 200, s);
+  for (const s of ['viewed', 'shortlisted', 'interview', 'final_interview']) expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: s, note: s === 'interview' ? 'Interview on Monday at 10am.' : '' }), 200, s);
+  expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'accepted' }), 409, 'no acceptance without an offer');
+  expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'withdrawn' }), 422, 'only the candidate withdraws');
+  expect(await api('Agent', 'POST', `/jobs/applications/${app._id}/offer`, { salary: 50000, currency: 'PKR' }), 200);
+  expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' }), 409, 'not joined before the offer is accepted');
+  const offer = await model('Employment').findOne({ application: app._id });
+  expect(await api('Skilled', 'PATCH', `/employment/${offer._id}/respond`, { decision: 'accepted' }), 200);
   assert.ok((await notes('Skilled', { category: 'application' })).some((n) => n.body === 'Interview on Monday at 10am.'), 'agent note reaches the candidate');
   expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'completed' }), 409, 'cannot complete before joining');
   const joined = await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' });
@@ -152,6 +161,7 @@ test('hiring stages: history, notes, agent joining needs the candidate, then com
   const commission = await model('Commission').findOne({ application: app._id });
   assert.ok(commission, 'commission after confirmed joining');
   assert.equal(String(commission.agent), String(u.Agent._id));
+  assert.equal(String(commission.employer), String(u.Employer._id), 'the employer pays it');
   assert.equal((await model('Job').findById(agentJob.body.data._id)).status, 'filled');
   expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'completed' }), 200);
   const history = (await model('JobApplication').findById(app._id)).statusHistory.map((h) => `${h.status}:${h.byRole}`);

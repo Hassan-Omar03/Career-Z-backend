@@ -13,6 +13,9 @@ const resumeSchema = new mongoose.Schema(
     linkedinUrl: { type: String, default: '' },
     // No file storage service is wired up — same paste-a-link pattern as User.profilePhoto.
     cvFileUrl: { type: String, default: '' },
+    // An uploaded CV file (PDF/Word), kept private (see services/cvChoice.service.js).
+    cvFile: { type: mongoose.Schema.Types.ObjectId, ref: 'PrivateFile', default: null },
+    cvFileName: { type: String, default: '' },
     // Career Portfolio privacy (spec Part 10.7 / 10.25) — student chooses whether this
     // profile is visible to anyone with the link, or private (default).
     isPublic: { type: Boolean, default: false },

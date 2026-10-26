@@ -7,8 +7,6 @@ const mongoose = require('mongoose');
 const { MongoMemoryReplSet } = require('mongodb-memory-server');
 
 process.env.NODE_ENV = 'test';
-process.env.PADDLE_API_KEY = 'test-key';
-process.env.PADDLE_WEBHOOK_SECRET = 'test-paddle-rel';
 
 const notifications = require('../src/services/notification.service');
 mock.method(notifications, 'notify', async () => {});

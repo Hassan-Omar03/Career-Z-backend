@@ -13,6 +13,5 @@ router.get('/mine', ctrl.myLinksAsTeacher);
 router.get('/as-student', ctrl.myLinksAsStudent);
 router.get('/pending-guardian-approval', ctrl.pendingGuardianApproval);
 router.post('/:id/fee-checkout', ctrl.createFeeCheckout);
-router.get('/:id/fee-checkout/sync', ctrl.syncFeeCheckout);
 
 module.exports = router;

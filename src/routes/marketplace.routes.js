@@ -41,7 +41,9 @@ router.patch('/orders/:id/cancellation-response', requireRole('marketplace_selle
 router.patch('/orders/:id/refund-response', requireRole('marketplace_seller'), ctrl.respondToRefund);
 
 // Super Admin — processes a seller's withdrawal request (no back-office UI yet).
-router.patch('/sellers/withdrawals/:id/status', requireRole('super_admin'), ctrl.updateSellerWithdrawalStatus);
+// CareerZ finance (checked in the controller) lists and processes seller payouts.
+router.get('/sellers/withdrawals/open', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.openSellerWithdrawals);
+router.patch('/sellers/withdrawals/:id/status', requireRole('admin', 'super_admin', 'platform_staff'), ctrl.updateSellerWithdrawalStatus);
 
 // Any authenticated user — buying.
 router.post('/products/:id/orders', ctrl.placeOrder);

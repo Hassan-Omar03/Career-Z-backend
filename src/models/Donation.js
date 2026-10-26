@@ -10,7 +10,7 @@ const donationSchema = new mongoose.Schema(
     receiver: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     fundingRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'FundingRequest', required: true, index: true },
     amount: { type: Number, required: true, min: 0 },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     type: { type: String, enum: ['donation', 'sponsorship'], default: 'donation' },
     paymentMethod: { type: String, enum: ['bank_transfer', 'card', 'mobile_wallet', 'cash', 'other'], default: 'other' },
     // Internal ledger reference — this app has no real payment gateway, so this is a real,

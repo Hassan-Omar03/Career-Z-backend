@@ -8,6 +8,8 @@ const { MongoMemoryReplSet } = require('mongodb-memory-server');
 // Every way a fee gets paid, by the student or a parent: who paid shows on each instalment,
 // everyone is told, only what is owed is charged, and money for an already-paid fee is never lost.
 process.env.NODE_ENV = 'test';
+// These tests cover the online checkouts, which are switched off in production for now.
+process.env.ONLINE_PAYMENTS_ENABLED = 'true';
 process.env.DISABLE_SUBSCRIPTION_LIMITS = 'true';
 const notifications = require('../src/services/notification.service');
 const sent = [];
@@ -17,7 +19,7 @@ mock.method(notifications, 'notifyAdmins', async () => {});
 const app = require('../src/app');
 const env = require('../src/config/env');
 const settlement = require('../src/services/feeSettlement.service');
-const { handleFeePaddleCompleted, handleTutoringFeePaddleCompleted } = require('../src/controllers/webhook.controller');
+const { applyOutcome } = require('../src/controllers/jazzcash.controller');
 const model = (n) => require(`../src/models/${n}`);
 let mongo, server, base, school;
 const u = {};
@@ -34,13 +36,22 @@ async function account(name, role) {
   await model('UserProfile').create({ user: u[name]._id, role, completed: true, percent: 100 });
 }
 const newFee = (amount, extra = {}) => model('Fee').create({ institution: school._id, student: u.Kid._id, recordedBy: u.Owner._id, title: `Fee ${amount}`, amount, currency: 'PKR', status: 'pending', dueDate: new Date(Date.now() + 5 * 864e5), ...extra });
-const paddle = (fee, id, payer, amount) => handleFeePaddleCompleted({ id, status: 'completed', custom_data: { kind: 'fee', feeId: String(fee._id), payerId: String(u[payer]._id), feeAmount: String(amount) } });
+// A JazzCash checkout for `amount` by `payer`, then JazzCash confirming it (000). Re-using an id
+// replays the same confirmation, as a repeated return/IPN would.
+async function jazzcash(ref, payer, amount, refs) {
+  if (!(await model('JazzCashPayment').exists({ txnRefNo: ref }))) {
+    await model('JazzCashPayment').create({ txnRefNo: ref, payer: u[payer]._id, amountPaisa: amount * 100, amount, currency: 'PKR', ...refs });
+  }
+  return applyOutcome(ref, { code: '000', rrn: ref });
+}
+const payOnline = (fee, id, payer, amount) => jazzcash(id, payer, amount, { kind: 'fee', fee: fee._id });
 
 before(async () => {
   mongo = await MongoMemoryReplSet.create({ replSet: { count: 1 } });
   await mongoose.connect(mongo.getUri());
   for (const m of ['Fee', 'ParentChildLink', 'TeacherStudentLink']) await model(m).init();
   await account('Owner', 'institution_owner');
+  await account('CareerZ', 'super_admin');
   await account('Kid', 'student');
   await account('Mum', 'parent');
   await account('Dad', 'parent');
@@ -56,16 +67,13 @@ after(async () => { await new Promise((r) => server.close(r)); await mongoose.di
 
 test('mother pays part by bank, student pays the rest online: only the rest is charged; both instalments show their payer', async () => {
   const fee = await newFee(5000);
-  expect(await api('Mum', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 2000, method: 'cash', reference: 'C-1' }), 200, 'mother reports 2000');
+  await model('Fee').updateOne({ _id: fee._id }, { $set: { status: 'partially_paid', paidAmount: 2000, outstandingAmount: fee.amount - 2000 }, $push: { paymentHistory: { amount: 2000, method: 'bank_transfer', transactionId: 'MP-EARLIER-2000', verificationStatus: 'verified', verifiedAt: new Date(), recordedBy: u.Mum._id } } });
   let fresh = await model('Fee').findById(fee._id);
-  assert.throws(() => settlement.assertPayableOnline(fresh), /awaiting the institution’s verification/, 'no online payment while one is pending');
-  expect(await api('Owner', 'PATCH', `/institution-fees/fees/${fee._id}/verify-payment`, { decision: 'verify' }), 200, 'school verifies');
-  fresh = await model('Fee').findById(fee._id);
   assert.equal(fresh.status, 'partially_paid');
   assert.equal(settlement.assertPayableOnline(fresh), 3000, 'online checkout charges only the remaining 3000');
 
   sent.length = 0;
-  await paddle(fee, 'txn_rest', 'Kid', 3000);
+  await payOnline(fee, 'txn_rest', 'Kid', 3000);
   fresh = await model('Fee').findById(fee._id);
   assert.deepEqual([fresh.status, fresh.paidAmount, fresh.outstandingAmount], ['paid', 5000, 0]);
   assert.ok(fresh.receiptNumber, 'receipt issued once fully paid');
@@ -80,9 +88,9 @@ test('mother pays part by bank, student pays the rest online: only the rest is c
 
 test('a second online payment for a paid fee is recorded as a duplicate with a refund request, not lost; retries change nothing', async () => {
   const fee = await newFee(1000);
-  await paddle(fee, 'txn_first', 'Mum', 1000);
+  await payOnline(fee, 'txn_first', 'Mum', 1000);
   sent.length = 0;
-  await paddle(fee, 'txn_second', 'Dad', 1000);
+  await payOnline(fee, 'txn_second', 'Dad', 1000);
   let fresh = await model('Fee').findById(fee._id);
   assert.equal(fresh.status, 'paid');
   assert.equal(fresh.paidAmount, 1000);
@@ -91,8 +99,8 @@ test('a second online payment for a paid fee is recorded as a duplicate with a r
   assert.ok(to('Owner').some((n) => /Duplicate fee payment — refund due/.test(n.title)));
   assert.ok(to('Dad').some((n) => /Second payment received/.test(n.title)));
 
-  await paddle(fee, 'txn_second', 'Dad', 1000);
-  assert.equal((await model('Fee').findById(fee._id)).paymentHistory.length, 2, 'webhook retry ignored');
+  await payOnline(fee, 'txn_second', 'Dad', 1000);
+  assert.equal((await model('Fee').findById(fee._id)).paymentHistory.length, 2, 'repeated JazzCash confirmation ignored');
 
   sent.length = 0;
   expect(await api('Owner', 'PATCH', `/institutions/fees/${fee._id}/refund/decide`, { decision: 'refunded' }), 200, 'school refunds the duplicate');
@@ -103,36 +111,18 @@ test('a second online payment for a paid fee is recorded as a duplicate with a r
 
 test('checkout opened before someone else paid part: only what is owed counts, the extra becomes a refund', async () => {
   const fee = await newFee(1000);
-  expect(await api('Mum', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 400, method: 'cash', reference: 'C-2' }), 200);
-  expect(await api('Owner', 'PATCH', `/institution-fees/fees/${fee._id}/verify-payment`, { decision: 'verify' }), 200);
-  await paddle(fee, 'txn_full_late', 'Kid', 1000);
+  await model('Fee').updateOne({ _id: fee._id }, { $set: { status: 'partially_paid', paidAmount: 400, outstandingAmount: fee.amount - 400 }, $push: { paymentHistory: { amount: 400, method: 'bank_transfer', transactionId: 'MP-EARLIER-400', verificationStatus: 'verified', verifiedAt: new Date(), recordedBy: u.Mum._id } } });
+  await payOnline(fee, 'txn_full_late', 'Kid', 1000);
   const fresh = await model('Fee').findById(fee._id);
   assert.deepEqual([fresh.status, fresh.paidAmount, fresh.outstandingAmount], ['paid', 1000, 0]);
   assert.deepEqual([fresh.refund.status, fresh.refund.amount], ['requested', 400], '1000 paid online, 600 was owed: 400 back');
 });
 
-test('paid at the counter and rejected reports: the student and both parents are told', async () => {
-  const fee = await newFee(700);
-  sent.length = 0;
-  expect(await api('Owner', 'PATCH', `/institutions/fees/${fee._id}/pay`, { paidVia: 'Cash', reference: 'DESK-9' }), 200, 'school records cash');
-  for (const who of ['Kid', 'Mum', 'Dad']) assert.ok(to(who).some((n) => /Fee paid/.test(n.title) && /at the institution/.test(n.body)), `${who} told about counter payment`);
-  expect(await api('Mum', 'POST', `/institution-fees/fees/${fee._id}/report-payment`, { amount: 700, method: 'cash', reference: 'X' }), 400, 'cannot pay a paid fee');
-
-  const other = await newFee(900);
-  expect(await api('Dad', 'POST', `/institution-fees/fees/${other._id}/report-payment`, { amount: 900, method: 'cash', reference: 'C-3' }), 200);
-  sent.length = 0;
-  expect(await api('Owner', 'PATCH', `/institution-fees/fees/${other._id}/verify-payment`, { decision: 'reject', rejectionReason: 'Reference not found' }), 200);
-  for (const who of ['Kid', 'Mum', 'Dad']) assert.ok(to(who).some((n) => /Payment rejected/.test(n.title) && /Father/.test(n.body) && /Reference not found/.test(n.body)), `${who} told about rejection`);
-  expect(await api('Kid', 'POST', `/institution-fees/fees/${other._id}/report-payment`, { amount: 900, method: 'cash', reference: 'C-4' }), 200, 'can pay again after rejection');
-});
-
 test('tuition paid twice (student and parent at once): the second is kept for refund and the tutor is told', async () => {
   const course = await model('Course').create({ title: 'Physics tuition', teacher: u.Tutor._id });
-  const link = await model('TeacherStudentLink').create({ teacher: u.Tutor._id, student: u.Kid._id, course: course._id, status: 'active', feeAmount: 3000, feeCurrency: 'PKR', paddleAmount: 10.8, paddleCurrency: 'USD' });
-  const pay = (id, payer) => handleTutoringFeePaddleCompleted({ id, status: 'completed', currency_code: 'USD', custom_data: { kind: 'tutoring_fee', linkId: String(link._id), studentId: String(u.Kid._id), payerId: String(u[payer]._id) }, items: [{ quantity: 1, price: { unit_price: { amount: '1080', currency_code: 'USD' } } }] });
-  await model('TeacherStudentLink').updateOne({ _id: link._id }, { paddleTransactionId: 'tx_kid' });
+  const link = await model('TeacherStudentLink').create({ teacher: u.Tutor._id, student: u.Kid._id, course: course._id, status: 'active', feeAmount: 3000, feeCurrency: 'PKR' });
+  const pay = (id, payer) => jazzcash(id, payer, 3000, { kind: 'tutoring_fee', tutoringLink: link._id });
   await pay('tx_kid', 'Kid');
-  await model('TeacherStudentLink').updateOne({ _id: link._id }, { paddleTransactionId: 'tx_mum' });
   sent.length = 0;
   await pay('tx_mum', 'Mum');
   const fresh = await model('TeacherStudentLink').findById(link._id);

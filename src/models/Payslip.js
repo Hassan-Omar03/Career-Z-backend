@@ -14,7 +14,7 @@ const payslipSchema = new mongoose.Schema(
     deductions: { type: Number, default: 0 },
     taxAmount: { type: Number, default: 0 },
     netAmount: { type: Number, required: true },
-    currency: { type: String, default: 'USD' },
+    currency: { type: String, default: 'PKR' },
     status: { type: String, enum: ['pending', 'processing', 'paid', 'rejected'], default: 'pending' },
     paidAt: { type: Date },
     paymentMethod: { type: String, enum: ['bank_transfer', 'mobile_wallet', 'crypto', 'cash', 'other', 'platform_wallet', 'stripe_transfer', ''], default: '' },

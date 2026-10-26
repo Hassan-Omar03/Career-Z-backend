@@ -6,6 +6,8 @@ const { requireRole } = require('../middleware/rbac');
 router.use(protect);
 
 router.get('/me', ctrl.getMyWallet);
+router.get('/payout-account', ctrl.getPayoutAccount);
+router.put('/payout-account', ctrl.savePayoutAccount);
 router.post('/withdraw', ctrl.requestWithdrawal);
 router.post('/transfer', ctrl.transfer);
 

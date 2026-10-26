@@ -36,16 +36,6 @@ module.exports = {
     publishableKey: process.env.STRIPE_PUBLISHABLE_KEY || '',
     webhookSecret: process.env.STRIPE_WEBHOOK_SECRET || ''
   },
-  // Real Paddle (Billing) integration — CareerZ's primary worldwide card/Apple Pay/Google Pay
-  // gateway (client-provided, platform-wide; empty keys = not configured). Paddle is a
-  // Merchant of Record: CareerZ is the single seller Paddle sees, and pays institutions out
-  // separately/internally — Paddle never auto-splits funds to individual institutions.
-  paddle: {
-    apiKey: process.env.PADDLE_API_KEY || '',
-    clientToken: process.env.PADDLE_CLIENT_TOKEN || '',
-    webhookSecret: process.env.PADDLE_WEBHOOK_SECRET || '',
-    environment: process.env.PADDLE_ENVIRONMENT || 'sandbox' // 'sandbox' | 'production'
-  },
   // Real JazzCash (Pakistan) payments — mobile account, card and voucher via JazzCash's hosted
   // page. Same "empty = not configured" rule. returnUrl is where JazzCash posts the payer's
   // browser back to; it must match the Return URL registered on the JazzCash merchant portal.
@@ -58,7 +48,7 @@ module.exports = {
     returnUrl: (process.env.JAZZCASH_RETURN_URL || '').trim()
   },
   // Real crypto wallet top-ups (USDT TRC20 / BTC / ETH) via NOWPayments — client-provided keys,
-  // same "empty = not configured" rule as Paddle above.
+  // same "empty = not configured" rule as Stripe above.
   nowPayments: {
     apiKey: process.env.NOWPAYMENTS_API_KEY || '',
     ipnSecret: process.env.NOWPAYMENTS_IPN_SECRET || ''
