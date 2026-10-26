@@ -9,13 +9,19 @@ const { ok, created } = require('../utils/apiResponse');
 // complaints in one query instead of one lookup per row.
 async function attachUserTargets(complaints) {
   const userTargetIds = complaints.filter((c) => ['user', 'agent'].includes(c.targetType) && c.targetId).map((c) => c.targetId);
-  if (userTargetIds.length === 0) return complaints.map((c) => ({ ...c.toObject(), target: null }));
+  const instTargetIds = complaints.filter((c) => c.targetType === 'institution' && c.targetId).map((c) => c.targetId);
+  if (userTargetIds.length === 0 && instTargetIds.length === 0) return complaints.map((c) => ({ ...c.toObject(), target: null }));
 
-  const users = await User.find({ _id: { $in: userTargetIds } }).select('fullName email phone roles');
+  const [users, institutions] = await Promise.all([
+    User.find({ _id: { $in: userTargetIds } }).select('fullName email phone roles'),
+    require('../models/Institution').find({ _id: { $in: instTargetIds } }).select('name owner').populate('owner', 'fullName email phone')
+  ]);
   const byId = new Map(users.map((u) => [String(u._id), u]));
+  // An institution target shows as the institute (with its owner to contact).
+  const instById = new Map(institutions.map((i) => [String(i._id), { _id: i._id, fullName: i.name, institution: true, email: i.owner?.email, phone: i.owner?.phone, owner: i.owner?.fullName }]));
   return complaints.map((c) => ({
     ...c.toObject(),
-    target: ['user', 'agent'].includes(c.targetType) && c.targetId ? byId.get(String(c.targetId)) || null : null
+    target: !c.targetId ? null : ['user', 'agent'].includes(c.targetType) ? byId.get(String(c.targetId)) || null : c.targetType === 'institution' ? instById.get(String(c.targetId)) || null : null
   }));
 }
 
@@ -27,8 +33,13 @@ const createComplaint = asyncHandler(async (req, res) => {
   if (['user', 'agent'].includes(targetType) && targetId) {
     const targetUser = await User.findById(targetId).select('_id roles');
     if (!targetUser) throw new AppError('The selected person could not be found.', 404);
-    // A complaint about an agent is filed as one (master: agent ↔ institution complaints).
+    // Master: agent ↔ institution complaints. A complaint about an agent is filed against the
+    // agent; an agent's complaint about an institute's owner is filed against the institute.
     if (targetUser.roles.includes('education_agent')) req.body.targetType = 'agent';
+    else if (req.user.roles.includes('education_agent') && targetUser.roles.some((r) => ['institution_owner', 'academy_owner'].includes(r))) {
+      const institution = await require('../models/Institution').findOne({ owner: targetUser._id }).select('_id');
+      if (institution) { req.body.targetType = 'institution'; req.body.targetId = institution._id; }
+    }
   }
 
   const ids=req.body.messageIds||[],groupIds=req.body.groupMessageIds||[];
@@ -42,7 +53,7 @@ const createComplaint = asyncHandler(async (req, res) => {
     category: category || 'other',
     description,
     targetType: req.body.targetType || 'none',
-    targetId: targetId || null
+    targetId: req.body.targetId || null
   });
 
   return created(res, complaint, 'Complaint submitted.');

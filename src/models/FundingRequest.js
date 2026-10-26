@@ -22,7 +22,10 @@ const fundingRequestSchema = new mongoose.Schema(
     country: { type: String, default: '' },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     applicationDeadline: { type: Date, default: null },
-    documents: [{ name: String, url: String }], // supporting evidence — paste-a-URL, no file storage service
+    // Supporting evidence: uploaded files (private; owner, CareerZ staff and donors can open them),
+    // or older pasted links.
+    documents: [{ name: String, url: String, file: { type: mongoose.Schema.Types.ObjectId, ref: 'PrivateFile', default: null } }],
+    verificationNote: { type: String, default: '' },
     verificationStatus: { type: String, enum: ['pending', 'verified', 'rejected'], default: 'pending' },
     status: { type: String, enum: ['open', 'closed', 'fulfilled'], default: 'open' },
     // The donor-facing review pipeline for this request — separate from `status` (open/closed/fulfilled,

@@ -193,4 +193,39 @@ async function rankApplicants(user, jobId) {
   return { ranking };
 }
 
-module.exports = { postingBlock, assertMayPost, linkEmployer, employerRequests, respond, commissionFor, tellEmployerToPay, employerCommissions, listAgents, activity, setPostingBan, cancelLicence, improveDescription, rankApplicants };
+// Market trends (master: the agent's AI tells market trends): from CareerZ's own jobs of the last
+// 90 days — demand by field and city, salaries, wanted skills and competition. The numbers need no
+// AI; with the person's own AI key a short reading of them is added.
+async function marketTrends(user, { ai = false } = {}) {
+  const since = new Date(Date.now() - 90 * 864e5);
+  const match = { createdAt: { $gte: since }, status: { $in: ['active', 'paused', 'closed', 'filled'] } };
+  const [byCategory, byCity, skills, salaries, apps] = await Promise.all([
+    Job.aggregate([{ $match: match }, { $group: { _id: '$category', jobs: { $sum: 1 } } }, { $sort: { jobs: -1 } }, { $limit: 10 }]),
+    Job.aggregate([{ $match: { ...match, city: { $nin: [null, ''] } } }, { $group: { _id: { $toLower: '$city' }, jobs: { $sum: 1 } } }, { $sort: { jobs: -1 } }, { $limit: 8 }]),
+    Job.aggregate([{ $match: match }, { $unwind: '$skills' }, { $group: { _id: { $toLower: '$skills' }, n: { $sum: 1 } } }, { $sort: { n: -1 } }, { $limit: 12 }]),
+    Job.aggregate([{ $match: { ...match, currency: 'PKR', salaryMin: { $gt: 0 } } }, { $group: { _id: '$category', avgMin: { $avg: '$salaryMin' }, avgMax: { $avg: '$salaryMax' }, jobs: { $sum: 1 } } }, { $sort: { jobs: -1 } }, { $limit: 8 }]),
+    require('../models/JobApplication').aggregate([
+      { $match: { createdAt: { $gte: since } } },
+      { $lookup: { from: 'jobs', localField: 'job', foreignField: '_id', as: 'j' } }, { $unwind: '$j' },
+      { $group: { _id: '$j.category', applications: { $sum: 1 }, jobs: { $addToSet: '$j._id' } } },
+      { $project: { applications: 1, perJob: { $divide: ['$applications', { $max: [{ $size: '$jobs' }, 1] }] } } },
+      { $sort: { applications: -1 } }, { $limit: 8 }
+    ])
+  ]);
+  const round = (n) => Math.round(n || 0);
+  const stats = {
+    periodDays: 90,
+    jobsByField: byCategory.map((r) => ({ field: r._id || 'other', jobs: r.jobs })),
+    jobsByCity: byCity.map((r) => ({ city: r._id, jobs: r.jobs })),
+    topSkills: skills.map((r) => ({ skill: r._id, jobs: r.n })),
+    salaryPkr: salaries.map((r) => ({ field: r._id || 'other', avgMin: round(r.avgMin), avgMax: round(r.avgMax), jobs: r.jobs })),
+    competition: apps.map((r) => ({ field: r._id || 'other', applications: r.applications, perJob: Math.round(r.perJob * 10) / 10 }))
+  };
+  if (!ai) return { stats };
+  const text = await require('./ai.service').generate(user._id,
+    'You advise a recruitment agent in Pakistan. Using ONLY the numbers given, write 5 to 7 short bullet points starting with "- " on where demand is, which fields have few applicants per job (easier placements), salary levels and skills to look for in candidates. Never invent figures.',
+    JSON.stringify(stats));
+  return { stats, insight: String(text || '').trim() };
+}
+
+module.exports = { marketTrends, postingBlock, assertMayPost, linkEmployer, employerRequests, respond, commissionFor, tellEmployerToPay, employerCommissions, listAgents, activity, setPostingBan, cancelLicence, improveDescription, rankApplicants };

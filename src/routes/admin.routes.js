@@ -53,6 +53,12 @@ router.get('/agents', requireRole('admin', 'super_admin'), agentAdmin.listAgents
 router.get('/agents/:id/activity', requireRole('admin', 'super_admin'), agentAdmin.activity);
 router.patch('/agents/:id/posting-ban', requireRole('admin', 'super_admin'), agentAdmin.postingBan);
 router.post('/agents/:id/cancel-licence', requireRole('super_admin'), agentAdmin.cancelLicence);
+// Donor management (master: list, activity, verify, suspend) and the large-donation rule.
+const donorAdmin = require('../controllers/donorWork.controller');
+router.get('/donors', requireRole('admin', 'super_admin'), donorAdmin.listDonors);
+router.get('/donors/:id/activity', requireRole('admin', 'super_admin'), donorAdmin.activity);
+router.get('/donation-settings', requireRole('admin', 'super_admin'), donorAdmin.getSettings);
+router.put('/donation-settings', requireRole('super_admin'), donorAdmin.saveSettings);
 const recruitmentAdmin = require('../controllers/recruitment.controller').admin;
 router.get('/recruitment/invoices', requireDepartment('finance'), recruitmentAdmin.listInvoices);
 router.get('/recruitment/invoices/:id/proofs/:proofId', requireDepartment('finance'), recruitmentAdmin.proof);

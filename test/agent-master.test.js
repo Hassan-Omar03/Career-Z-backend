@@ -116,3 +116,27 @@ test('AI helpers need the person\'s own AI key; complaints can name an agent', a
   const c = await model('Complaint').create({ submittedBy: u.Employer._id, subject: 'Agent took money', description: 'x', category: 'fraud', targetType: 'agent', targetId: u.Agent._id });
   assert.equal(c.targetType, 'agent');
 });
+
+test('market trends come from CareerZ jobs without AI; AI reading needs a key', async () => {
+  const r = await api('Employer', 'GET', '/jobs/ai/market-trends');
+  is(r, 200, 'stats');
+  const s = r.body.data.stats;
+  assert.equal(s.periodDays, 90);
+  assert.ok(s.jobsByField.some((f) => f.field === 'sales_marketing' && f.jobs >= 1), 'counts this period\'s jobs');
+  assert.ok(s.salaryPkr.some((f) => f.avgMin === 60000), 'salary from PKR jobs');
+  const withAi = await api('Employer', 'GET', '/jobs/ai/market-trends?ai=1');
+  assert.ok(withAi.status >= 400 && withAi.status !== 500, 'no key: a clear error');
+});
+
+test('an agent\'s complaint about an institute owner is filed against the institute', async () => {
+  await account('Agent2', 'education_agent', 'individual');
+  await account('Principal', 'institution_owner');
+  const school = await model('Institution').create({ name: 'Complaint School', slug: 'complaint-school', type: 'school', country: 'PK', owner: u.Principal._id, verificationStatus: 'approved', status: 'active' });
+  const r = await api('Agent2', 'POST', '/complaints', { subject: 'Fee not paid', description: 'The institute did not pay the agreed fee.', category: 'billing', targetType: 'user', targetId: u.Principal._id });
+  is(r, 201, 'complaint');
+  const c = await model('Complaint').findById(r.body.data._id);
+  assert.deepEqual([c.targetType, String(c.targetId)], ['institution', String(school._id)]);
+  const back = await api('Principal', 'POST', '/complaints', { subject: 'Agent misled us', description: 'x', category: 'fraud', targetType: 'user', targetId: u.Agent2._id });
+  is(back, 201, 'institute complaint');
+  assert.equal((await model('Complaint').findById(back.body.data._id)).targetType, 'agent');
+});

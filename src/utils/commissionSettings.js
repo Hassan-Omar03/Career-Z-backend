@@ -7,6 +7,7 @@ const SERVICES = [
   { id: 'marketplace', key: 'marketplace_commission_percent', label: 'Marketplace sales', about: 'Taken from each delivered and paid order; per-category rates override it.' },
   { id: 'recruitment', key: 'recruitment_platform_fee_percent', label: 'Agent recruitment fees', about: 'Taken from each fee an institute pays an agent under an agreement.' },
   { id: 'donation', key: 'donation_commission_percent', label: 'Donations', about: 'Taken from each donation.' },
+  { id: 'scholarship', key: 'scholarship_commission_percent', label: 'Scholarship processing', about: 'Taken from each sponsorship payment a donor makes to a student.' },
   { id: 'agentHire', key: 'commission_rate_percent', label: "Agent's own hiring commission", about: "The agent's earning on a hire for the agent's own job (% of the salary). This is the agent's, not CareerZ's." }
 ];
 

@@ -98,7 +98,7 @@ const RESOLVERS = {
     if (request.verificationStatus !== 'verified') throw fail('Only Super Admin-verified requests can receive donations.', 403);
     const amount = round2(body.amount);
     if (!(amount >= 1)) throw fail('Enter the amount you want to give.');
-    return { title: `Donation: ${request.title}`, price: amount, currency: request.currency || 'PKR', recipient: request.requestedBy._id, rateKey: 'donation_commission_percent', refs: { fundingRequest: request._id }, openSuffix: '' };
+    return { title: `Donation: ${request.title}`, price: amount, currency: request.currency || 'PKR', recipient: request.requestedBy._id, rateKey: 'donation_commission_percent', refs: { fundingRequest: request._id }, openSuffix: '', donation: true };
   },
   async featured_job(user, id) {
     const { job, fee, days } = await require('../controllers/job.controller').loadFeaturableJob(id, user._id);
@@ -131,6 +131,18 @@ const RESOLVERS = {
     if (!isInstitution) throw fail('Only the institute can pay this invoice.', 403);
     if (!['issued', 'more_info_requested'].includes(invoice.status)) throw fail(`This invoice is ${invoice.status.replace(/_/g, ' ')}.`, 409);
     return { title: `Recruitment invoice ${invoice.number}`, price: invoice.agentEarning, fixedCommission: invoice.platformFee, currency: invoice.currency || 'PKR', recipient: invoice.agent, refs: { recruitmentInvoice: invoice._id, institution: invoice.institution } };
+  },
+  // A donor pays an approved scholarship student (all of it or an instalment).
+  async sponsorship_payment(user, id, body) {
+    if (!mongoose.isValidObjectId(id)) throw fail('Sponsorship not found.', 404);
+    const s = await require('../models/Sponsorship').findById(id).populate('scholarship', 'title');
+    if (!s || String(s.donor) !== String(user._id)) throw fail('Sponsorship not found.', 404);
+    if (['completed', 'cancelled', 'paused'].includes(s.status)) throw fail(`This sponsorship is ${s.status}.`, 409);
+    const remaining = round2((s.amount || 0) - (s.paidAmount || 0));
+    if (!(remaining > 0)) throw fail('This sponsorship is fully paid.', 409);
+    const amount = body.amount != null && body.amount !== '' ? round2(body.amount) : remaining;
+    if (!(amount > 0) || amount > remaining) throw fail(`Enter an amount up to the remaining ${s.currency} ${remaining}.`);
+    return { title: `Scholarship: ${s.scholarship?.title || 'sponsorship'}`, price: amount, currency: s.currency || 'PKR', recipient: s.student, rateKey: 'scholarship_commission_percent', refs: { sponsorship: s._id }, donation: true };
   },
   async wallet_topup(user, id, body) {
     const amount = round2(body.amount);
@@ -168,9 +180,11 @@ async function quote(user, kind, id, body = {}) {
   // commission: pay CareerZ first · waiting: CareerZ is checking that · seller: pay the seller · checking: all sent
   const stage = !open ? (commission > 0 && sellerAmount > 0 ? 'commission' : 'seller') : open.status === 'commission_verified' ? 'seller' : open.status === 'commission_submitted' ? 'waiting' : 'checking';
   const account = recipient ? { method: recipient.payoutAccount.method, bankName: recipient.payoutAccount.bankName, accountTitle: recipient.payoutAccount.accountTitle, accountNumber: recipient.payoutAccount.accountNumber } : null;
+  const threshold = item.donation ? await require('./donorWork.service').largeDonationThreshold() : 0;
+  const pricePkr = currency === 'PKR' ? price : (await toPkr(price, currency)).amount;
   return {
     kind, id: String(id || ''), title: item.title, currency, price, commissionRate: rate, commission, sellerAmount, total: round2(commission + sellerAmount),
-    stage, paymentNumber: open?.number || '',
+    stage, paymentNumber: open?.number || '', sourceOfFundsRequired: Boolean(threshold && pricePkr >= threshold && stage !== 'seller'),
     careerzAccount: careerz,
     // The seller's account is shown only once CareerZ's fee is confirmed (or when there is no fee).
     seller: recipient ? { id: recipient._id, name: recipient.fullName, phone: recipient.phone || '', account: stage === 'seller' ? account : null, _account: account } : null,
@@ -227,6 +241,8 @@ async function submit(user, kind, id, body = {}) {
   }
   // Step 1 (with a CareerZ fee): only the fee receipt; the seller is paid after CareerZ confirms it.
   const twoStep = q.commission > 0 && q.sellerAmount > 0;
+  const sourceOfFunds = String(body.sourceOfFunds || '').trim().slice(0, 1000);
+  if (q.sourceOfFundsRequired && sourceOfFunds.length < 10) throw fail('This is a large donation: say where the money comes from (for example salary, business income, family trust).');
   const legs = [];
   const c = q.commission > 0 ? checkLeg(body.commission, q.commission, q.seller ? 'CareerZ service fee' : 'CareerZ payment') : null;
   if (c) legs.push(c.key);
@@ -244,7 +260,7 @@ async function submit(user, kind, id, body = {}) {
       recipient: q.seller?.id || null,
       recipientSnapshot: q.seller ? { name: q.seller.name, email: '', phone: q.seller.phone, account: twoStep ? null : q.seller._account } : null,
       ...q.refs, currency: q.currency, price: q.price, commissionRate: q.commissionRate, commission: q.commission, sellerAmount: q.sellerAmount,
-      commissionLeg, sellerLeg, txnKeys: legs, openKey: q.openKey, status: twoStep ? 'commission_submitted' : 'submitted',
+      commissionLeg, sellerLeg, txnKeys: legs, openKey: q.openKey, status: twoStep ? 'commission_submitted' : 'submitted', sourceOfFunds,
       history: [{ action: twoStep ? 'service_fee_paid' : 'submitted', by: user._id, note: `${q.currency} ${twoStep ? q.commission : q.total}` }]
     });
   } catch (e) {
@@ -326,6 +342,15 @@ async function grant(mp, session) {
     const invoice = await RecruitmentInvoice.findOneAndUpdate({ _id: mp.recruitmentInvoice, status: { $in: ['issued', 'more_info_requested'] } }, { $set: { status: 'paid' }, $push: { history: { action: 'payment_verified', by: mp.review?.by || null, note: `Paid by bank transfer: CareerZ fee to CareerZ, agent share to the agent (${ref})` } } }, { new: true, session });
     if (!invoice) throw fail('This invoice is no longer waiting for payment.', 409);
     if (invoice.commission) await require('../models/Commission').updateOne({ _id: invoice.commission }, { $set: { status: 'paid' } }, { session });
+  } else if (mp.kind === 'sponsorship_payment') {
+    const s = await require('../models/Sponsorship').findById(mp.sponsorship).session(session);
+    if (!s) throw fail('Sponsorship not found.', 404);
+    const amount = Math.min(mp.price, round2((s.amount || 0) - (s.paidAmount || 0)));
+    if (!(amount > 0)) throw fail('This sponsorship is already fully paid.', 409);
+    s.paymentHistory.push({ amount, paymentMethod: 'bank_transfer', reference: ref, provider: 'Verified by CareerZ', status: 'verified', verifiedAt: new Date() });
+    s.paidAmount = round2((s.paidAmount || 0) + amount);
+    s.status = s.paidAmount >= s.amount ? 'completed' : 'active';
+    await s.save({ session });
   } else if (mp.kind === 'wallet_topup') {
     await require('../models/Wallet').findOneAndUpdate({ user: mp.payer, currency: mp.currency }, { $inc: { available: mp.price } }, { upsert: true, session, setDefaultsOnInsert: true });
     await require('../models/WalletTransaction').create([{ user: mp.payer, type: 'topup', amount: mp.price, currency: mp.currency, status: 'completed', reference: ref, note: 'Bank transfer top-up (verified by CareerZ)' }], { session });

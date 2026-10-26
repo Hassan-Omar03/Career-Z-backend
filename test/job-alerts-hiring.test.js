@@ -199,7 +199,7 @@ test('scholarship alerts reach the right audience once; decisions are emailed', 
   await api('Donor', 'POST', '/scholarships', { title: 'Teacher Research Fund', amount: 80000, currency: 'PKR', country: 'PK', audience: ['teachers'] });
   assert.equal((await notes('Teacher', { category: 'scholarship_alert' })).length, 1);
   assert.equal((await notes('Skilled', { category: 'scholarship_alert' })).length, 1, 'teacher-only fund not sent to students');
-  expect(await api('Skilled', 'POST', `/scholarships/${sid}/apply`, { statement: 'I study CS with a 3.6 CGPA.' }), 201);
+  expect(await api('Skilled', 'POST', `/scholarships/${sid}/apply`, require('./helpers/scholarshipForm')()), 201);
   const appl = await model('ScholarshipApplication').findOne({ scholarship: sid });
   emails.length = 0;
   const d = await api('Donor', 'PATCH', `/scholarships/applications/${appl._id}/status`, { status: 'approved' });

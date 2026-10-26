@@ -4,7 +4,7 @@ const mongoose = require('mongoose');
 // served only through endpoints that check who is asking.
 const privateFileSchema = new mongoose.Schema(
   {
-    purpose: { type: String, enum: ['payment_proof', 'guest_cv', 'resume_cv', 'offer_letter'], required: true, index: true },
+    purpose: { type: String, enum: ['payment_proof', 'guest_cv', 'resume_cv', 'offer_letter', 'scholarship_document', 'funding_document'], required: true, index: true },
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     filename: { type: String, required: true, maxlength: 160 },
     mimeType: { type: String, required: true },

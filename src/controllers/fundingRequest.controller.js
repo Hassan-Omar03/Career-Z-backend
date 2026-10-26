@@ -43,14 +43,34 @@ const createFundingRequest = asyncHandler(async (req, res) => {
   if (!body.requestType || !body.category || !body.title || body.requiredAmount === undefined) {
     throw new AppError('requestType, category, title and requiredAmount are required.', 422);
   }
+  // A student asks for themselves; an institute owner for the institute or a project.
+  const isOwner = (req.user.roles || []).some((r) => ['institution_owner', 'academy_owner'].includes(r));
+  if (body.requestType === 'student' && !(req.user.roles || []).includes('student')) throw new AppError('Only a student can ask for student funding.', 403);
+  if (['institution', 'project'].includes(body.requestType) && !isOwner) throw new AppError('Only an institute owner can ask for institute or project funding.', 403);
+  if (['institution', 'project'].includes(body.requestType)) {
+    const inst = await require('../models/Institution').findOne({ owner: req.user._id, ...(body.institution ? { _id: body.institution } : {}) }).select('_id');
+    if (!inst) throw new AppError('Choose one of your institutes.', 422);
+    body.institution = inst._id;
+  }
+  if (!(Number(body.requiredAmount) > 0)) throw new AppError('Enter the amount you need.', 422);
+  if (String(body.purpose || '').trim().length < 50) throw new AppError('Explain what the money is for (at least 50 characters).', 422);
+  // Uploaded evidence: only the person's own funding documents.
+  const PrivateFile = require('../models/PrivateFile');
+  const docs = [];
+  for (const d of [].concat(req.body.documents || []).slice(0, 8)) {
+    if (d?.fileId) {
+      const file = require('mongoose').isValidObjectId(d.fileId) ? await PrivateFile.findOne({ _id: d.fileId, owner: req.user._id, purpose: 'funding_document' }).select('filename') : null;
+      if (!file) throw new AppError('A document could not be found. Upload it again.', 422);
+      docs.push({ name: String(d.name || file.filename).slice(0, 120), file: file._id });
+    }
+  }
+  if (!docs.length) throw new AppError('Upload at least one supporting document (e.g. fee voucher, result card, estimate).', 422);
+  body.documents = docs;
 
   const request = await FundingRequest.create({ ...body, requestedBy: req.user._id });
 
-  const donorIds = await User.find({ roles: 'donor' }).select('_id');
-  await notifyMany(donorIds.map((u) => u._id), {
-    title: `New matching funding request: ${request.title}`,
-    sentBy: req.user._id
-  }).catch(() => {});
+  // CareerZ checks it first; donors hear about it once it is verified (verifyRequest).
+  await require('../services/notification.service').notifyAdmins({ title: `Funding request to verify: ${request.title}`, body: `${req.user.fullName} asks for ${request.currency} ${request.requiredAmount} (${request.requestType}).` }).catch(() => {});
 
   return created(res, request, 'Funding request submitted — pending verification.');
 });
@@ -356,26 +376,62 @@ const updateApplicationStatus = asyncHandler(async (req, res) => {
 });
 
 // PATCH /api/funding-requests/:id/verify — admin reviews and verifies/rejects a request.
+// POST /api/funding-requests/documents — upload one supporting document before submitting.
+const uploadDocument = asyncHandler(async (req, res) => {
+  const match = /^data:(image\/(png|jpe?g|webp)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.file?.data || ''));
+  if (!match) throw new AppError('Upload a PDF, PNG, JPG or WEBP file.', 422);
+  const data = Buffer.from(match[3], 'base64');
+  if (data.length > 3 * 1024 * 1024) throw new AppError('Each document must be 3 MB or smaller.', 422);
+  const file = await require('../models/PrivateFile').create({ purpose: 'funding_document', owner: req.user._id, filename: String(req.body.file.name || 'document').slice(0, 160), mimeType: match[1], size: data.length, data });
+  return created(res, { fileId: file._id, name: file.filename });
+});
+
+// GET /api/funding-requests/:id/documents/:fileId — the requester, CareerZ staff, or a donor.
+const requestDocument = asyncHandler(async (req, res) => {
+  const request = await FundingRequest.findById(req.params.id).select('requestedBy documents verificationStatus');
+  const doc = request?.documents?.find((d) => String(d.file) === String(req.params.fileId));
+  const roles = req.user.roles || [];
+  const staff = roles.some((r) => ['admin', 'super_admin', 'platform_staff'].includes(r));
+  const allowed = request && (String(request.requestedBy) === String(req.user._id) || staff || (roles.includes('donor') && request.verificationStatus === 'verified'));
+  if (!doc || !allowed) throw new AppError('Document not found.', 404);
+  return require('./resume.controller').sendPrivateFile(res, await require('../models/PrivateFile').findById(doc.file));
+});
+
+// GET /api/funding-requests/admin/review?status=pending — CareerZ staff check new requests.
+const adminList = asyncHandler(async (req, res) => {
+  const status = ['pending', 'verified', 'rejected'].includes(req.query.status) ? req.query.status : 'pending';
+  const rows = await FundingRequest.find({ verificationStatus: status }).populate('requestedBy', 'fullName email phone').populate('institution', 'name').sort({ createdAt: status === 'pending' ? 1 : -1 }).limit(200);
+  return ok(res, rows);
+});
+
 const verifyRequest = asyncHandler(async (req, res) => {
   const { verificationStatus } = req.body;
   if (!['pending', 'verified', 'rejected'].includes(verificationStatus)) throw new AppError('Invalid verificationStatus.', 422);
+  const note = String(req.body.note || '').trim().slice(0, 500);
+  if (verificationStatus === 'rejected' && !note) throw new AppError('Write why it is rejected; the person is told.', 422);
 
   const request = await FundingRequest.findById(req.params.id);
   if (!request) throw new AppError('Funding request not found.', 404);
   request.verificationStatus = verificationStatus;
+  request.verificationNote = note;
   await request.save();
 
   await notify(request.requestedBy, {
     title: `Funding request ${verificationStatus}: ${request.title}`,
+    body: verificationStatus === 'verified' ? 'Donors can now see it and donate.' : note,
     sentBy: req.user._id
   }).catch(() => {});
 
   await notifyPastDonors(request._id, { title: `Verification update: ${request.title} is now ${verificationStatus}`, sentBy: req.user._id }, req.user._id);
+  if (verificationStatus === 'verified') {
+    const donorIds = await User.find({ roles: 'donor', status: 'active' }).select('_id');
+    await notifyMany(donorIds.map((u) => u._id), { title: `New funding request: ${request.title}`, body: `${request.currency} ${request.requiredAmount} needed. Verified by CareerZ.`, link: '/dashboard?tab=recommendedFunding', sentBy: req.user._id }).catch(() => {});
+  }
 
   return ok(res, request, 'Verification updated.');
 });
 
-module.exports = {
+module.exports = { uploadDocument, requestDocument, adminList,
   createFundingRequest, listFundingRequests, listApplications, listRecommended, getFundingRequest, myFundingRequests,
   donate, saveRequest, unsaveRequest, listSaved, myDonations, myReceivedDonations, updateDonationStatus, verifyReceivedDonation, releaseDonationEscrow,
   updateApplicationStatus, verifyRequest, getDonationsEnabled, setDonationsEnabled

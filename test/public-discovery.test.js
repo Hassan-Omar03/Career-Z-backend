@@ -134,7 +134,7 @@ test('applying: right account type only, deadlines and seats enforced, no duplic
   expect(await api('Parent', 'POST', `/scholarships/${S.scholarship._id}/apply`, { statement: 'x' }), 403, 'scholarships are for students');
   expect(await api('Student', 'POST', `/scholarships/${S.lateScholarship._id}/apply`, { statement: 'x' }), 400, 'deadline passed');
   expect(await api('Student', 'POST', `/scholarships/${S.fullScholarship._id}/apply`, { statement: 'x' }), 400, 'no seats');
-  expect(await api('Student', 'POST', `/scholarships/${S.scholarship._id}/apply`, { statement: 'I study CS' }), 201, 'student applies');
+  expect(await api('Student', 'POST', `/scholarships/${S.scholarship._id}/apply`, require('./helpers/scholarshipForm')()), 201, 'student applies');
   const mine = await api('Student', 'GET', '/jobs/mine/applications').catch(() => null);
   assert.ok(await model('JobApplication').exists({ job: S.job._id, applicant: u.Student._id }));
 });

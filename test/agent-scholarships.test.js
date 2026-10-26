@@ -101,7 +101,7 @@ test('CareerZ donor provider: donor confirms, admin approves, applications go to
   expect(await api('Donor', 'POST', `/scholarships/${S.int}/donor-confirm`, { decision: 'confirm' }), 200);
   expect(await api('Admin', 'POST', `/admin/scholarships/${S.int}/decision`, { decision: 'approve' }), 200);
   assert.ok((await publicIds()).includes(S.int));
-  const a = await api('Stu', 'POST', `/scholarships/${S.int}/apply`, { statement: 'Top of my class' });
+  const a = await api('Stu', 'POST', `/scholarships/${S.int}/apply`, require('./helpers/scholarshipForm')());
   expect(a, 201);
   expect(await api('Agent', 'GET', `/scholarships/${S.int}/applicants`), 403, 'agent cannot see or decide applicants');
   expect(await api('Agent', 'PATCH', `/scholarships/applications/${a.body.data._id}/status`, { status: 'approved' }), 403);

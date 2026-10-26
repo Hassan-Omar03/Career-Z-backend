@@ -9,6 +9,10 @@ const scholarshipSchema = new mongoose.Schema(
     amount: { type: Number, required: true, min: 0 },
     currency: { type: String, default: 'PKR' },
     eligibilityCriteria: { type: String, default: '' },
+    // Documents the donor asks every applicant to upload (config/scholarshipApplication.js), plus
+    // any extra ones the donor named.
+    requiredDocuments: { type: [String], default: [] },
+    otherDocuments: { type: [String], default: [] },
     country: { type: String, default: '' },
     applicationDeadline: { type: Date },
     seatsAvailable: { type: Number, default: 1, min: 0 },

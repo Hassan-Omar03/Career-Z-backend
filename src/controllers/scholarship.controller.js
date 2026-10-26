@@ -20,6 +20,19 @@ function assertOwnsScholarship(scholarship, userId) {
 }
 
 // POST /api/scholarships
+const APPLY = require('../config/scholarshipApplication');
+// The donor's document list: known keys only, plus up to 5 named extra documents.
+function cleanDocuments(body) {
+  const out = {};
+  if (body.requiredDocuments !== undefined) out.requiredDocuments = [...new Set([].concat(body.requiredDocuments || []).filter((k) => APPLY.DOCUMENT_KEYS.includes(k)))];
+  if (body.otherDocuments !== undefined) out.otherDocuments = [...new Set([].concat(body.otherDocuments || []).map((s) => String(s || '').trim().slice(0, 80)).filter(Boolean))].slice(0, 5);
+  return out;
+}
+const docListOf = (s) => [
+  ...(s.requiredDocuments || []).map((k) => ({ key: k, label: APPLY.DOCUMENTS.find((d) => d.key === k)?.label || k })),
+  ...(s.otherDocuments || []).map((label, i) => ({ key: `other_${i}`, label }))
+];
+
 const createScholarship = asyncHandler(async (req, res) => {
   if (!(await isRoleVerified(req.user._id, 'donor'))) {
     throw new AppError('Your Donor account is pending Super Admin verification. You can browse the dashboard but cannot post a scholarship until it is approved.', 403);
@@ -31,6 +44,7 @@ const createScholarship = asyncHandler(async (req, res) => {
   ];
   const body = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) body[f] = req.body[f]; });
+  Object.assign(body, cleanDocuments(req.body));
   if (!body.title || body.amount === undefined) {
     throw new AppError('title and amount are required.', 422);
   }
@@ -77,6 +91,7 @@ const updateScholarship = asyncHandler(async (req, res) => {
     'title', 'description', 'amount', 'currency', 'eligibilityCriteria',
     'country', 'applicationDeadline', 'seatsAvailable', 'status'
   ];
+  if (req.body.requiredDocuments !== undefined || req.body.otherDocuments !== undefined) Object.assign(scholarship, cleanDocuments(req.body));
   // An agent listing goes live only through admin review; its donor may close it, not open it.
   if (scholarship.publishedBy && req.body.status !== undefined && req.body.status !== 'closed') throw new AppError('An agent listing is opened by admin review. You can close it.', 409);
   if (!['open', 'closed', undefined].includes(req.body.status)) throw new AppError('Invalid status.', 422);
@@ -107,16 +122,87 @@ const applyToScholarship = asyncHandler(async (req, res) => {
   const existing = await ScholarshipApplication.findOne({ scholarship: scholarship._id, applicant: req.user._id });
   if (existing) throw new AppError('You already applied to this scholarship.', 409);
 
+  // The application form, the reason for applying and each document the donor asked for.
+  const errors = {};
+  const form = {};
+  const input = req.body.form || {};
+  for (const f of APPLY.FIELDS) {
+    const v = String(input[f.key] ?? '').trim().slice(0, f.type === 'textarea' ? 500 : 120);
+    if (f.required && !v) { errors[f.key] = 'Required'; continue; }
+    if (v && f.pattern === 'email' && !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(v)) errors[f.key] = 'Enter a valid email';
+    if (v && f.pattern === 'phone' && !/^\+?\d[\d\s-]{8,16}\d$/.test(v)) errors[f.key] = 'Enter a valid phone number';
+    if (v && f.pattern === 'cnic' && !/^\d{5}-?\d{7}-?\d$/.test(v)) errors[f.key] = 'Use 13 digits, e.g. 35202-1234567-1';
+    if (v && f.pattern === 'number' && !(Number(v) >= 0)) errors[f.key] = 'Enter a number';
+    if (v && f.type === 'select' && !f.options.includes(v)) errors[f.key] = 'Choose one of the options';
+    if (v) form[f.key] = v;
+  }
+  if (Object.keys(errors).length) throw new AppError('Complete the application form.', 422, errors);
+  const reason = String(req.body.reason || req.body.statement || '').trim().slice(0, 3000);
+  if (reason.length < APPLY.REASON_MIN) throw new AppError(`Explain why you are applying (at least ${APPLY.REASON_MIN} characters).`, 422);
+  const wanted = docListOf(scholarship);
+  const given = Array.isArray(req.body.documents) ? req.body.documents : [];
+  const PrivateFile = require('../models/PrivateFile');
+  const documents = [];
+  for (const d of wanted) {
+    const g = given.find((x) => x?.key === d.key);
+    const file = g?.fileId && require('mongoose').isValidObjectId(g.fileId) ? await PrivateFile.findOne({ _id: g.fileId, owner: req.user._id, purpose: 'scholarship_document' }).select('filename') : null;
+    if (!file) throw new AppError(`Upload: ${d.label}.`, 422);
+    documents.push({ key: d.key, label: d.label, file: file._id, name: file.filename });
+  }
+
   const application = await ScholarshipApplication.create({
     scholarship: scholarship._id,
     applicant: req.user._id,
-    statement: req.body.statement || ''
+    statement: reason,
+    form,
+    documents
   });
+  // The donor hears about it.
+  if (scholarship.donor) await require('../services/notification.service').notify(scholarship.donor, { title: `New scholarship application: ${scholarship.title}`, body: `${form.fullName} (${form.currentDegree}, ${form.city}) applied.`, link: '/dashboard?tab=scholarships' }).catch(() => {});
 
   return created(res, application, 'Application submitted.');
 });
 
 // GET /api/scholarships/mine/applications (as applicant)
+// GET /api/scholarships/:id/apply-form — the form, the requested documents and what the profile
+// already knows (prefilled).
+const applyForm = asyncHandler(async (req, res) => {
+  const scholarship = await Scholarship.findById(req.params.id).select('title requiredDocuments otherDocuments status');
+  if (!scholarship) throw new AppError('Scholarship not found.', 404);
+  const profile = await require('../models/UserProfile').findOne({ user: req.user._id, role: { $in: ['student', 'teacher'] } }).select('fields').lean();
+  const p = profile?.fields || {};
+  const prefill = {
+    fullName: req.user.fullName || p.fullName || '', fatherName: p.fatherName || '', dateOfBirth: p.dateOfBirth ? String(p.dateOfBirth).slice(0, 10) : '', gender: p.gender || '',
+    phone: req.user.phone || p.contactNumber || '', email: req.user.email || '', address: p.address || '', city: p.city || req.user.city || '', province: p.province || '', country: p.country || req.user.country || 'Pakistan',
+    currentInstitution: p.institutionName || p.currentInstitution || '', currentDegree: p.degreeTitle || p.currentDegree || '', lastDegree: p.highestQualification || ''
+  };
+  return ok(res, { fields: APPLY.FIELDS, documents: docListOf(scholarship), reasonMin: APPLY.REASON_MIN, prefill });
+});
+
+// POST /api/scholarships/:id/documents — upload one requested document before applying.
+const uploadDocument = asyncHandler(async (req, res) => {
+  const scholarship = await Scholarship.findById(req.params.id).select('requiredDocuments otherDocuments');
+  if (!scholarship) throw new AppError('Scholarship not found.', 404);
+  const doc = docListOf(scholarship).find((d) => d.key === req.body.key);
+  if (!doc) throw new AppError('This document is not requested for this scholarship.', 422);
+  const match = /^data:(image\/(png|jpe?g|webp)|application\/pdf);base64,([A-Za-z0-9+/=]+)$/.exec(String(req.body.file?.data || ''));
+  if (!match) throw new AppError('Upload a PDF, PNG, JPG or WEBP file.', 422);
+  const data = Buffer.from(match[3], 'base64');
+  if (data.length > 3 * 1024 * 1024) throw new AppError('Each document must be 3 MB or smaller.', 422);
+  const file = await require('../models/PrivateFile').create({ purpose: 'scholarship_document', owner: req.user._id, filename: String(req.body.file.name || doc.label).slice(0, 160), mimeType: match[1], size: data.length, data });
+  return created(res, { fileId: file._id, key: doc.key, name: file.filename });
+});
+
+// GET /api/scholarships/applications/:appId/documents/:fileId — the donor (owner) or the applicant.
+const applicationDocument = asyncHandler(async (req, res) => {
+  const application = await ScholarshipApplication.findById(req.params.appId).populate('scholarship', 'donor');
+  if (!application) throw new AppError('Document not found.', 404);
+  const allowed = String(application.applicant) === String(req.user._id) || String(application.scholarship?.donor) === String(req.user._id);
+  const doc = (application.documents || []).find((d) => String(d.file) === String(req.params.fileId));
+  if (!allowed || !doc) throw new AppError('Document not found.', 404);
+  return require('./resume.controller').sendPrivateFile(res, await require('../models/PrivateFile').findById(doc.file));
+});
+
 const myApplications = asyncHandler(async (req, res) => {
   const applications = await ScholarshipApplication.find({ applicant: req.user._id })
     .populate('scholarship', 'title amount currency status')
@@ -314,6 +400,8 @@ const updateSponsorshipStatus = asyncHandler(async (req, res) => {
 // their commitment (no payment processor in this app, so this is a donor-confirmed record) and
 // optionally sets the next payment date.
 const recordSponsorshipPayment = asyncHandler(async (req, res) => {
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer (CareerZ checks the receipts).', 410);
+  // eslint-disable-next-line no-unreachable
   const { amount, paymentMethod, reference, proofUrl, provider, nextPaymentDate } = req.body;
 
   const sponsorship = await Sponsorship.findById(req.params.id).populate('scholarship', 'title');
@@ -344,6 +432,8 @@ const receivedSponsorshipPayments = asyncHandler(async (req, res) => {
 });
 
 const verifySponsorshipPayment = asyncHandler(async (req, res) => {
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer (CareerZ checks the receipts).', 410);
+  // eslint-disable-next-line no-unreachable
   const sponsorship = await Sponsorship.findOne({ _id: req.params.id, student: req.user._id });
   if (!sponsorship) throw new AppError('Sponsorship not found.', 404);
   const payment = sponsorship.paymentHistory.id(req.params.paymentId);
@@ -363,6 +453,9 @@ const verifySponsorshipPayment = asyncHandler(async (req, res) => {
 // POST /api/scholarships/donor/deposit — request to fund the wallet. No real payment
 // processor in this app — this creates a real, trackable request, not fake money.
 const requestDeposit = asyncHandler(async (req, res) => {
+  // Wallet money now comes in through Add Funds → Pay by bank transfer (CareerZ account).
+  throw new AppError('This payment method was replaced. Use Pay by bank transfer (CareerZ checks the receipts).', 410);
+  // eslint-disable-next-line no-unreachable
   const { amount, currency, paymentMethod, reference, proofUrl, provider } = req.body;
   if (!amount || amount <= 0) throw new AppError('amount must be a positive number.', 422);
   if (!paymentMethod || !PAYMENT_METHOD_LABEL[paymentMethod]) {
@@ -413,7 +506,7 @@ const updateDepositStatus = asyncHandler(async (req, res) => {
   return ok(res, deposit, 'Deposit updated.');
 });
 
-module.exports = {
+module.exports = { applyForm, uploadDocument, applicationDocument,
   createScholarship,
   adminListAll,
   listScholarships,

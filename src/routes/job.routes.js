@@ -55,6 +55,7 @@ const agentWorkCtrl = require('../controllers/agentWork.controller');
 router.get('/mine/agent-requests', agentWorkCtrl.employerRequests);
 router.get('/mine/agent-commissions', agentWorkCtrl.employerCommissions);
 router.patch('/:id/agent-request', agentWorkCtrl.respond);
+router.get('/ai/market-trends', require('express-rate-limit')({ windowMs: 60000, max: 10, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.marketTrends);
 router.post('/ai/improve-description', require('express-rate-limit')({ windowMs: 60000, max: 10, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.improveDescription);
 router.post('/:id/ai/rank-applicants', require('express-rate-limit')({ windowMs: 60000, max: 5, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.rankApplicants);
 router.post('/smart-apply', ctrl.smartApply);

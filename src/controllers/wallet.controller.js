@@ -12,8 +12,13 @@ const payoutAccount = require('../utils/payoutAccount');
 
 // GET/PUT /api/wallet/payout-account — the bank account or mobile wallet withdrawals go to.
 const getPayoutAccount = asyncHandler(async (req, res) => {
-  const user = await User.findById(req.user._id).select('+payoutAccount');
-  return ok(res, { account: user?.payoutAccount?.accountNumber ? user.payoutAccount : null, banks: payoutAccount.BANKS, wallets: payoutAccount.WALLETS });
+  const user = await User.findById(req.user._id).select('+payoutAccount roles');
+  // Institutes, teachers, sellers and agents are paid by bank transfer into this account, and so
+  // is a student with a funding request; their dashboard warns them until it is added.
+  const SELLERS = ['institution_owner', 'academy_owner', 'teacher', 'marketplace_seller', 'education_agent'];
+  const needed = (user?.roles || []).some((r) => SELLERS.includes(r)) || Boolean(await require('../models/FundingRequest').exists({ requestedBy: req.user._id, status: 'open' }))
+    || Boolean(await require('../models/Sponsorship').exists({ student: req.user._id, status: { $in: ['pending', 'active'] } }));
+  return ok(res, { account: user?.payoutAccount?.accountNumber ? user.payoutAccount : null, needed, banks: payoutAccount.BANKS, wallets: payoutAccount.WALLETS });
 });
 const savePayoutAccount = asyncHandler(async (req, res) => {
   const account = { ...payoutAccount.normalize(req.body), updatedAt: new Date() };
