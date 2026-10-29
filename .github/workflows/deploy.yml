@@ -49,6 +49,11 @@ jobs:
           printf '%s\n' "$DEPLOY_SSH_KEY" > ~/.ssh/deploy_key && chmod 600 ~/.ssh/deploy_key
           printf '%s\n' "$DEPLOY_KNOWN_HOSTS" > ~/.ssh/known_hosts
           # The key is restricted on the server to the deploy commands only.
-          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes careerz@194.5.159.136 deploy-backend
+          # A failed install on the server (network) is retried; the server keeps the old version meanwhile.
+          for attempt in 1 2 3; do
+            ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes -o StrictHostKeyChecking=yes careerz@194.5.159.136 deploy-backend && exit 0
+            echo "attempt $attempt failed"; sleep 30
+          done
+          exit 1
       - name: Check the live API
         run: curl -fsS --retry 5 --retry-delay 3 https://srv2051555.hstgr.cloud/api/health
