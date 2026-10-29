@@ -61,6 +61,7 @@ router.use('/visa', moduleGate('visa'), require('./visa.routes'));
 router.use('/ads', require('./ads.routes'));
 router.use('/admin/comments-ratings', require('./commentsRatings.routes'));
 router.use('/plugins', require('./plugins.routes'));
+router.use('/seo', require('./seo.routes'));
 router.use('/mock-interviews', moduleGate('mock_interview'), require('./mockInterview.routes'));
 router.use('/transport', moduleGate('transport'), require('./transportTracking.routes'));
 router.use('/live-classes', require('./liveClass.routes'));
