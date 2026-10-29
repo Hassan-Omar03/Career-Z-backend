@@ -147,7 +147,7 @@ async function evidenceFor(institution, teacherId) {
   const [checkIns, late, ratings, results, assignments, attendanceMarked, liveClasses] = await Promise.all([
     StaffAttendance.countDocuments({ institution: institution._id, staff: teacherId }),
     StaffAttendance.countDocuments({ institution: institution._id, staff: teacherId, status: 'late' }),
-    TeacherFeedback.aggregate([{ $match: { teacher: new (require('mongoose').Types.ObjectId)(String(teacherId)), institution: institution._id } }, { $group: { _id: '$fromRole', average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
+    TeacherFeedback.aggregate([{ $match: { teacher: new (require('mongoose').Types.ObjectId)(String(teacherId)), institution: institution._id, hidden: { $ne: true } } }, { $group: { _id: '$fromRole', average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
     Result.find({ course: { $in: courseIds } }).select('marksObtained totalMarks').lean(),
     Assignment.find({ course: { $in: courseIds } }).select('_id').lean(),
     Attendance.countDocuments({ course: { $in: courseIds }, markedBy: teacherId }),

@@ -70,10 +70,10 @@ const submitFeedback = asyncHandler(async (req, res) => {
 const getTeacherReputation = asyncHandler(async (req, res) => {
   const [agg, recent] = await Promise.all([
     TeacherFeedback.aggregate([
-      { $match: { teacher: new mongoose.Types.ObjectId(req.params.teacherId) } },
+      { $match: { teacher: new mongoose.Types.ObjectId(req.params.teacherId), hidden: { $ne: true } } },
       { $group: { _id: '$fromRole', average: { $avg: '$rating' }, count: { $sum: 1 } } }
     ]),
-    TeacherFeedback.find({ teacher: req.params.teacherId, comment: { $ne: '' } })
+    TeacherFeedback.find({ teacher: req.params.teacherId, hidden: { $ne: true }, comment: { $ne: '' } })
       .populate('fromUser', 'fullName')
       .sort({ createdAt: -1 })
       .limit(20)

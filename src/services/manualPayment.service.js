@@ -111,6 +111,10 @@ const RESOLVERS = {
   async employer_package(user, id, body) {
     return require('./employerPackages.service').resolve(user, id, body);
   },
+  // Ad-free dashboards for an institute (CareerZ is the seller).
+  async ad_free(user, id, body) {
+    return require('./ads.service').resolveAdFree(user, id, body);
+  },
   async featured_job(user, id) {
     const { job, fee, days } = await require('../controllers/job.controller').loadFeaturableJob(id, user._id);
     return { title: `Featured job for ${days} days: ${job.title}`, price: fee, currency: 'USD', recipient: null, refs: { job: job._id } };
@@ -341,6 +345,8 @@ async function grant(mp, session) {
     const { job, fee, days } = await require('../controllers/job.controller').loadFeaturableJob(mp.job, mp.payer);
     const [listing] = await require('../models/FeaturedListing').create([{ listingType: 'job', job: job._id, purchasedBy: mp.payer, amount: fee, currency: 'USD', paymentMethod: 'bank_transfer', status: 'pending', expiresAt: new Date(Date.now() + days * 864e5) }], { session });
     await require('../controllers/webhook.controller').settleFeaturedListing(listing, ref, session);
+  } else if (mp.kind === 'ad_free') {
+    await require('./ads.service').grantAdFree(mp, session);
   } else if (mp.kind === 'employer_package') {
     await require('./employerPackages.service').grant(mp, session);
   } else if (mp.kind === 'subscription') {
@@ -403,6 +409,7 @@ async function decide(admin, id, { decision, note }) {
   });
   const fresh = await ManualPayment.findById(mp._id);
   const total = round2(fresh.commission + fresh.sellerAmount);
+  if (decision === 'approve') require('./plugins.service').emit('payment.approved', { paymentId: fresh._id, number: fresh.number, kind: fresh.kind, title: fresh.title, amount: total, currency: fresh.currency });
   // Escrow orders: the buyer gets the delivery code, the seller is told the money is held.
   if (decision === 'approve' && fresh.kind === 'marketplace_order') {
     const order = await require('../models/Order').findById(fresh.order).select('+deliveryCode').populate('product', 'title digital');

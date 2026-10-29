@@ -233,7 +233,7 @@ async function publicProfile(employerId) {
 
 // ---------------------------------------------------------------- Fraud protection (12.17)
 
-const FRAUD_CATEGORIES = { fake_job: 'Fake job', salary_scam: 'Salary scam', fake_interview: 'Fake interview', illegal_recruitment: 'Illegal recruitment', identity_fraud: 'Identity fraud' };
+const FRAUD_CATEGORIES = { fake_job: 'Fake job', salary_scam: 'Salary scam', fake_interview: 'Fake interview', illegal_recruitment: 'Illegal recruitment', identity_fraud: 'Identity fraud', fake_visa: 'Fake visa', fake_offer_letter: 'Fake offer letter', advance_fee: 'Advance fee scam' };
 
 async function reportFraud(user, employerId, body = {}) {
   if (!oid(employerId)) throw fail('Company not found.', 404);

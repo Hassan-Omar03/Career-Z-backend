@@ -81,6 +81,7 @@ const createJob = asyncHandler(async (req, res) => {
   }
   const outcome = wantsPublish ? await publishing.submit(job, req.user, publisher.role === 'institution_staff' ? null : publisher.role) : { published: false, flags: [] };
   if (outcome.published) require('./placement.controller').tellPartnersOfNewJob(await Job.findById(job._id).lean()).catch(() => {});
+  if (outcome.published) require('../services/plugins.service').emit('job.published', { jobId: job._id, title: job.title, company: job.company, country: job.country, city: job.city, type: job.type || '' });
   return created(res, { ...job.toObject(), outcome }, !wantsPublish ? 'Job saved as draft.' : outcome.published ? 'Job published.' : 'Job sent to admin review before it goes live.');
 
 });
@@ -290,6 +291,7 @@ async function submitApplication(req, job, coverLetter, cvChoice) {
 
   application.statusHistory.push({ status: 'pending', by: req.user._id, byRole: 'applicant', note: 'Applied' });
   await application.save();
+  require('../services/plugins.service').emit('job_application.created', { applicationId: application._id, jobId: job._id, jobTitle: job.title, applicantId: req.user._id, applicantName: req.user.fullName });
   const managers = new Set([String(job.postedBy)]);
   if (job.institution) { const inst = await require('../models/Institution').findById(job.institution).select('owner'); if (inst) managers.add(String(inst.owner)); }
   for (const id of managers) {

@@ -16,7 +16,7 @@ const legSchema = new mongoose.Schema({
 
 const manualPaymentSchema = new mongoose.Schema({
   number: { type: String, required: true, unique: true },
-  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment', 'employer_package'], required: true, index: true },
+  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment', 'employer_package', 'ad_free'], required: true, index: true },
   title: { type: String, required: true },
   // Who pays and who receives, with the phone numbers the admin calls to check.
   payer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },

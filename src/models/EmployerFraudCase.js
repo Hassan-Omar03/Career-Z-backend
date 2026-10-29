@@ -10,7 +10,7 @@ const employerFraudCaseSchema = new mongoose.Schema(
   {
     employer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     reportedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
-    category: { type: String, enum: ['fake_job', 'salary_scam', 'fake_interview', 'illegal_recruitment', 'identity_fraud'], required: true },
+    category: { type: String, enum: ['fake_job', 'salary_scam', 'fake_interview', 'illegal_recruitment', 'identity_fraud', 'fake_visa', 'fake_offer_letter', 'advance_fee'], required: true },
     job: { type: mongoose.Schema.Types.ObjectId, ref: 'Job', default: null },
     description: { type: String, required: true },
     evidence: [evidenceSchema],

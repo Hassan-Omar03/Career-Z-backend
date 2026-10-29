@@ -84,6 +84,8 @@ const userSchema = new mongoose.Schema(
       bannedAt: { type: Date, default: null },
       reason: { type: String, default: '' }
     },
+    // Master 13.7: an agent whose recruitment/consultancy licence a CareerZ admin checked.
+    visaConsultant: { type: Object, default: undefined },
     agentSanctions: {
       postingBanned: { type: Boolean, default: false },
       postingBanUntil: { type: Date, default: null },

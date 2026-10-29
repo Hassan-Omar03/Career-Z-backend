@@ -47,7 +47,7 @@ async function standingFor(teacherId) {
     LiveClassSession.find({ teacher: id, status: 'ended', startedAt: { $ne: null }, endedAt: { $ne: null } }).select('startedAt endedAt').lean(),
     Attendance.countDocuments({ markedBy: id }),
     Course.find({ teacher: id }).select('_id').lean(),
-    TeacherFeedback.aggregate([{ $match: { teacher: id } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
+    TeacherFeedback.aggregate([{ $match: { teacher: id, hidden: { $ne: true } } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
     TeacherProfile.findOne({ user: id }).select('experienceYears').lean(),
     RoleRequest.exists({ user: id, requestedRole: 'teacher', status: 'approved' })
   ]);

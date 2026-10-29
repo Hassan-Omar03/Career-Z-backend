@@ -5,6 +5,8 @@ const institutionSchema = new mongoose.Schema(
     owner: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     name: { type: String, required: true, trim: true },
     slug: { type: String, required: true, unique: true, lowercase: true },
+    // Paid ad-free time for this institute's dashboards (ads.service).
+    adFreeUntil: { type: Date, default: null },
     type: {
       type: String,
       enum: ['school', 'college', 'university', 'academy', 'madrasa', 'tuition_center', 'training_institute', 'online_institute'],

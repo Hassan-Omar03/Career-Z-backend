@@ -116,7 +116,7 @@ const mySellerProfile = asyncHandler(async (req, res) => {
   const [verification, ratingAgg, totalListings] = await Promise.all([
     RoleRequest.findOne({ user: req.user._id, requestedRole: 'marketplace_seller' }),
     Review.aggregate([
-      { $match: { seller: req.user._id } },
+      { $match: { seller: req.user._id, hidden: { $ne: true } } },
       { $group: { _id: null, avgRating: { $avg: '$rating' }, count: { $sum: 1 } } }
     ]),
     Product.countDocuments({ seller: req.user._id })
@@ -306,7 +306,7 @@ const myBestSellingProducts = asyncHandler(async (req, res) => {
   const [products, ratings] = await Promise.all([
     Product.find({ _id: { $in: productIds } }).select('title stock currency'),
     Review.aggregate([
-      { $match: { product: { $in: productIds } } },
+      { $match: { product: { $in: productIds }, hidden: { $ne: true } } },
       { $group: { _id: '$product', avgRating: { $avg: '$rating' } } }
     ])
   ]);
@@ -626,6 +626,7 @@ const placeOrder = asyncHandler(async (req, res) => {
     timeline: [{ status: 'pending', at: new Date(), by: req.user._id, note: 'Order placed' }]
   });
   if (isPhysical(product)) await require('../models/User').updateOne({ _id: req.user._id }, { $set: { shippingProfile: shipping } });
+  require('../services/plugins.service').emit('order.placed', { orderId: order._id, productId: product._id, title: product.title, quantity, total: order.totalPrice, currency: order.currency });
 
   // Digital listings (courses/services) don't track stock at all.
   if (isPhysical(product)) {
@@ -867,7 +868,7 @@ const submitReview = asyncHandler(async (req, res) => {
 
 // GET /api/marketplace/products/:id/reviews — public.
 const productReviews = asyncHandler(async (req, res) => {
-  const reviews = await Review.find({ product: req.params.id }).populate('buyer', 'fullName').sort({ createdAt: -1 }).limit(100).lean();
+  const reviews = await Review.find({ product: req.params.id, hidden: { $ne: true } }).populate('buyer', 'fullName').sort({ createdAt: -1 }).limit(100).lean();
   // Only the first name is public; the review is marked as a verified purchase.
   return ok(res, reviews.map((r) => ({ _id: r._id, rating: r.rating, sellerRating: r.sellerRating, deliveredOnTime: r.deliveredOnTime, asDescribed: r.asDescribed, comment: r.comment, sellerResponse: r.sellerResponse, createdAt: r.createdAt, buyer: { fullName: String(r.buyer?.fullName || 'Buyer').split(' ')[0] }, verified: true })));
 });

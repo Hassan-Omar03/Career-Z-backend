@@ -279,9 +279,9 @@ async function purchasedFile(user, orderId, mode, meta = {}) {
 async function sellerTrust(sellerId) {
   if (!oid(sellerId)) throw fail('Seller not found.', 404);
   const [ratingAgg, orders, said] = await Promise.all([
-    Review.aggregate([{ $match: { seller: new mongoose.Types.ObjectId(String(sellerId)) } }, { $group: { _id: null, avg: { $avg: { $ifNull: ['$sellerRating', '$rating'] } }, n: { $sum: 1 } } }]),
+    Review.aggregate([{ $match: { hidden: { $ne: true }, seller: new mongoose.Types.ObjectId(String(sellerId)) } }, { $group: { _id: null, avg: { $avg: { $ifNull: ['$sellerRating', '$rating'] } }, n: { $sum: 1 } } }]),
     Order.find({ seller: sellerId, paymentStatus: { $in: ['paid', 'refunded'] } }).select('status escrow dispute deliveredAt createdAt refundRequested').lean(),
-    Review.find({ seller: sellerId, deliveredOnTime: { $ne: null } }).select('deliveredOnTime').lean()
+    Review.find({ seller: sellerId, hidden: { $ne: true }, deliveredOnTime: { $ne: null } }).select('deliveredOnTime').lean()
   ]);
   const avg = ratingAgg[0]?.avg ?? null, reviews = ratingAgg[0]?.n || 0;
   const paid = orders.length;

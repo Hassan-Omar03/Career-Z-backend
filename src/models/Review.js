@@ -18,7 +18,10 @@ const reviewSchema = new mongoose.Schema(
     sellerResponse: { type: String, default: '' },
     sellerRespondedAt: { type: Date, default: null },
     reported: { type: Boolean, default: false },
-    reportReason: { type: String, default: '' }
+    reportReason: { type: String, default: '' },
+    // Super Admin Comments & Ratings desk: a hidden rating leaves every public list and average.
+    hidden: { type: Boolean, default: false, index: true },
+    moderation: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, note: { type: String, default: '' }, edited: { type: Boolean, default: false } }
   },
   { timestamps: true }
 );

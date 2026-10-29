@@ -970,8 +970,8 @@ const getInstitutionFeedback = asyncHandler(async (req, res) => {
 
   const InstitutionFeedback = require('../models/InstitutionFeedback');
   const [entries, agg] = await Promise.all([
-    InstitutionFeedback.find({ institution: institution._id }).populate('fromUser', 'fullName').sort({ createdAt: -1 }),
-    InstitutionFeedback.aggregate([{ $match: { institution: institution._id } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }])
+    InstitutionFeedback.find({ institution: institution._id, hidden: { $ne: true } }).populate('fromUser', 'fullName').sort({ createdAt: -1 }),
+    InstitutionFeedback.aggregate([{ $match: { institution: institution._id, hidden: { $ne: true } } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }])
   ]);
   return ok(res, {
     average: agg[0] ? Math.round(agg[0].average * 10) / 10 : null,
@@ -986,7 +986,7 @@ const getInstitutionFeedback = asyncHandler(async (req, res) => {
 const getInstitutionFeedbackSummary = asyncHandler(async (req, res) => {
   const InstitutionFeedback = require('../models/InstitutionFeedback');
   const [agg, mine] = await Promise.all([
-    InstitutionFeedback.aggregate([{ $match: { institution: new mongoose.Types.ObjectId(req.params.id) } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
+    InstitutionFeedback.aggregate([{ $match: { institution: new mongoose.Types.ObjectId(req.params.id), hidden: { $ne: true } } }, { $group: { _id: null, average: { $avg: '$rating' }, count: { $sum: 1 } } }]),
     InstitutionFeedback.findOne({ institution: req.params.id, fromUser: req.user._id })
   ]);
   return ok(res, {

@@ -52,6 +52,7 @@ const register = asyncHandler(async (req, res) => {
   });
   if(guardian)await require('../services/studentGuardianContact.service').sync(user,guardian);
   const request = await RoleRequest.create({ user: user._id, requestedRole: role, subtype, status: 'awaiting_documents' });
+  require('../services/plugins.service').emit('user.registered', { userId: user._id, fullName: user.fullName, role, subtype: subtype || '', country: user.country, city: user.city });
   await VerificationHistory.create({ user: user._id, role, request: request._id, previousStatus: '', newStatus: 'awaiting_documents', remarks: 'Account registered.' });
 
   await otpService.issueOtp(user, 'email_verify');

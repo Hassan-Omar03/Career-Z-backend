@@ -67,6 +67,44 @@ async function operationalStaffScope(userId) {
   return { roles, studentIds };
 }
 
+// Work, sponsorship and partnership links (master Universal Messaging: Employer ↔ Candidate,
+// Institution ↔ Institution, Platform ↔ partners): who applied to whose job, company staff,
+// institute–employer partnerships, a teacher's direct (tutoring) students, a donor's sponsored
+// students and a visa case's consultant. Each pair is a real record, never "anyone".
+const M = (n) => require(`../models/${n}`);
+async function workContacts(userId) {
+  const out = [];
+  const add = (user, relationship, context) => { if (user && !idsEqual(user, userId)) out.push({ user, relationship, context }); };
+  const PEOPLE = 'fullName email roles profilePhoto';
+  const employers = [userId, ...await M('EmployerStaff').find({ member: userId, status: 'active' }).distinct('employer')];
+  const jobs = await M('Job').find({ postedBy: { $in: employers } }).select('_id title').limit(500).lean();
+  const titles = new Map(jobs.map((j) => [String(j._id), j.title]));
+  const apps = await M('JobApplication').find({ job: { $in: jobs.map((j) => j._id) }, status: { $ne: 'withdrawn' } }).populate('applicant', PEOPLE).sort({ createdAt: -1 }).limit(500).lean();
+  apps.forEach((a) => add(a.applicant, 'candidate', titles.get(String(a.job)) || 'Job applicant'));
+  const mine = await M('JobApplication').find({ applicant: userId, status: { $ne: 'withdrawn' } }).populate({ path: 'job', select: 'title company postedBy', populate: { path: 'postedBy', select: PEOPLE } }).limit(200).lean();
+  mine.forEach((a) => add(a.job?.postedBy, 'employer', a.job ? `${a.job.title} @ ${a.job.company}` : 'Job'));
+  const staff = await M('EmployerStaff').find({ status: 'active', $or: [{ employer: userId }, { member: userId }] }).populate('employer', PEOPLE).populate('member', PEOPLE).lean();
+  staff.forEach((s) => { add(s.employer, 'employer', 'Company staff'); add(s.member, 'company staff', 'Company staff'); });
+  const owned = await Institution.find({ owner: userId }).distinct('_id');
+  const partners = await M('InstitutionEmployerPartnership').find({ status: 'active', $or: [{ employer: userId }, { institution: { $in: owned } }] }).populate('employer', PEOPLE).populate({ path: 'institution', select: 'name owner', populate: { path: 'owner', select: PEOPLE } }).lean();
+  partners.forEach((p) => { add(p.employer, 'partner employer', p.institution?.name || 'Partnership'); add(p.institution?.owner, 'partner institution', p.institution?.name || 'Partnership'); });
+  const tutoring = await M('TeacherStudentLink').find({ status: { $in: ['active', 'paused'] }, $or: [{ teacher: userId }, { student: userId }] }).populate('teacher', PEOPLE).populate('student', PEOPLE).lean();
+  tutoring.forEach((l) => { add(l.teacher, 'teacher', 'Direct teaching'); add(l.student, 'student', 'Direct teaching'); });
+  const sponsored = await M('Sponsorship').find({ status: { $in: ['active', 'paused', 'completed'] }, $or: [{ donor: userId }, { student: userId }] }).populate('donor', PEOPLE).populate('student', PEOPLE).lean();
+  sponsored.forEach((s) => { add(s.donor, 'sponsor', 'Scholarship sponsorship'); add(s.student, 'sponsored student', 'Scholarship sponsorship'); });
+  const visas = await M('VisaCase').find({ consultant: { $ne: null }, $or: [{ consultant: userId }, { candidate: userId }, { hiringSide: userId }] }).populate('consultant', PEOPLE).populate('candidate', PEOPLE).populate('hiringSide', PEOPLE).lean();
+  visas.forEach((v) => { add(v.consultant, 'visa consultant', 'Visa case'); add(v.candidate, 'candidate', 'Visa case'); add(v.hiringSide, 'employer', 'Visa case'); });
+  return out;
+}
+async function workLinked(fromId, toId) {
+  return (await workContacts(fromId)).some((c) => idsEqual(c.user, toId));
+}
+// Institution ↔ Institution: owners of two approved institutes may talk to each other.
+async function institutionPeers(fromId, toId) {
+  const q = (id) => Institution.exists({ owner: id, verificationStatus: 'approved' });
+  return Boolean(await q(fromId) && await q(toId));
+}
+
 async function canCommunicate(fromId, toId) {
   if (idsEqual(fromId, toId)) return false;
   const [from, to] = await Promise.all([User.findById(fromId).select('roles'), User.findById(toId).select('roles')]);
@@ -80,6 +118,7 @@ async function canCommunicate(fromId, toId) {
   if (to.roles?.includes('education_agent') && await agentLinked(toId, fromId)) return true;
 
   if (await require('../models/Order').exists({ $or: [{ buyer: fromId, seller: toId }, { buyer: toId, seller: fromId }] })) return true;
+  if (await workLinked(fromId, toId) || await institutionPeers(fromId, toId)) return true;
 
   const [fromScope, toScope] = await Promise.all([operationalStaffScope(fromId), operationalStaffScope(toId)]);
   if (fromScope) return to.roles?.includes('student') && fromScope.studentIds.has(String(toId));
@@ -123,6 +162,7 @@ async function communicationContacts(userId) {
   };
 
   if (me.roles?.includes('education_agent')) for (const c of await agentContacts(userId)) add(c.user, c.relationship, c.context);
+  for (const c of await workContacts(userId)) add(c.user, c.relationship, c.context);
 
   const taught = await Course.find({ teacher: userId }).select('_id title institution');
   for (const course of taught) {

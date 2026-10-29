@@ -103,7 +103,7 @@ async function sellerReport(user) {
   const [products, orders, ratings] = await Promise.all([
     Product.find({ seller: user._id }).select('title category price currency stock status views createdAt').lean(),
     Order.find({ seller: user._id }).select('product quantity totalPrice currency status paymentStatus escrow createdAt').lean(),
-    Review.aggregate([{ $match: { seller: user._id } }, { $group: { _id: '$product', avg: { $avg: '$rating' }, n: { $sum: 1 } } }])
+    Review.aggregate([{ $match: { hidden: { $ne: true }, seller: user._id } }, { $group: { _id: '$product', avg: { $avg: '$rating' }, n: { $sum: 1 } } }])
   ]);
   const sold = (o) => o.paymentStatus === 'paid' && !['cancelled', 'refunded'].includes(o.status) && !['refund_due', 'refunded'].includes(o.escrow?.status);
   const rate = new Map(ratings.map((r) => [String(r._id), r]));
