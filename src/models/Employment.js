@@ -26,6 +26,8 @@ const employmentSchema = new mongoose.Schema(
       // Agent jobs: the institute's offer goes to the agent, who forwards it to the candidate.
       viaAgent: { type: Boolean, default: false }, forwardedAt: { type: Date, default: null }
     },
+    // Typed full name, time and device the candidate signed with when accepting the offer.
+    signature: { name: { type: String, default: '' }, at: { type: Date, default: null }, ip: { type: String, default: '' }, userAgent: { type: String, default: '' } },
     offerLetter: {
       text: { type: String, default: '' }, file: { type: mongoose.Schema.Types.ObjectId, ref: 'PrivateFile', default: null },
       issuer: { type: String, default: '' }, sentAt: { type: Date, default: null }, sentBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },

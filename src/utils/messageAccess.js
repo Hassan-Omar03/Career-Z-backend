@@ -13,6 +13,29 @@ const Vehicle = require('../models/Vehicle');
 
 function idsEqual(a, b) { return String(a?._id || a || '') === String(b?._id || b || ''); }
 
+// An education agent's contacts: candidates who applied to its jobs, the employers it posts for,
+// and the owners of institutes it has an open recruitment request or agreement with.
+async function agentContacts(agentId) {
+  const Job = require('../models/Job');
+  const JobApplication = require('../models/JobApplication');
+  const RecruitmentRequest = require('../models/RecruitmentRequest');
+  const fields = 'fullName email roles profilePhoto';
+  const jobs = await Job.find({ postedBy: agentId }).select('_id title representedEmployer').populate('representedEmployer', fields);
+  const [applications, requests] = await Promise.all([
+    JobApplication.find({ job: { $in: jobs.map((j) => j._id) } }).select('job applicant').populate('applicant', fields),
+    RecruitmentRequest.find({ agent: agentId, status: { $nin: ['rejected', 'cancelled'] } }).select('institution').populate({ path: 'institution', select: 'name owner', populate: { path: 'owner', select: fields } })
+  ]);
+  const title = new Map(jobs.map((j) => [String(j._id), j.title]));
+  const out = [];
+  applications.forEach((a) => a.applicant && out.push({ user: a.applicant, relationship: 'candidate', context: title.get(String(a.job)) || 'Job applicant' }));
+  jobs.forEach((j) => j.representedEmployer && out.push({ user: j.representedEmployer, relationship: 'employer', context: j.title }));
+  requests.forEach((r) => r.institution?.owner && out.push({ user: r.institution.owner, relationship: 'institution', context: r.institution.name }));
+  return out;
+}
+async function agentLinked(agentId, otherId) {
+  return (await agentContacts(agentId)).some((c) => idsEqual(c.user, otherId));
+}
+
 async function institutionIdsFor(userId) {
   const [owned, staffed, memberships, profile, employments] = await Promise.all([
     Institution.find({ owner: userId }).distinct('_id'),
@@ -52,6 +75,11 @@ async function canCommunicate(fromId, toId) {
   // A block always wins over an otherwise-valid shared-institution/course/parent link — the
   // blocker's decision to cut contact is never silently overridden by an unrelated relationship.
   if (await BlockedUser.exists({ $or: [{ blocker: fromId, blocked: toId }, { blocker: toId, blocked: fromId }] })) return false;
+
+  if (from.roles?.includes('education_agent') && await agentLinked(fromId, toId)) return true;
+  if (to.roles?.includes('education_agent') && await agentLinked(toId, fromId)) return true;
+
+  if (await require('../models/Order').exists({ $or: [{ buyer: fromId, seller: toId }, { buyer: toId, seller: fromId }] })) return true;
 
   const [fromScope, toScope] = await Promise.all([operationalStaffScope(fromId), operationalStaffScope(toId)]);
   if (fromScope) return to.roles?.includes('student') && fromScope.studentIds.has(String(toId));
@@ -93,6 +121,8 @@ async function communicationContacts(userId) {
     const existing = contactMap.get(id);
     contactMap.set(id, { user, relationship: existing?.relationship || relationship, context: existing?.context || context });
   };
+
+  if (me.roles?.includes('education_agent')) for (const c of await agentContacts(userId)) add(c.user, c.relationship, c.context);
 
   const taught = await Course.find({ teacher: userId }).select('_id title institution');
   for (const course of taught) {

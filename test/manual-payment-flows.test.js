@@ -229,7 +229,7 @@ async function product(price = 1000) {
 
 test('marketplace: only the order\'s seller updates it; buyers cannot', async () => {
   const p = await product();
-  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
+  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
   is(await api('Buyer', 'PATCH', `/marketplace/orders/${order._id}/status`, { status: 'delivered' }), 403, 'buyer');
   is(await api('Buyer', 'PATCH', `/marketplace/orders/${order._id}/payment-status`, { paymentStatus: 'paid' }), 403, 'buyer');
   is(await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/payment-status`, { paymentStatus: 'nope' }), 422, 'bad status');
@@ -238,7 +238,7 @@ test('marketplace: only the order\'s seller updates it; buyers cannot', async ()
 
 test('marketplace: a seller cannot order their own product', async () => {
   const p = await product();
-  const r = await api('Seller', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 });
+  const r = await api('Seller', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } });
   assert.notEqual(r.status, 201, 'seller placed an order on their own listing');
 });
 
@@ -246,8 +246,8 @@ test('marketplace: an order whose payment never arrived must not become withdraw
   await model('Order').deleteMany({});
   await model('SellerWithdrawal').deleteMany({});
   const p = await product(1000);
-  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
-  is(await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/status`, { status: 'delivered' }), 200, 'delivered, payment still pending');
+  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
+  is(await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/status`, { status: 'delivered' }), 409, 'nothing is delivered before the payment is confirmed');
   const wallet = (await api('Seller', 'GET', '/marketplace/sellers/mine/wallet')).body.data;
   assert.equal(wallet.PKR?.availableBalance || 0, 0, `unpaid order counted as available: ${JSON.stringify(wallet)}`);
 });
@@ -256,7 +256,7 @@ test('marketplace withdrawal: one request at a time; a paid payout is final', as
   await model('Order').deleteMany({});
   await model('SellerWithdrawal').deleteMany({});
   const p = await product(1000);
-  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
+  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
   await model('Order').updateOne({ _id: order._id }, { $set: { paymentStatus: 'paid' } }); // CareerZ approved the buyer's receipts
   await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/status`, { status: 'delivered' });
   const body = { currency: 'PKR', payoutMethod: 'bank_transfer', payoutDetails: 'ACC-1', accountTitle: 'Seller' };
@@ -274,7 +274,7 @@ test('marketplace withdrawal: double-click "Withdraw" creates one request', asyn
   await model('Order').deleteMany({});
   await model('SellerWithdrawal').deleteMany({});
   const p = await product(2000);
-  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
+  const order = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
   await model('Order').updateOne({ _id: order._id }, { $set: { paymentStatus: 'paid' } }); // CareerZ approved the buyer's receipts
   await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/status`, { status: 'delivered' });
   const body = { currency: 'PKR', payoutMethod: 'bank_transfer', payoutDetails: 'ACC-2', accountTitle: 'Seller' };
@@ -353,8 +353,8 @@ test('marketplace: a refunded order is removed from earnings once, not charged t
   await model('Order').deleteMany({});
   await model('SellerWithdrawal').deleteMany({});
   const p = await product(1000);
-  const kept = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
-  const returned = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1 })).body.data;
+  const kept = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
+  const returned = (await api('Buyer', 'POST', `/marketplace/products/${p._id}/orders`, { quantity: 1, shipping: { name: 'Test Buyer', phone: '03001234567', cnic: '35202-1234567-1', address: 'House 1, Street 2, Model Town', city: 'Lahore' } })).body.data;
   for (const o of [kept, returned]) {
     await model('Order').updateOne({ _id: o._id }, { $set: { paymentStatus: 'paid' } });
     await api('Seller', 'PATCH', `/marketplace/orders/${o._id}/status`, { status: 'delivered' });

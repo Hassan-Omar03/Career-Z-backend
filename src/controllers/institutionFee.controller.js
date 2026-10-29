@@ -442,7 +442,10 @@ const getClassWiseReport = asyncHandler(async (req, res) => {
     row.outstanding += fee.status === 'paid' || fee.status === 'cancelled' || fee.status === 'waived' ? 0 : (fee.outstandingAmount ?? fee.amount);
     row.count += 1;
   }
-  return ok(res, Array.from(rows.values()).map((r) => ({ ...r, expected: feeSchedule.round2(r.expected), collected: feeSchedule.round2(r.collected), outstanding: feeSchedule.round2(r.outstanding) })));
+  // Show the class name, not its id, on the dashboard chart.
+  const sectionIds = [...rows.keys()].filter((k) => require('mongoose').isValidObjectId(k));
+  const names = new Map((await require('../models/ClassSection').find({ _id: { $in: sectionIds } }).select('name').lean()).map((s) => [String(s._id), s.name]));
+  return ok(res, Array.from(rows.values()).map((r) => ({ ...r, className: names.get(r.classSection) || (r.classSection === 'unassigned' ? 'No class' : 'Class removed'), expected: feeSchedule.round2(r.expected), collected: feeSchedule.round2(r.collected), outstanding: feeSchedule.round2(r.outstanding) })));
 });
 
 // GET /api/institution-fees/:institutionId/reports/program-wise

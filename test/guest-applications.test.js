@@ -117,7 +117,7 @@ test('the guest creates an account with the same email: the application moves in
   assert.match(cv.text, /guest cv/, 'the CV sent as a guest is still there');
   expect(await api('Employer', 'POST', `/jobs/applications/${app._id}/offer`, { salary: 70000, currency: 'PKR' }), 200);
   const emp = await model('Employment').findOne({ application: app._id });
-  expect(await api('Ayesha', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api('Ayesha', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 200);
   expect(await api('Employer', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' }), 200);
   assert.equal((await model('Employment').findById(emp._id)).status, 'active');
 });

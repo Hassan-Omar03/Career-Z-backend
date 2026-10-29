@@ -28,8 +28,10 @@ router.post('/:id/feature', requireRole('admin', 'super_admin'), ctrl.featureJob
 // employers and agents, and verified institutes' owners or recruitment staff.
 router.post('/', ctrl.createJob);
 router.get('/mine/list', ctrl.myJobs);
-router.get('/mine/summary', requireRole('employer', 'education_agent'), ctrl.myJobsSummary);
-router.get('/mine/recent-activity', requireRole('employer', 'education_agent'), ctrl.myRecentActivity);
+router.get('/mine/summary', require('../services/employerStaff.service').actingEmployer('view_reports', 'employer', 'education_agent'), ctrl.myJobsSummary);
+router.get('/mine/analytics', require('../services/employerStaff.service').actingEmployer('view_reports', 'employer', 'education_agent'), require('../utils/asyncHandler')(async (req, res) => res.json({ success: true, data: await require('../services/employerTools.service').analytics(req.actingFor) })));
+router.get('/mine/employer-dashboard', require('../services/employerStaff.service').actingEmployer('view_reports', 'employer'), require('../utils/asyncHandler')(async (req, res) => res.json({ success: true, data: await require('../services/employerTools.service').dashboard(req.actingFor) })));
+router.get('/mine/recent-activity', require('../services/employerStaff.service').actingEmployer('view_reports', 'employer', 'education_agent'), ctrl.myRecentActivity);
 router.patch('/:id', ctrl.updateJob);
 router.get('/:id/applicants', ctrl.listApplicants);
 router.get('/:id/guest-applicants', guest.list);
@@ -56,6 +58,7 @@ router.get('/mine/agent-requests', agentWorkCtrl.employerRequests);
 router.get('/mine/agent-commissions', agentWorkCtrl.employerCommissions);
 router.patch('/:id/agent-request', agentWorkCtrl.respond);
 router.get('/ai/market-trends', require('express-rate-limit')({ windowMs: 60000, max: 10, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.marketTrends);
+router.post('/ai/build-job', require('express-rate-limit')({ windowMs: 60000, max: 6, standardHeaders: true, legacyHeaders: false }), require('../utils/asyncHandler')(async (req, res) => res.json({ success: true, data: await require('../services/employerTools.service').buildJobDraft(req.user, req.body || {}) })));
 router.post('/ai/improve-description', require('express-rate-limit')({ windowMs: 60000, max: 10, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.improveDescription);
 router.post('/:id/ai/rank-applicants', require('express-rate-limit')({ windowMs: 60000, max: 5, standardHeaders: true, legacyHeaders: false }), agentWorkCtrl.rankApplicants);
 router.post('/smart-apply', ctrl.smartApply);

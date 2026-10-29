@@ -125,12 +125,17 @@ async function forecast(user, { ai = false } = {}) {
 }
 
 // Impact report: who the donor reached, from the records; AI writes it up when asked.
+const REQUEST_FIELDS = 'title requestType category requiredAmount collectedAmount currency status requestedBy';
+const requestProgress = (r) => r ? { required: r.requiredAmount || 0, collected: r.collectedAmount || 0, currency: r.currency || 'PKR', status: r.status, category: r.category } : null;
 async function impactReport(user, { ai = false } = {}) {
-  const [sponsorships, donations, scholarships] = await Promise.all([
+  const [sponsorships, donations, scholarships, checking] = await Promise.all([
     require('../models/Sponsorship').find({ donor: user._id }).populate('scholarship', 'title').select('amount paidAmount currency status student scholarship').lean(),
-    require('../models/Donation').find({ donor: user._id, status: 'successful' }).populate('fundingRequest', 'title requestType category').select('amount currency fundingRequest').lean(),
-    require('../models/Scholarship').find({ donor: user._id }).select('title seatsAvailable').lean()
+    require('../models/Donation').find({ donor: user._id, status: 'successful' }).populate({ path: 'fundingRequest', select: REQUEST_FIELDS, populate: { path: 'requestedBy', select: 'fullName' } }).select('amount currency fundingRequest createdAt').sort({ createdAt: -1 }).lean(),
+    require('../models/Scholarship').find({ donor: user._id }).select('title seatsAvailable').lean(),
+    // Bank transfers the donor sent that CareerZ has not approved yet.
+    require('../models/ManualPayment').find({ payer: user._id, kind: { $in: ['donation', 'sponsorship_payment'] }, status: { $in: ['commission_submitted', 'commission_verified', 'submitted'] } }).populate({ path: 'fundingRequest', select: REQUEST_FIELDS, populate: { path: 'requestedBy', select: 'fullName' } }).select('title price currency createdAt fundingRequest recipientSnapshot.name').sort({ createdAt: -1 }).lean()
   ]);
+  const sumByCurrency = (rows, key) => rows.reduce((acc, r) => { const c = r.currency || 'PKR'; acc[c] = (acc[c] || 0) + (r[key] || 0); return acc; }, {});
   const byType = {};
   for (const d of donations) { const t = d.fundingRequest?.requestType || 'other'; byType[t] = (byType[t] || 0) + d.amount; }
   const facts = {
@@ -140,12 +145,19 @@ async function impactReport(user, { ai = false } = {}) {
     sponsorshipPaid: sponsorships.reduce((s, x) => s + (x.paidAmount || 0), 0),
     completedSponsorships: sponsorships.filter((s) => s.status === 'completed').length,
     donationsCount: donations.length,
+    donatedTotal: sumByCurrency(donations, 'amount'),
+    donationsBeingChecked: checking.length,
+    beingCheckedTotal: sumByCurrency(checking, 'price'),
     donatedByRecipientType: byType,
     causes: [...new Set(donations.map((d) => d.fundingRequest?.category).filter(Boolean))]
   };
-  if (!ai) return { facts };
+  const given = [
+    ...checking.map((m) => ({ title: String(m.title || '').replace(/^(Donation|Scholarship):\s*/, ''), amount: m.price, currency: m.currency, status: 'being checked', at: m.createdAt, receiver: m.fundingRequest?.requestedBy?.fullName || m.recipientSnapshot?.name, request: requestProgress(m.fundingRequest) })),
+    ...donations.map((d) => ({ title: d.fundingRequest?.title || 'Donation', amount: d.amount, currency: d.currency, status: 'received', at: d.createdAt, receiver: d.fundingRequest?.requestedBy?.fullName, request: requestProgress(d.fundingRequest) }))
+  ];
+  if (!ai) return { facts, given };
   const text = await require('./ai.service').generate(user._id, 'Write a short, warm impact report for a donor, in plain sentences, using ONLY these facts. No invented stories or numbers.', JSON.stringify(facts));
-  return { facts, report: String(text || '').trim() };
+  return { facts, given, report: String(text || '').trim() };
 }
 
 module.exports = { LARGE_KEY, largeDonationThreshold, setLargeDonationThreshold, listDonors, activity, rankApplications, forecast, impactReport };

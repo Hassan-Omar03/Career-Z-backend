@@ -32,7 +32,7 @@ async function loadForOffer(appId, user) {
   if (!application) throw fail('Application not found.', 404);
   if (application.job.agreement) {
     if (!(await jobAccess.isAgreementInstitute(application.job, user))) throw fail('The institute makes the offer for this job. Use "Request offer" to ask the institute.', 403);
-  } else await jobAccess.assertCanManageJob(application.job, user);
+  } else await jobAccess.assertCanManageJob(application.job, user, 'make_offers');
   return application;
 }
 // The hiring side to notify: the poster, plus the institute's owner and recruiters.
@@ -118,9 +118,8 @@ async function sendOfferLetter(user, appId, body = {}) {
   const application = await loadForOffer(appId, user);
   const viaAgent = Boolean(application.job.agreement);
   const employment = await Employment.findOne({ application: application._id });
-  // Agent jobs: the institute may send the letter together with the offer; it goes to the agent.
-  const allowed = viaAgent ? ['offered', 'accepted', 'active'] : ['accepted', 'active'];
-  if (!employment || !allowed.includes(employment.status)) throw fail(viaAgent ? 'Make the offer first, then send the offer letter.' : 'Send the offer letter after the candidate accepts the offer.', 409);
+  // The letter goes together with the offer (or later); on agent jobs it goes to the agent first.
+  if (!employment || !['offered', 'accepted', 'active'].includes(employment.status)) throw fail('Make the offer first, then send the offer letter.', 409);
   const text = String(body.text || '').trim().slice(0, 12000);
   let file = employment.offerLetter?.file || null;
   if (body.file?.data) {

@@ -11,7 +11,12 @@ const institutionEmployerPartnershipSchema = new mongoose.Schema(
     message: { type: String, default: '' },
     requestedSide: { type: String, enum: ['institution', 'employer'] },
     status: { type: String, enum: ['requested', 'active', 'declined', 'ended'], default: 'requested' },
-    respondedAt: { type: Date, default: null }
+    respondedAt: { type: Date, default: null },
+    // MoU: the requesting side signs when asking, the other side when accepting (typed full name).
+    mou: {
+      requesterSign: { name: { type: String, default: '' }, at: { type: Date, default: null }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null } },
+      responderSign: { name: { type: String, default: '' }, at: { type: Date, default: null }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null } }
+    }
   },
   { timestamps: true }
 );

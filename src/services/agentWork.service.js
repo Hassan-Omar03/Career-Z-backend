@@ -190,6 +190,7 @@ async function rankApplicants(user, jobId) {
   let list = [];
   try { list = JSON.parse(String(text).slice(String(text).indexOf('['), String(text).lastIndexOf(']') + 1)); } catch { throw fail('The AI answer could not be read. Try again.', 502); }
   const ranking = list.filter((x) => apps[Number(x.n) - 1]).map((x) => ({ applicationId: apps[Number(x.n) - 1]._id, name: apps[Number(x.n) - 1].applicant?.fullName || 'Candidate', score: Math.max(0, Math.min(100, Number(x.score) || 0)), reason: String(x.reason || '').slice(0, 300) })).sort((a, b) => b.score - a.score);
+  await require('../models/JobApplication').bulkWrite(ranking.map((r) => ({ updateOne: { filter: { _id: r.applicationId }, update: { $set: { aiMatch: { score: r.score, reason: String(r.reason || '').slice(0, 300), at: new Date() } } } } })));
   return { ranking };
 }
 

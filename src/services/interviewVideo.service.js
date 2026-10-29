@@ -18,6 +18,7 @@ async function access(interviewId, userId) {
   const host = !isCandidate && (String(interview.scheduledBy) === String(userId) || (await jobAccess.canSeeCandidates(interview.job, { _id: userId })));
   if (!isCandidate && !host) throw new AppError('You are not part of this interview.', 403);
   if (interview.mode !== 'online') throw new AppError('This interview is in person.', 409);
+  if (interview.provider && interview.provider !== 'careerz') throw new AppError('This interview is on an outside meeting service. Use its meeting link.', 409);
   if (interview.status !== 'scheduled') throw new AppError(`This interview was ${interview.status}.`, 409);
   const start = new Date(interview.scheduledDate).getTime(), now = Date.now();
   if (now < start - EARLY_MS) throw new AppError(`The interview room opens 15 minutes before the start (${new Date(start).toLocaleString()}).`, 409);

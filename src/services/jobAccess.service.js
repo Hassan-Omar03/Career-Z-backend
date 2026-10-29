@@ -21,7 +21,14 @@ async function institutionFor(id) {
 }
 
 // The capacity a new job is posted in: { role, institution }.
-async function publisherFor(user, institutionId, agreementId) {
+async function publisherFor(user, institutionId, agreementId, employerId) {
+  // Company staff with "post_jobs" post in the employer's name (the job belongs to the employer).
+  if (employerId) {
+    await require('./employerStaff.service').assertPermission(user._id, employerId, 'post_jobs');
+    if (!(await isRoleVerified(employerId, 'employer'))) throw new AppError('This company account is not verified yet.', 403);
+    await require('./employerTrust.service').assertEmployerMayPost(employerId);
+    return { role: 'employer', institution: null, postedBy: employerId };
+  }
   if (agreementId) {
     const { publishingAuthority } = require('./recruitment.service');
     const { agreement, institution } = await publishingAuthority(user, agreementId);
@@ -33,15 +40,17 @@ async function publisherFor(user, institutionId, agreementId) {
     if (institution.verificationStatus !== 'approved' || institution.status !== 'active') throw new AppError('This institute must be verified and active before it can post jobs.', 403);
     return { role: String(institution.owner) === String(user._id) ? 'institution_owner' : 'institution_staff', institution };
   }
-  if (await isRoleVerified(user._id, 'employer')) return { role: 'employer', institution: null };
+  if (await isRoleVerified(user._id, 'employer')) { await require('./employerTrust.service').assertEmployerMayPost(user._id); return { role: 'employer', institution: null }; }
   if (await isRoleVerified(user._id, 'education_agent')) return { role: 'education_agent', institution: null };
   throw new AppError('Only verified Employers, Agents and Institutes can post jobs. If your account is pending verification, you can post once it is approved.', 403);
 }
 
-// The person who posted the job, or the owner / authorized staff of the job's institute.
-async function canManageJob(job, user) {
+// The person who posted the job, the owner / authorized staff of the job's institute, or the
+// employer's company staff (any hiring permission, or the one named by `perm`).
+async function canManageJob(job, user, perm) {
   if (!job) return false;
   if (String(job.postedBy?._id || job.postedBy) === String(user._id)) return true;
+  if (!job.institution && !job.agreement) return require('./employerStaff.service').hasPermission(user._id, job.postedBy?._id || job.postedBy, perm ? [perm] : ['post_jobs', 'manage_applicants']);
   // An agreement job is run by the agent; the institute confirms joining from its Agents tab.
   if (!job.institution || job.agreement) return false;
   const institution = job.institution.owner ? job.institution : await Institution.findById(job.institution?._id || job.institution).select('owner staff');
@@ -57,8 +66,8 @@ async function isAgreementInstitute(job, user) {
 }
 async function canSeeCandidates(job, user) { return (await canManageJob(job, user)) || isAgreementInstitute(job, user); }
 
-async function assertCanManageJob(job, user) {
-  if (!(await canManageJob(job, user))) throw new AppError('You cannot manage this job.', 403);
+async function assertCanManageJob(job, user, perm) {
+  if (!(await canManageJob(job, user, perm))) throw new AppError('You cannot manage this job.', 403);
 }
 
 // Institutes whose jobs this user may manage.

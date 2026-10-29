@@ -17,7 +17,9 @@ const myEmployments = asyncHandler(async (req, res) => {
 
 // GET /api/employment/posted — the employer's own records across all their job postings.
 const postedEmployments = asyncHandler(async (req, res) => {
-  const employments = await Employment.find({ employer: req.user._id })
+  const employer = req.query.employer || req.user._id;
+  if (req.query.employer) await require('../services/employerStaff.service').assertPermission(req.user._id, employer, 'manage_employees');
+  const employments = await Employment.find({ employer })
     .populate('job', 'title company')
     .populate('employee', 'fullName email')
     .sort({ createdAt: -1 });
@@ -33,6 +35,11 @@ const respondToOffer = asyncHandler(async (req, res) => {
   if (!employment) throw new AppError('Employment offer not found.', 404);
   if (employment.employee.toString() !== req.user._id.toString()) throw new AppError('This offer is not yours to respond to.', 403);
   if (employment.status !== 'offered') throw new AppError('This offer has already been responded to.', 400);
+  if (decision === 'accepted') {
+    const signedName = String(req.body.signedName || '').trim().replace(/\s+/g, ' ');
+    if (signedName.length < 3) throw new AppError('Type your full name to sign and accept the offer.', 422);
+    employment.signature = { name: signedName.slice(0, 120), at: new Date(), ip: String(req.ip || '').slice(0, 64), userAgent: String(req.get('user-agent') || '').slice(0, 200) };
+  }
   // An offer made at the Offer stage: accepting moves the application to "Offer accepted";
   // joining comes later (Employment becomes active when the candidate is marked as joined).
   if (employment.offer?.sentAt) return ok(res, await require('../services/jobOffer.service').answerOffer(employment, req.user, decision), `Offer ${decision}.`);
@@ -74,7 +81,7 @@ const resign = asyncHandler(async (req, res) => {
 const terminate = asyncHandler(async (req, res) => {
   const employment = await Employment.findById(req.params.id).populate('job', 'title');
   if (!employment) throw new AppError('Employment record not found.', 404);
-  if (employment.employer.toString() !== req.user._id.toString()) throw new AppError('This is not your employment record.', 403);
+  if (employment.employer.toString() !== req.user._id.toString() && !(await require('../services/employerStaff.service').hasPermission(req.user._id, employment.employer, ['manage_employees']))) throw new AppError('This is not your employment record.', 403);
   if (employment.status !== 'active') throw new AppError('This employment is not currently active.', 400);
 
   employment.status = 'terminated';

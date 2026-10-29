@@ -21,7 +21,8 @@ const detail = (loader, label) => asyncHandler(async (req, res) => {
 router.get('/home', asyncHandler(async (req, res) => ok(res, await listings.home())));
 router.get('/stats', asyncHandler(async (req, res) => ok(res, await listings.stats())));
 router.get('/jobs', asyncHandler(async (req, res) => ok(res, await listings.listJobs(req.query))));
-router.get('/jobs/:id', detail(listings.jobDetail, 'Job'));
+// Opening the public job page counts as a view (employer analytics).
+router.get('/jobs/:id', detail(async (id) => { const row = await listings.jobDetail(id); if (row) require('../models/Job').updateOne({ _id: id }, { $inc: { views: 1 } }).catch(() => {}); return row; }, 'Job'));
 router.get('/scholarships', asyncHandler(async (req, res) => ok(res, await listings.listScholarships(req.query))));
 router.get('/scholarships/:id', detail(listings.scholarshipDetail, 'Scholarship'));
 router.get('/institutes', asyncHandler(async (req, res) => ok(res, await listings.listInstitutes(req.query))));

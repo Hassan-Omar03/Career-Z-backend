@@ -88,7 +88,11 @@ const RESOLVERS = {
     if (order.paymentStatus !== 'pending' || ['cancelled', 'refunded'].includes(order.status)) throw fail('This order is not waiting for payment.', 409);
     const category = order.product?.category;
     const rateKey = category && await Setting.exists({ key: `marketplace_commission_percent:${category}` }) ? `marketplace_commission_percent:${category}` : 'marketplace_commission_percent';
-    return { title: `Order: ${order.product?.title || 'item'}`, price: order.totalPrice, currency: order.currency || 'PKR', recipient: order.seller, rateKey, refs: { order: order._id } };
+    // Escrow (master 16B.7): the buyer pays the whole amount to CareerZ, which releases it to the
+    // seller after delivery. The CareerZ fee is included in that one transfer.
+    const rate = await commissionRate(rateKey);
+    const fee = round2((order.totalPrice * rate) / 100);
+    return { title: `Order: ${order.product?.title || 'item'} (held by CareerZ until delivery)`, price: round2(order.totalPrice + fee), currency: order.currency || 'PKR', recipient: null, refs: { order: order._id } };
   },
   async donation(user, id, body) {
     const request = await require('../models/FundingRequest').findById(id).populate('requestedBy', '_id');
@@ -98,7 +102,14 @@ const RESOLVERS = {
     if (request.verificationStatus !== 'verified') throw fail('Only Super Admin-verified requests can receive donations.', 403);
     const amount = round2(body.amount);
     if (!(amount >= 1)) throw fail('Enter the amount you want to give.');
+    const remaining = round2(Math.max(0, (request.requiredAmount || 0) - (request.collectedAmount || 0)));
+    if (remaining <= 0) throw fail('This request is already fully funded.', 400);
+    if (amount > remaining) throw fail('You can give at most ' + (request.currency || 'PKR') + ' ' + remaining.toLocaleString() + ', the amount still needed.');
     return { title: `Donation: ${request.title}`, price: amount, currency: request.currency || 'PKR', recipient: request.requestedBy._id, rateKey: 'donation_commission_percent', refs: { fundingRequest: request._id }, openSuffix: '', donation: true };
+  },
+  // Employer packages: CareerZ is the seller (id = package key; body.job / body.employer).
+  async employer_package(user, id, body) {
+    return require('./employerPackages.service').resolve(user, id, body);
   },
   async featured_job(user, id) {
     const { job, fee, days } = await require('../controllers/job.controller').loadFeaturableJob(id, user._id);
@@ -312,8 +323,7 @@ async function grant(mp, session) {
     Object.assign(link, { feePaidAt: new Date(), feePaidBy: mp.payer, feePaidByRole: payer?.role || 'Student', feeReceipt: ref });
     await link.save({ session });
   } else if (mp.kind === 'marketplace_order') {
-    const r = await require('../models/Order').updateOne({ _id: mp.order, paymentStatus: 'pending' }, { $set: { paymentStatus: 'paid' } }, { session });
-    if (!r.modifiedCount) throw fail('This order is no longer waiting for payment.', 409);
+    mp._escrowOrder = await require('./marketplaceEscrow.service').hold(mp.order, mp.price, session);
   } else if (mp.kind === 'donation') {
     const FundingRequest = require('../models/FundingRequest');
     const request = await FundingRequest.findById(mp.fundingRequest).session(session);
@@ -331,6 +341,8 @@ async function grant(mp, session) {
     const { job, fee, days } = await require('../controllers/job.controller').loadFeaturableJob(mp.job, mp.payer);
     const [listing] = await require('../models/FeaturedListing').create([{ listingType: 'job', job: job._id, purchasedBy: mp.payer, amount: fee, currency: 'USD', paymentMethod: 'bank_transfer', status: 'pending', expiresAt: new Date(Date.now() + days * 864e5) }], { session });
     await require('../controllers/webhook.controller').settleFeaturedListing(listing, ref, session);
+  } else if (mp.kind === 'employer_package') {
+    await require('./employerPackages.service').grant(mp, session);
   } else if (mp.kind === 'subscription') {
     const [purchase] = await require('../models/SubscriptionPurchase').create([{ institution: mp.institution, plan: mp.plan, purchasedBy: mp.payer, amount: mp.price, currency: mp.currency, paymentMethod: 'bank_transfer', status: 'pending' }], { session });
     await require('../controllers/webhook.controller').settleSubscriptionPurchase(purchase, ref, session);
@@ -391,6 +403,11 @@ async function decide(admin, id, { decision, note }) {
   });
   const fresh = await ManualPayment.findById(mp._id);
   const total = round2(fresh.commission + fresh.sellerAmount);
+  // Escrow orders: the buyer gets the delivery code, the seller is told the money is held.
+  if (decision === 'approve' && fresh.kind === 'marketplace_order') {
+    const order = await require('../models/Order').findById(fresh.order).select('+deliveryCode').populate('product', 'title digital');
+    if (order) await require('./marketplaceEscrow.service').tellPaid(order);
+  }
   await notify(fresh.payer, decision === 'approve'
     ? { title: `Payment verified: ${fresh.title}`, body: `${fresh.currency} ${total} confirmed by CareerZ. Ref ${fresh.number}.`, link: '/dashboard' }
     : { title: `Payment not verified: ${fresh.title}`, body: `${text} Ref ${fresh.number}. Contact CareerZ support if you think this is wrong.`, link: '/dashboard' }, { email: true }).catch(() => {});

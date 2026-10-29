@@ -9,6 +9,11 @@ const reviewSchema = new mongoose.Schema(
     seller: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     buyer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     rating: { type: Number, required: true, min: 1, max: 5 },
+    // How the seller dealt with the buyer (packing, speed, communication); the trust score uses it.
+    sellerRating: { type: Number, min: 1, max: 5, default: null },
+    // The buyer's own word on delivery (physical items): did it arrive on time / as described?
+    deliveredOnTime: { type: Boolean, default: null },
+    asDescribed: { type: Boolean, default: null },
     comment: { type: String, default: '' },
     sellerResponse: { type: String, default: '' },
     sellerRespondedAt: { type: Date, default: null },

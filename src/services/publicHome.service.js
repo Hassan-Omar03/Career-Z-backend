@@ -130,9 +130,10 @@ async function featuredEmployers(limit) {
 
 // ---------------------------------------------------------------- blog
 async function latestPosts(limit) {
-  const posts = await BlogPost.find({ status: 'published' }).select('slug title excerpt category coverImage publishedAt createdAt content').sort({ publishedAt: -1 }).limit(limit).lean();
+  const posts = await BlogPost.find({ status: 'published' }).select('slug title excerpt category coverImage publishedAt createdAt updatedAt content').sort({ publishedAt: -1 }).limit(limit).lean();
   return posts.map((p) => ({
-    slug: p.slug, title: p.title, excerpt: p.excerpt || '', category: p.category || '', image: httpsImage(p.coverImage),
+    slug: p.slug, title: p.title, excerpt: p.excerpt || '', category: p.category || '', image: /^https:\/\//.test(p.coverImage || '') ? p.coverImage : null,
+    coverPath: /^data:image\//.test(p.coverImage || '') ? `/blog/cover/${p.slug}?v=${new Date(p.updatedAt || 0).getTime()}` : '',
     publishedAt: p.publishedAt || p.createdAt, readMinutes: Math.max(1, Math.round(String(p.content || '').split(/\s+/).length / 200))
   }));
 }

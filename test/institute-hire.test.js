@@ -51,7 +51,7 @@ async function hire(who, jobBody, salary) {
   expect(a, 201);
   expect(await api('Owner', 'POST', `/jobs/applications/${a.body.data._id}/offer`, { salary, currency: 'PKR', startDate: '2026-12-01' }), 200);
   const emp = await model('Employment').findOne({ application: a.body.data._id });
-  expect(await api(who, 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api(who, 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 200);
   expect(await api('Owner', 'PATCH', `/jobs/applications/${a.body.data._id}/status`, { status: 'hired' }), 200);
 }
 

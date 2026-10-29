@@ -67,18 +67,52 @@ const deletePage = asyncHandler(async (req, res) => {
 // ------------------------------------------------------------------------------- Blog posts
 
 // GET /api/blog (public)
+// A blog cover is an https link or an uploaded image (kept on the post, served by /blog/cover/:slug).
+const COVER_DATA = /^data:image\/(png|jpe?g|webp);base64,[A-Za-z0-9+/=]+$/;
+function checkCover(v) {
+  if (v === undefined || v === '' || v === null) return v === null ? '' : v;
+  const s = String(v);
+  if (/^https:\/\//.test(s)) return s.slice(0, 1000);
+  if (!COVER_DATA.test(s)) throw new AppError('The cover must be a PNG, JPG or WEBP image, or an https link.', 422);
+  if (s.length > 900000) throw new AppError('The cover image is too large. Use one under about 600 KB.', 422);
+  return s;
+}
+// What readers get: the cover as a URL path, never the raw image data in lists.
+function publicCover(post) { const c = post.coverImage || ''; return /^https:\/\//.test(c) ? c : c ? `/blog/cover/${post.slug}?v=${new Date(post.updatedAt || 0).getTime()}` : ''; }
+function publicPost(p, withContent) {
+  const o = p.toObject ? p.toObject() : { ...p };
+  o.coverUrl = publicCover(o);
+  delete o.coverImage;
+  if (!withContent) delete o.content;
+  o.readMinutes = Math.max(1, Math.round(String(p.content || '').split(/\s+/).length / 200));
+  return o;
+}
+
+// A blog change shows on the home page at once (its section is cached for a minute).
+const freshHome = () => { try { require('../services/publicHome.service').resetCache(); } catch { /* home not loaded */ } };
+
 const listPublishedPosts = asyncHandler(async (req, res) => {
   const filter = { status: 'published' };
   if (req.query.category) filter.category = req.query.category;
-  const posts = await BlogPost.find(filter).populate('author', 'fullName').select('-content').sort({ publishedAt: -1 }).limit(50);
-  return ok(res, posts);
+  const posts = await BlogPost.find(filter).populate('author', 'fullName').sort({ publishedAt: -1 }).limit(50);
+  return ok(res, posts.map((p) => publicPost(p, false)));
+});
+
+// GET /api/blog/cover/:slug — the uploaded cover image of a published post.
+const postCover = asyncHandler(async (req, res) => {
+  const post = await BlogPost.findOne({ slug: req.params.slug, status: 'published' }).select('coverImage').lean();
+  const m = /^data:(image\/(?:png|jpe?g|webp));base64,(.+)$/.exec(post?.coverImage || '');
+  if (!m) throw new AppError('Cover not found.', 404);
+  res.setHeader('Content-Type', m[1]);
+  res.setHeader('Cache-Control', 'public, max-age=86400');
+  return res.send(Buffer.from(m[2], 'base64'));
 });
 
 // GET /api/blog/:slug (public)
 const getPublishedPost = asyncHandler(async (req, res) => {
   const post = await BlogPost.findOne({ slug: req.params.slug, status: 'published' }).populate('author', 'fullName');
   if (!post) throw new AppError('Post not found.', 404);
-  return ok(res, post);
+  return ok(res, publicPost(post, true));
 });
 
 // GET /api/blog/admin/all (Super Admin)
@@ -98,9 +132,10 @@ const createPost = asyncHandler(async (req, res) => {
   const publishNow = status === 'published';
   const post = await BlogPost.create({
     title, slug: finalSlug, excerpt: excerpt || '', content: content || '', category: category || '',
-    status: status || 'draft', coverImage: coverImage || '', author: req.user._id,
+    status: status || 'draft', coverImage: checkCover(coverImage) || '', author: req.user._id,
     publishedAt: publishNow ? new Date() : null
   });
+  freshHome();
   return created(res, post, 'Post created.');
 });
 
@@ -111,9 +146,12 @@ const updatePost = asyncHandler(async (req, res) => {
 
   const wasPublished = post.status === 'published';
   const allowed = ['title', 'excerpt', 'content', 'category', 'status', 'coverImage'];
+  if (req.body.coverImage !== undefined) req.body.coverImage = checkCover(req.body.coverImage);
+  if (req.body.status !== undefined && !['draft', 'published'].includes(req.body.status)) throw new AppError('Status must be draft or published.', 422);
   allowed.forEach((f) => { if (req.body[f] !== undefined) post[f] = req.body[f]; });
   if (!wasPublished && post.status === 'published' && !post.publishedAt) post.publishedAt = new Date();
   await post.save();
+  freshHome();
   return ok(res, post, 'Post saved.');
 });
 
@@ -122,10 +160,12 @@ const deletePost = asyncHandler(async (req, res) => {
   const post = await BlogPost.findById(req.params.id);
   if (!post) throw new AppError('Post not found.', 404);
   await post.deleteOne();
+  freshHome();
   return ok(res, null, 'Post deleted.');
 });
 
 module.exports = {
+  postCover,
   listPublishedPages, getPublishedPage, adminListPages, createPage, updatePage, deletePage,
   listPublishedPosts, getPublishedPost, adminListPosts, createPost, updatePost, deletePost
 };

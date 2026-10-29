@@ -16,7 +16,7 @@ const legSchema = new mongoose.Schema({
 
 const manualPaymentSchema = new mongoose.Schema({
   number: { type: String, required: true, unique: true },
-  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment'], required: true, index: true },
+  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment', 'employer_package'], required: true, index: true },
   title: { type: String, required: true },
   // Who pays and who receives, with the phone numbers the admin calls to check.
   payer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -37,6 +37,8 @@ const manualPaymentSchema = new mongoose.Schema({
   agentCommission: { type: mongoose.Schema.Types.ObjectId, ref: 'Commission', default: null },
   recruitmentInvoice: { type: mongoose.Schema.Types.ObjectId, ref: 'RecruitmentInvoice', default: null },
   sponsorship: { type: mongoose.Schema.Types.ObjectId, ref: 'Sponsorship', default: null },
+  // Employer package (master 12.18): the company it is for (staff may pay for it).
+  employerAccount: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
   // Master 6.10: for a large donation the donor says where the money comes from.
   sourceOfFunds: { type: String, default: '' },
   // Amounts: price goes to the seller; CareerZ's fee is charged on top of it.

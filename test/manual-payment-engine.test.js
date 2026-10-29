@@ -189,10 +189,13 @@ test('course, tutoring, marketplace and donation: granted only after approval; s
   const product = await model('Product').create({ seller: u.Seller._id, title: 'Book', price: 500, currency: 'PKR', category: 'books', stock: 5, status: 'active' });
   const order = await model('Order').create({ buyer: u.Kid._id, seller: u.Seller._id, product: product._id, quantity: 1, unitPrice: 500, totalPrice: 500, currency: 'PKR' });
   is(await api('Seller', 'PATCH', `/marketplace/orders/${order._id}/payment-status`, { paymentStatus: 'paid' }), 403, 'seller cannot mark it paid');
-  const o = await api('Kid', 'POST', `/manual-payments/marketplace_order/${order._id}`, { seller: leg(500) });
+  // Escrow: the whole amount goes to CareerZ, which holds it until delivery.
+  const o = await api('Kid', 'POST', `/manual-payments/marketplace_order/${order._id}`, { commission: leg(500) });
   is(o, 201, 'order submit');
   is(await api('CareerZ', 'PATCH', `/manual-payments/${o.body.data._id}/decide`, { decision: 'approve' }), 200, 'approve');
-  assert.equal((await model('Order').findById(order._id)).paymentStatus, 'paid');
+  const paidOrder = await model('Order').findById(order._id);
+  assert.equal(paidOrder.paymentStatus, 'paid');
+  assert.equal(paidOrder.escrow.status, 'held');
 
   await model('User').updateOne({ _id: u.Stranger._id }, { $set: { payoutAccount: { ...bank, accountTitle: 'Stranger', accountNumber: '0833270000000' } } });
   const request = await model('FundingRequest').create({ requestedBy: u.Stranger._id, title: 'Help', description: 'x', requiredAmount: 1000, currency: 'PKR', status: 'open', verificationStatus: 'verified', category: 'scholarship', requestType: 'student' });

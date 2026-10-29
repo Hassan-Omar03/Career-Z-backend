@@ -50,7 +50,7 @@ before(async () => {
 after(async () => { await new Promise((r) => server.close(r)); await mongoose.disconnect(); await mongo.stop(); });
 const publicIds = async () => { const r = await api(null, 'GET', '/public/scholarships'); expect(r, 200, 'public list'); return r.body.data.items.map((s) => String(s._id)); };
 
-test('external provider: needs authorization and an https apply page; live only after admin approval', async () => {
+test('external provider: needs authorization and an https apply page; a clean listing is live at once, a suspicious one waits for an admin', async () => {
   const provider = { type: 'government', name: 'HEC Pakistan', website: 'https://hec.gov.pk', authorization: auth };
   expect(await api('NewAgent', 'POST', '/scholarships/agent', listing({ provider, externalUrl: 'https://hec.gov.pk/apply' })), 403, 'unverified agent');
   expect(await api('Agent', 'POST', '/scholarships/agent', listing({ provider: { ...provider, authorization: 'yes' }, externalUrl: 'https://hec.gov.pk/apply' })), 422);
@@ -59,15 +59,19 @@ test('external provider: needs authorization and an https apply page; live only 
   const r = await api('Agent', 'POST', '/scholarships/agent', listing({ provider, externalUrl: 'https://hec.gov.pk/apply' }));
   expect(r, 201);
   S.ext = r.body.data._id;
-  assert.equal(r.body.data.status, 'pending_review');
+  assert.equal(r.body.data.status, 'open', 'passed the automatic check: live at once');
   assert.equal(r.body.data.donor, null);
-  assert.ok(!(await publicIds()).includes(S.ext), 'not public before approval');
-  expect(await api('Admin', 'POST', `/admin/scholarships/${S.ext}/decision`, { decision: 'reject' }), 422, 'reason needed');
-  expect(await api('Stu', 'POST', `/admin/scholarships/${S.ext}/decision`, { decision: 'approve' }), 403);
-  const queue = (await api('Admin', 'GET', '/admin/scholarships/review')).body.data;
-  assert.equal(queue.length, 1);
-  expect(await api('Admin', 'POST', `/admin/scholarships/${S.ext}/decision`, { decision: 'approve' }), 200);
   assert.ok((await publicIds()).includes(S.ext));
+  const sus = await api('Agent', 'POST', '/scholarships/agent', listing({ title: 'Guaranteed Grant', description: 'Pay a processing fee of Rs 2000 first and get a 100% scholarship. Contact on WhatsApp 0300 1234567.', provider, externalUrl: 'https://hec.gov.pk/apply2' }));
+  expect(sus, 201);
+  assert.equal(sus.body.data.status, 'pending_review', 'held by the automatic check');
+  assert.ok(!(await publicIds()).includes(sus.body.data._id), 'not public while held');
+  expect(await api('Admin', 'POST', `/admin/scholarships/${sus.body.data._id}/decision`, { decision: 'reject' }), 422, 'reason needed');
+  expect(await api('Stu', 'POST', `/admin/scholarships/${sus.body.data._id}/decision`, { decision: 'approve' }), 403);
+  const queue = (await api('Admin', 'GET', '/admin/scholarships/review')).body.data;
+  assert.equal(queue.length, 1, 'only the suspicious one is in the queue');
+  assert.match(queue[0].review.note, /fee|WhatsApp/i, 'the admin sees why');
+  expect(await api('Admin', 'POST', `/admin/scholarships/${sus.body.data._id}/decision`, { decision: 'reject', note: 'Asks students for a fee.' }), 200);
   const card = (await api(null, 'GET', `/public/scholarships/${S.ext}`)).body.data;
   assert.equal(card.provider.name, 'HEC Pakistan');
   assert.equal(card.applicationMode, 'external');
@@ -79,15 +83,17 @@ test('external provider: needs authorization and an https apply page; live only 
   assert.ok(await model('Notification').findOne({ user: u.Stu._id, category: 'scholarship_alert' }), 'students alerted on publish');
 });
 
-test('editing an approved listing sends it back to review; the agent can close it', async () => {
+test('editing a live listing is checked again: a clean change stays live, a suspicious one is held; the agent can close it', async () => {
   expect(await api('Agent', 'PATCH', `/scholarships/agent/${S.ext}`, { amount: 60000 }), 200);
+  assert.equal((await model('Scholarship').findById(S.ext)).status, 'open');
+  expect(await api('Agent', 'PATCH', `/scholarships/agent/${S.ext}`, { description: 'Send money first: registration fee Rs 5000 to secure your seat, guaranteed selection.' }), 200);
   assert.equal((await model('Scholarship').findById(S.ext)).status, 'pending_review');
   assert.ok(!(await publicIds()).includes(S.ext));
   expect(await api('Other', 'PATCH', `/scholarships/agent/${S.ext}`, { status: 'closed' }), 404);
   expect(await api('Agent', 'PATCH', `/scholarships/agent/${S.ext}`, { status: 'closed' }), 200);
 });
 
-test('CareerZ donor provider: donor confirms, admin approves, applications go to the donor only', async () => {
+test('CareerZ donor provider: the donor confirms and it goes live; applications go to the donor only', async () => {
   const provider = { type: 'careerz_donor', donor: u.Donor._id, authorization: 'Agreed with the donor by phone and email on 1 Oct 2026.' };
   expect(await api('Agent', 'POST', '/scholarships/agent', listing({ provider: { ...provider, donor: u.Stu._id } })), 422, 'provider must be a verified donor');
   const r = await api('Agent', 'POST', '/scholarships/agent', listing({ title: 'Merit Award', provider }));
@@ -99,8 +105,8 @@ test('CareerZ donor provider: donor confirms, admin approves, applications go to
   expect(await api('OtherDonor', 'POST', `/scholarships/${S.int}/donor-confirm`, { decision: 'confirm' }), 404);
   expect(await api('Donor', 'PATCH', `/scholarships/${S.int}`, { status: 'open' }), 409, 'donor cannot skip review');
   expect(await api('Donor', 'POST', `/scholarships/${S.int}/donor-confirm`, { decision: 'confirm' }), 200);
-  expect(await api('Admin', 'POST', `/admin/scholarships/${S.int}/decision`, { decision: 'approve' }), 200);
-  assert.ok((await publicIds()).includes(S.int));
+  assert.ok((await publicIds()).includes(S.int), 'live once the donor confirmed (automatic check passed)');
+  expect(await api('Admin', 'POST', `/admin/scholarships/${S.int}/decision`, { decision: 'approve' }), 409, 'nothing for an admin to do');
   const a = await api('Stu', 'POST', `/scholarships/${S.int}/apply`, require('./helpers/scholarshipForm')());
   expect(a, 201);
   expect(await api('Agent', 'GET', `/scholarships/${S.int}/applicants`), 403, 'agent cannot see or decide applicants');

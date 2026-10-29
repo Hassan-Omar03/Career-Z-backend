@@ -4,6 +4,8 @@ const feeSchema = new mongoose.Schema(
   {
     student: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
+    // An academy batch fee (academy.service bills one-time or every month).
+    batch: { type: mongoose.Schema.Types.ObjectId, ref: 'Batch', default: null, index: true },
     title: { type: String, required: true }, // e.g. "Tuition Fee - Term 1"
     // Structured fee type (spec 15D.7) — kept alongside the free-text title so institutions can
     // filter/report by type without losing their own custom titles.

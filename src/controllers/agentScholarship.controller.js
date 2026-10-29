@@ -43,6 +43,26 @@ function cleanProvider(p = {}) {
   return provider;
 }
 const httpsUrl = (u) => /^https:\/\/[^\s]+$/i.test(String(u || ''));
+// After the donor (if any) has confirmed: open at once unless the automatic check holds it.
+async function autoOpen(s, by) {
+  const { flags, held } = require('../services/autoModeration.service').checkScholarship(s);
+  if (held) {
+    s.status = 'pending_review';
+    s.review = { ...(s.review?.toObject?.() || s.review || {}), status: 'pending', note: flags.map((f) => f.label).join('; ') };
+    await notifyAdmins({ title: `Scholarship listing held for review: ${s.title}`, body: s.review.note }).catch(() => {});
+  } else {
+    s.status = 'open';
+    s.review = { ...(s.review?.toObject?.() || s.review || {}), status: 'approved', note: 'Passed the automatic check', reviewedBy: null, reviewedAt: new Date() };
+  }
+  return held;
+}
+// Once open (saved): students are alerted, the agent and the donor are told.
+async function afterOpen(s) {
+  if (s.status !== 'open') return;
+  await onScholarshipPublished(s);
+  await notify(s.publishedBy, { title: `Scholarship published: ${s.title}`, link: `/scholarships/${s._id}`, category: 'scholarship' }).catch(() => {});
+  if (s.donor) await notify(s.donor, { title: `Scholarship published: ${s.title}`, body: 'Applications will reach you in Scholarships.', link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }).catch(() => {});
+}
 
 // POST /api/scholarships/agent
 const create = asyncHandler(async (req, res) => {
@@ -67,10 +87,12 @@ const create = asyncHandler(async (req, res) => {
     doc.applicationMode = 'external';
     doc.review = { status: 'pending' };
   }
-  const scholarship = await Scholarship.create(doc);
+  const scholarship = new Scholarship(doc);
+  if (!doc.donor) await autoOpen(scholarship, null);
+  await scholarship.save();
+  await afterOpen(scholarship);
   if (doc.donor) await notify(doc.donor, { title: `Confirm a scholarship listing: ${scholarship.title}`, body: `${req.user.fullName} (Agent) wants to list this scholarship with you as the provider. You decide applications and fund awards; confirm only if you agreed to it.`, sentBy: req.user._id, link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }, { email: true }).catch(() => {});
-  else await notifyAdmins({ title: `Scholarship listing to review: ${scholarship.title}`, body: `Agent ${req.user.fullName} for ${provider.name}.` }).catch(() => {});
-  return created(res, scholarship, doc.donor ? 'Sent to the donor to confirm, then to admin review.' : 'Sent to admin review before it goes live.');
+  return created(res, scholarship, doc.donor ? 'Sent to the donor to confirm. It goes live once they confirm.' : scholarship.status === 'open' ? 'Your scholarship listing is live.' : 'Our automatic check wants a CareerZ admin to look at this listing first.');
 });
 
 // GET /api/scholarships/agent/mine — with application counts only (applicants are the donor's).
@@ -95,13 +117,13 @@ const update = asyncHandler(async (req, res) => {
   if (s.applicationMode === 'external' && changes.externalUrl !== undefined && !httpsUrl(changes.externalUrl)) throw fail('The application page must start with https://');
   if (s.applicationMode === 'internal') delete changes.externalUrl;
   if (!Object.keys(changes).length) throw fail('Nothing to change.');
+  const wasOpen = s.status === 'open';
   Object.assign(s, changes);
-  s.status = 'pending_review';
-  s.review = { status: s.donor ? 'awaiting_donor' : 'pending' };
+  if (s.donor) { s.status = 'pending_review'; s.review = { status: 'awaiting_donor' }; } else await autoOpen(s, null);
   await s.save();
+  if (!wasOpen) await afterOpen(s);
   if (s.donor) await notify(s.donor, { title: `Scholarship listing changed, confirm again: ${s.title}`, sentBy: req.user._id, link: require('../utils/dashLinks').donorScholarships, category: 'scholarship' }).catch(() => {});
-  else await notifyAdmins({ title: `Scholarship listing to review: ${s.title}` }).catch(() => {});
-  return ok(res, s, 'Changes sent for review.');
+  return ok(res, s, s.donor ? 'Changes sent to the donor to confirm.' : s.status === 'open' ? 'Changes saved; the listing is live.' : 'Our automatic check wants a CareerZ admin to look at the changes.');
 });
 
 // POST /api/scholarships/:id/donor-confirm { decision: 'confirm' | 'decline', note }
@@ -113,14 +135,15 @@ const donorConfirm = asyncHandler(async (req, res) => {
   if (!['confirm', 'decline'].includes(decision)) throw fail('decision must be confirm or decline.');
   if (decision === 'confirm') {
     s.review = { status: 'pending', donorConfirmedAt: new Date() };
-    await notifyAdmins({ title: `Scholarship listing to review: ${s.title}`, body: 'Confirmed by the donor.' }).catch(() => {});
+    await autoOpen(s, null);
   } else {
     s.status = 'rejected';
     s.review = { status: 'rejected', note: `Declined by the donor. ${String(req.body?.note || '').slice(0, 500)}`.trim(), reviewedAt: new Date() };
   }
   await s.save();
-  await notify(s.publishedBy, { title: decision === 'confirm' ? `Donor confirmed: ${s.title}` : `Donor declined: ${s.title}`, body: decision === 'confirm' ? 'It is now with an admin for approval.' : String(req.body?.note || ''), sentBy: req.user._id, link: require('../utils/dashLinks').agentScholarships, category: 'scholarship' }).catch(() => {});
-  return ok(res, s, decision === 'confirm' ? 'Confirmed. An admin will review it.' : 'Declined.');
+  await afterOpen(s);
+  await notify(s.publishedBy, { title: decision === 'confirm' ? `Donor confirmed: ${s.title}` : `Donor declined: ${s.title}`, body: decision === 'confirm' ? (s.status === 'open' ? 'It is live now.' : 'Our automatic check wants a CareerZ admin to look at it.') : String(req.body?.note || ''), sentBy: req.user._id, link: require('../utils/dashLinks').agentScholarships, category: 'scholarship' }).catch(() => {});
+  return ok(res, s, decision === 'confirm' ? (s.status === 'open' ? 'Confirmed. The listing is live.' : 'Confirmed. A CareerZ admin will look at it first.') : 'Declined.');
 });
 
 // Admin: GET /api/admin/scholarships/review, POST /api/admin/scholarships/:id/decision

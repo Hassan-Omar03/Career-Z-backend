@@ -17,8 +17,20 @@ const { PAYOUT_METHOD_LABEL } = require('../utils/paymentMethods');
 const LOW_STOCK_THRESHOLD = 5;
 // "courses" and "services" are digital — stock tracking doesn't apply to them (item 8: "Digital
 // product/service mein stock system optional hoga").
-const DIGITAL_CATEGORIES = ['courses', 'services'];
-const isPhysical = (product) => !DIGITAL_CATEGORIES.includes(product.category);
+const DIGITAL_CATEGORIES = ['courses', 'services', 'notes'];
+const isPhysical = (product) => !DIGITAL_CATEGORIES.includes(product.category) && !product.digital?.file;
+const escrow = () => require('../services/marketplaceEscrow.service');
+// A digital PDF sent with a listing: stored privately; buyers only ever get stamped copies.
+async function applyDigital(product, body, userId) {
+  if (body.digitalAccess !== undefined && ['download', 'online'].includes(body.digitalAccess)) product.digital = { ...(product.digital?.toObject?.() || product.digital || {}), access: body.digitalAccess };
+  if (!body.digitalFile?.data) return;
+  const id = await escrow().storeDigitalFile(body.digitalFile, userId);
+  let pages = 0;
+  try { pages = (await require('pdf-lib').PDFDocument.load(Buffer.from(String(body.digitalFile.data).split(',')[1], 'base64'), { ignoreEncryption: true })).getPageCount(); } catch { /* counted later */ }
+  const old = product.digital?.file;
+  product.digital = { file: id, fileName: String(body.digitalFile.name || 'file.pdf').slice(0, 160), pages, access: body.digitalAccess === 'online' ? 'online' : (product.digital?.access || 'download') };
+  if (old) await require('../models/PrivateFile').deleteOne({ _id: old });
+}
 
 const COMMISSION_RATE_KEY = 'marketplace_commission_percent';
 const DEFAULT_COMMISSION_RATE = 0; // unset = 0 until the Super Admin sets it
@@ -29,10 +41,19 @@ function assertOwnsProduct(product, userId) {
   }
 }
 
-// POST /api/marketplace/products — new listings start "pending_approval" (needs Super Admin
-// review before going live) unless the seller explicitly saves it as a "draft" first.
+// Publishing after the automatic check: live at once, or held for an admin with the reasons.
+async function autoPublish(product) {
+  const { flags, held } = await require('../services/autoModeration.service').checkProduct(product);
+  product.moderation = { flags, held, checkedAt: new Date() };
+  product.status = held ? 'pending_approval' : (isPhysical(product) && product.stock <= 0 ? 'out_of_stock' : 'active');
+  if (held) await require('../services/notification.service').notifyAdmins({ title: `Listing held for review: ${product.title}`, body: flags.map((f) => f.label).join('; ') }).catch(() => {});
+  return held;
+}
+
+// POST /api/marketplace/products — a verified seller's listing goes live at once after the
+// automatic check (only a suspicious one waits for an admin); "draft" saves it unpublished.
 const createProduct = asyncHandler(async (req, res) => {
-  if (!(await isRoleVerified(req.user._id, 'marketplace_seller'))) {
+  if (!(await isRoleVerified(req.user._id, 'marketplace_seller')) && !(await isRoleVerified(req.user._id, 'student'))) {
     throw new AppError('Your Seller account is pending Super Admin verification. You can browse the dashboard but cannot list a product until it is approved.', 403);
   }
 
@@ -44,8 +65,11 @@ const createProduct = asyncHandler(async (req, res) => {
   }
   if (req.body.status === 'draft') body.status = 'draft';
 
-  const product = await Product.create({ ...body, seller: req.user._id });
-  return created(res, product, product.status === 'draft' ? 'Draft saved.' : 'Listing submitted for review.');
+  const product = new Product({ ...body, seller: req.user._id });
+  await applyDigital(product, req.body, req.user._id);
+  if (product.status !== 'draft') await autoPublish(product);
+  await product.save();
+  return created(res, product, product.status === 'draft' ? 'Draft saved.' : product.status === 'pending_approval' ? 'Our automatic check wants a CareerZ admin to look at this listing first. You will be told the result.' : 'Your listing is live on the marketplace.');
 });
 
 // GET /api/marketplace/products (public browse)
@@ -75,7 +99,7 @@ const getProduct = asyncHandler(async (req, res) => {
 // GET /api/marketplace/products/mine/list — includes real units-sold per listing (delivered/
 // completed orders only, same "earned" definition used everywhere else in this dashboard).
 const myProducts = asyncHandler(async (req, res) => {
-  const products = await Product.find({ seller: req.user._id }).sort({ createdAt: -1 });
+  const products = await Product.find({ seller: req.user._id, status: { $ne: 'removed' } }).sort({ createdAt: -1 });
   const salesAgg = await Order.aggregate([
     { $match: { seller: req.user._id, status: { $in: ['delivered', 'completed'] } } },
     { $group: { _id: '$product', unitsSold: { $sum: '$quantity' } } }
@@ -360,8 +384,9 @@ const setCommissionRate = asyncHandler(async (req, res) => {
 // Shared by myEarnings (item 9) and myWallet (item 10) so both show the same numbers for the
 // same real-world quantity — never two different "available balance" figures in one dashboard.
 async function computeEarnings(sellerId) {
+  await escrow().autoRelease({ seller: sellerId });
   const [orders, allRateSettings, withdrawals] = await Promise.all([
-    Order.find({ seller: sellerId }).populate('product', 'category').select('status paymentStatus totalPrice currency product'),
+    Order.find({ seller: sellerId }).populate('product', 'category').select('status paymentStatus totalPrice currency product escrow'),
     Setting.find({ key: { $regex: `^${COMMISSION_RATE_KEY}` } }),
     SellerWithdrawal.find({ seller: sellerId, status: { $ne: 'rejected' } }).select('amount currency status')
   ]);
@@ -385,6 +410,13 @@ async function computeEarnings(sellerId) {
     if (o.status === 'cancelled') return;
     const b = bucket(o.currency);
     b.grossSales += o.totalPrice;
+    // Escrow orders: earned when CareerZ releases the held payment (the buyer already paid the fee).
+    if (o.escrow?.status) {
+      if (o.escrow.status === 'released') b.earnedGross += o.totalPrice;
+      else if (['refund_due', 'refunded'].includes(o.escrow.status)) b.refundDeductions += o.totalPrice;
+      else b.pendingEarnings += o.totalPrice;
+      return;
+    }
     // Earned only when delivered AND the payment is confirmed; a delivered order still awaiting
     // payment stays pending, so unpaid money can never be withdrawn.
     if ((o.status === 'delivered' || o.status === 'completed') && o.paymentStatus === 'paid') {
@@ -499,23 +531,32 @@ const updateSellerWithdrawalStatus = asyncHandler(async (req, res) => {
 // Super Admin-only (see moderateProduct). Restocking an out-of-stock listing revives it to active.
 const updateProduct = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
-  if (!product) throw new AppError('Listing not found.', 404);
+  if (!product || product.status === 'removed') throw new AppError('Listing not found.', 404);
   assertOwnsProduct(product, req.user._id);
+  if (req.body.status === 'removed') throw new AppError('Use Delete to remove a listing.', 422);
+  if (req.body.status === 'pending_approval') { if (!['draft', 'rejected'].includes(product.status)) throw new AppError('Only a draft can be submitted.', 422); }
+  const contentChanged = ['title', 'description', 'category', 'images'].some((f) => req.body[f] !== undefined && JSON.stringify(req.body[f]) !== JSON.stringify(product[f])) || Boolean(req.body.digitalFile?.data);
 
   if (req.body.status !== undefined) {
     const requested = req.body.status;
     if (requested === 'rejected') throw new AppError('Only Super Admin can reject a listing.', 403);
     if (requested === 'active' && !['paused', 'out_of_stock'].includes(product.status)) {
-      throw new AppError('This listing needs Super Admin approval before it can go active.', 403);
+      throw new AppError(product.status === 'rejected' ? 'Change what CareerZ asked for; the listing is checked again when you save.' : 'This listing is waiting for a CareerZ check.', 403);
     }
     if (requested === 'out_of_stock') throw new AppError('Out of Stock is set automatically based on your stock count.', 422);
   }
 
+  const prevPrice = product.price;
   const allowed = ['title', 'description', 'category', 'price', 'currency', 'stock', 'images', 'status'];
   allowed.forEach((f) => { if (req.body[f] !== undefined) product[f] = req.body[f]; });
+  await applyDigital(product, req.body, req.user._id);
+  // What buyers read (or the price) changed, or a draft is submitted: the automatic check runs again.
+  const priceChanged = req.body.price !== undefined && Number(req.body.price) !== Number(prevPrice);
+  if ((contentChanged || priceChanged) && ['active', 'out_of_stock', 'rejected', 'pending_approval'].includes(product.status)) await autoPublish(product);
+  else if (req.body.status === 'pending_approval' && ['draft', 'rejected'].includes(product.status)) await autoPublish(product);
 
   // Keep stock and status honest with each other — physical listings only, digital ones don't track stock.
-  if (isPhysical(product)) {
+  if (isPhysical(product) && product.status !== 'pending_approval') {
     if (product.stock <= 0 && product.status === 'active') product.status = 'out_of_stock';
     else if (product.stock > 0 && product.status === 'out_of_stock') product.status = 'active';
   }
@@ -552,13 +593,8 @@ const moderateProduct = asyncHandler(async (req, res) => {
 });
 
 // DELETE /api/marketplace/products/:id
-const deleteProduct = asyncHandler(async (req, res) => {
-  const product = await Product.findById(req.params.id);
-  if (!product) throw new AppError('Listing not found.', 404);
-  assertOwnsProduct(product, req.user._id);
-  await product.deleteOne();
-  return ok(res, null, 'Listing removed.');
-});
+// Removing keeps the listing for existing orders and reports (see marketplaceBuyer.service).
+const deleteProduct = asyncHandler(async (req, res) => ok(res, await require('../services/marketplaceBuyer.service').removeListing(req.user, req.params.id), 'Listing removed from the marketplace.'));
 
 // POST /api/marketplace/products/:id/orders
 const placeOrder = asyncHandler(async (req, res) => {
@@ -569,6 +605,9 @@ const placeOrder = asyncHandler(async (req, res) => {
   if (product.seller.equals(req.user._id)) throw new AppError('You cannot order your own listing.', 403);
 
   const quantity = Number(req.body.quantity) || 1;
+  if (!Number.isInteger(quantity) || quantity < 1 || quantity > 100) throw new AppError('Choose a quantity from 1 to 100.', 422);
+  const orders = require('../services/marketplaceOrders.service');
+  const shipping = orders.shippingFrom(req.body, isPhysical(product));
   if (isPhysical(product) && product.stock < quantity) {
     throw new AppError('Not enough stock available.', 400);
   }
@@ -581,9 +620,12 @@ const placeOrder = asyncHandler(async (req, res) => {
     unitPrice: product.price,
     totalPrice: product.price * quantity,
     currency: product.currency,
-    shippingAddress: req.body.shippingAddress || '',
-    note: req.body.note || ''
+    shippingAddress: isPhysical(product) ? orders.addressLine(shipping) : '',
+    shipping,
+    note: String(req.body.note || '').slice(0, 500),
+    timeline: [{ status: 'pending', at: new Date(), by: req.user._id, note: 'Order placed' }]
   });
+  if (isPhysical(product)) await require('../models/User').updateOne({ _id: req.user._id }, { $set: { shippingProfile: shipping } });
 
   // Digital listings (courses/services) don't track stock at all.
   if (isPhysical(product)) {
@@ -610,11 +652,19 @@ const placeOrder = asyncHandler(async (req, res) => {
 });
 
 // GET /api/marketplace/orders/mine (as buyer)
+const myShipping = asyncHandler(async (req, res) => {
+  const u = await require('../models/User').findById(req.user._id).select('+shippingProfile fullName phone');
+  return ok(res, u?.shippingProfile || { name: u?.fullName || '', phone: u?.phone || '' });
+});
+
 const myOrders = asyncHandler(async (req, res) => {
-  const orders = await Order.find({ buyer: req.user._id })
-    .populate('product', 'title price currency images')
+  await require('../services/marketplaceOrders.service').expireUnpaid({ buyer: req.user._id });
+  await escrow().autoRelease({ buyer: req.user._id });
+  const orders = await Order.find({ buyer: req.user._id }).select('+deliveryCode')
+    .populate('product', 'title price currency images digital.access digital.fileName digital.pages category')
     .sort({ createdAt: -1 });
-  return ok(res, orders);
+  const reviewed = new Set((await Review.find({ order: { $in: orders.map((o) => o._id) } }).select('order').lean()).map((r) => String(r.order)));
+  return ok(res, orders.map((o) => ({ ...o.toObject(), reviewed: reviewed.has(String(o._id)) })));
 });
 
 // POST /api/marketplace/orders/:id/request-cancellation — buyer asks; the seller has to approve
@@ -630,6 +680,7 @@ const requestCancellation = asyncHandler(async (req, res) => {
 
   order.cancellationRequested = true;
   order.cancellationReason = req.body.reason || '';
+  require('../services/marketplaceOrders.service').addStep(order, order.status, req.user._id, `Buyer asked to cancel${order.cancellationReason ? `: ${order.cancellationReason}` : ''}`);
   await order.save();
   await notify(order.seller, { title: `Cancellation requested for order ${order._id.toString().slice(-8).toUpperCase()}`, sentBy: req.user._id }).catch(() => {});
   return ok(res, order, 'Cancellation requested.');
@@ -644,9 +695,11 @@ const requestRefund = asyncHandler(async (req, res) => {
   if (!['delivered', 'completed'].includes(order.status)) {
     throw new AppError('You can only request a refund after the order has been delivered.', 400);
   }
+  if (['held', 'disputed'].includes(order.escrow?.status)) throw new AppError('CareerZ is still holding your payment: open a dispute instead, with your evidence.', 409);
 
   order.refundRequested = true;
   order.refundReason = req.body.reason || '';
+  require('../services/marketplaceOrders.service').addStep(order, order.status, req.user._id, `Buyer asked for a refund/return${order.refundReason ? `: ${order.refundReason}` : ''}`);
   await order.save();
   await notify(order.seller, { title: `Refund/return requested for order ${order._id.toString().slice(-8).toUpperCase()}`, sentBy: req.user._id }).catch(() => {});
   return ok(res, order, 'Refund/return requested.');
@@ -662,7 +715,13 @@ const respondToCancellation = asyncHandler(async (req, res) => {
   if (!order.cancellationRequested) throw new AppError('No cancellation request is pending on this order.', 400);
 
   order.cancellationRequested = false;
-  if (approve) order.status = 'cancelled';
+  if (approve) {
+    const flow = require('../services/marketplaceOrders.service');
+    await escrow().onSellerStatus(order, 'cancelled');
+    await flow.restock(order);
+    flow.addStep(order, 'cancelled', req.user._id, 'Buyer asked to cancel; seller agreed');
+    order.status = 'cancelled';
+  }
   await order.save();
   await notify(order.buyer, { title: `Cancellation ${approve ? 'approved' : 'declined'} for order ${order._id.toString().slice(-8).toUpperCase()}`, sentBy: req.user._id }).catch(() => {});
   if (approve) {
@@ -681,9 +740,15 @@ const respondToRefund = asyncHandler(async (req, res) => {
   if (!order.refundRequested) throw new AppError('No refund/return request is pending on this order.', 400);
 
   order.refundRequested = false;
+  require('../services/marketplaceOrders.service').addStep(order, approve ? 'refunded' : order.status, req.user._id, approve ? 'Seller approved the refund/return' : 'Seller declined the refund/return');
   if (approve) {
     order.status = 'refunded';
     order.paymentStatus = 'refunded';
+    // Already paid out to the seller: CareerZ refunds the buyer and takes it from the seller's balance.
+    if (order.escrow?.status === 'released') {
+      order.escrow.status = 'refund_due';
+      await require('../services/notification.service').notifyAdmins({ title: `Refund due: order ${order._id.toString().slice(-8).toUpperCase()}`, body: `The seller approved a return. Refund ${order.currency} ${order.totalPrice} to the buyer; it is taken from the seller's balance.` }).catch(() => {});
+    }
   }
   await order.save();
   await notify(order.buyer, { title: `Refund/return ${approve ? 'approved' : 'declined'} for order ${order._id.toString().slice(-8).toUpperCase()}`, sentBy: req.user._id }).catch(() => {});
@@ -692,9 +757,12 @@ const respondToRefund = asyncHandler(async (req, res) => {
 
 // GET /api/marketplace/orders/selling (as seller)
 const sellerOrders = asyncHandler(async (req, res) => {
+  await require('../services/marketplaceOrders.service').expireUnpaid({ seller: req.user._id });
+  await escrow().autoRelease({ seller: req.user._id });
   const orders = await Order.find({ seller: req.user._id })
     .populate('product', 'title price currency')
     .populate('buyer', 'fullName email')
+    .populate('product', 'title price currency digital.access digital.fileName category')
     .sort({ createdAt: -1 });
   return ok(res, orders);
 });
@@ -708,17 +776,25 @@ const updateOrderStatus = asyncHandler(async (req, res) => {
     throw new AppError('Invalid status.', 422);
   }
 
-  const order = await Order.findById(req.params.id);
+  const order = await Order.findById(req.params.id).populate('product', 'title digital.fileName');
   if (!order) throw new AppError('Order not found.', 404);
   if (order.seller.toString() !== req.user._id.toString()) {
     throw new AppError('You are not the seller for this order.', 403);
   }
+  if (['completed', 'cancelled', 'refunded'].includes(order.status)) throw new AppError(`This order is already ${order.status}.`, 409);
+  if (status === order.status) throw new AppError('The order already has this status.', 409);
+  const flow = require('../services/marketplaceOrders.service');
+  flow.checkSellerStep(order, status, req.body);
 
+  await escrow().onSellerStatus(order, status);
+  if (status === 'cancelled') await flow.restock(order);
+  flow.addStep(order, status, req.user._id, status === 'shipped' && order.shipment?.courier ? `${order.shipment.courier}${order.shipment.trackingNo ? ` · ${order.shipment.trackingNo}` : ''}` : String(req.body.note || ''));
   order.status = status;
   // Refunding the order fulfillment implies the payment was refunded too — keep them in sync.
   if (status === 'refunded') order.paymentStatus = 'refunded';
   await order.save();
 
+  await flow.tellBuyer(order, status, status === 'shipped' && order.shipment?.courier ? `${order.shipment.courier}${order.shipment.trackingNo ? `, tracking number ${order.shipment.trackingNo}` : ''}.` : status === 'cancelled' && order.escrow?.status === 'refund_due' ? 'CareerZ will refund your payment.' : '');
   if (status === 'cancelled') {
     await notify(req.user._id, { title: `Order cancelled: ${order.currency} ${order.totalPrice}`, sentBy: req.user._id }).catch(() => {});
   } else if (status === 'delivered' || status === 'completed') {
@@ -757,13 +833,17 @@ const updatePaymentStatus = asyncHandler(async (req, res) => {
 // POST /api/marketplace/orders/:id/review — a buyer reviews their own DELIVERED order. Verified
 // purchase only (real, no fake reviews), and one review per order (schema-enforced unique index).
 const submitReview = asyncHandler(async (req, res) => {
-  const { rating, comment } = req.body;
-  if (!rating || rating < 1 || rating > 5) throw new AppError('rating must be between 1 and 5.', 422);
+  const { comment } = req.body;
+  const rating = Number(req.body.rating);
+  if (!Number.isInteger(rating) || rating < 1 || rating > 5) throw new AppError('Choose a rating from 1 to 5 stars.', 422);
+  const sellerRating = req.body.sellerRating == null || req.body.sellerRating === '' ? null : Number(req.body.sellerRating);
+  if (sellerRating !== null && (!Number.isInteger(sellerRating) || sellerRating < 1 || sellerRating > 5)) throw new AppError('Rate the seller from 1 to 5 stars.', 422);
+  const yesNo = (v) => (v === true || v === false ? v : null);
 
   const order = await Order.findById(req.params.id);
   if (!order) throw new AppError('Order not found.', 404);
   if (order.buyer.toString() !== req.user._id.toString()) throw new AppError('You did not place this order.', 403);
-  if (order.status !== 'delivered') throw new AppError('You can only review an order after it has been delivered.', 400);
+  if (!['delivered', 'completed'].includes(order.status)) throw new AppError('You can rate the order once it is delivered.', 400);
 
   const existing = await Review.findOne({ order: order._id });
   if (existing) throw new AppError('You already reviewed this order.', 409);
@@ -774,7 +854,10 @@ const submitReview = asyncHandler(async (req, res) => {
     seller: order.seller,
     buyer: req.user._id,
     rating,
-    comment: comment || ''
+    sellerRating,
+    deliveredOnTime: yesNo(req.body.deliveredOnTime),
+    asDescribed: yesNo(req.body.asDescribed),
+    comment: String(comment || '').trim().slice(0, 2000)
   });
 
   await notify(order.seller, { title: `New review: ★ ${rating}`, body: comment || '', sentBy: req.user._id }).catch(() => {});
@@ -784,8 +867,9 @@ const submitReview = asyncHandler(async (req, res) => {
 
 // GET /api/marketplace/products/:id/reviews — public.
 const productReviews = asyncHandler(async (req, res) => {
-  const reviews = await Review.find({ product: req.params.id }).populate('buyer', 'fullName').sort({ createdAt: -1 });
-  return ok(res, reviews);
+  const reviews = await Review.find({ product: req.params.id }).populate('buyer', 'fullName').sort({ createdAt: -1 }).limit(100).lean();
+  // Only the first name is public; the review is marked as a verified purchase.
+  return ok(res, reviews.map((r) => ({ _id: r._id, rating: r.rating, sellerRating: r.sellerRating, deliveredOnTime: r.deliveredOnTime, asDescribed: r.asDescribed, comment: r.comment, sellerResponse: r.sellerResponse, createdAt: r.createdAt, buyer: { fullName: String(r.buyer?.fullName || 'Buyer').split(' ')[0] }, verified: true })));
 });
 
 // GET /api/marketplace/sellers/mine/reviews — Seller Dashboard item 11: every real review across
@@ -833,6 +917,7 @@ const reportReview = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  myShipping,
   createProduct,
   listProducts,
   getProduct,

@@ -11,6 +11,7 @@ router.post('/partnerships', ctrl.requestPartnership);
 router.patch('/partnerships/:id/respond', ctrl.respondPartnership);
 router.patch('/partnerships/:id/end', ctrl.endPartnership);
 router.get('/partnerships/mine', ctrl.myPartnerships);
+router.get('/partner-jobs/mine', ctrl.myPartnerJobs);
 
 router.post('/referrals', ctrl.createReferral);
 router.get('/referrals/mine', ctrl.myReferrals);

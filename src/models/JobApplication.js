@@ -14,6 +14,7 @@ const jobApplicationSchema = new mongoose.Schema(
       enum: ['pending', 'viewed', 'shortlisted', 'interview', 'final_interview', 'selected', 'accepted', 'hired', 'completed', 'rejected', 'withdrawn'],
       default: 'pending'
     },
+    aiMatch: { score: { type: Number, default: null }, reason: { type: String, default: '' }, at: { type: Date, default: null } },
     statusHistory: [{
       status: String, at: { type: Date, default: Date.now }, by: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
       byRole: { type: String, default: '' }, note: { type: String, default: '' }, _id: false

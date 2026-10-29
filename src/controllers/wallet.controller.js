@@ -16,7 +16,7 @@ const getPayoutAccount = asyncHandler(async (req, res) => {
   // Institutes, teachers, sellers and agents are paid by bank transfer into this account, and so
   // is a student with a funding request; their dashboard warns them until it is added.
   const SELLERS = ['institution_owner', 'academy_owner', 'teacher', 'marketplace_seller', 'education_agent'];
-  const needed = (user?.roles || []).some((r) => SELLERS.includes(r)) || Boolean(await require('../models/FundingRequest').exists({ requestedBy: req.user._id, status: 'open' }))
+  const needed = (user?.roles || []).some((r) => SELLERS.includes(r)) || Boolean(await require('../models/Product').exists({ seller: req.user._id })) || Boolean(await require('../models/FundingRequest').exists({ requestedBy: req.user._id, status: 'open' }))
     || Boolean(await require('../models/Sponsorship').exists({ student: req.user._id, status: { $in: ['pending', 'active'] } }));
   return ok(res, { account: user?.payoutAccount?.accountNumber ? user.payoutAccount : null, needed, banks: payoutAccount.BANKS, wallets: payoutAccount.WALLETS });
 });

@@ -85,7 +85,7 @@ test('the institute\'s offer and letter go to the agent; the candidate sees noth
   const mine = (await api('Cand', 'GET', '/jobs/mine/applications')).body.data[0];
   assert.equal(mine.employment, null);
   const emp = await model('Employment').findOne({ application: S.app });
-  expect(await api('Cand', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 409, 'cannot accept before it reaches them');
+  expect(await api('Cand', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 409, 'cannot accept before it reaches them');
   const agentView = (await api('Agent', 'GET', `/jobs/${mine.job._id}/applicants`)).body.data[0];
   assert.equal(agentView.employment.salary, 95000, 'the agent sees the offer');
 });
@@ -99,7 +99,7 @@ test('the agent forwards; the candidate then sees and accepts; the institute is 
   assert.equal(emp.salary, 95000);
   assert.match(emp.offerLetter.text, /pleased to offer/);
   assert.equal((await model('JobApplication').findById(S.app)).status, 'selected');
-  expect(await api('Cand', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api('Cand', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 200);
   assert.ok(await model('Notification').findOne({ user: u.Owner._id, title: /Offer accepted: Cand/ }), 'institute told');
   assert.ok(await model('Notification').findOne({ user: u.Agent._id, title: /Offer accepted: Cand/ }), 'agent told');
   // Then joining: agent marks joined, the institute confirms (existing flow).

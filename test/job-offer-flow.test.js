@@ -53,10 +53,11 @@ test('the employer makes an offer with salary; the candidate sees it and is emai
   expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer`, {}), 422, 'salary required');
   expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer`, { salary: 80000, expiresAt: '2020-01-01' }), 422, 'reply-by in the past');
   expect(await api('Other', 'POST', `/jobs/applications/${S.app}/offer`, { salary: 80000 }), 403);
-  expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer-letter`, { text: letter }), 409, 'no letter before acceptance');
+  expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer-letter`, { text: letter }), 409, 'no letter before an offer');
   emails.length = 0;
   expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer`, { salary: 80000, currency: 'PKR', startDate: '2026-12-01', expiresAt: '2027-01-15', terms: 'Probation 3 months.' }), 200);
   expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer`, { salary: 85000, currency: 'PKR', startDate: '2026-12-01', expiresAt: '2027-01-15', terms: 'Probation 3 months.' }), 200, 'revised offer');
+  expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer-letter`, { text: letter }), 200, 'the letter goes together with the offer');
   assert.ok(emails.some((m) => m.to === 'cand@offer.test' && /Revised job offer/.test(m.subject)));
   const [mine] = (await api('Cand', 'GET', '/employment/mine')).body.data;
   assert.equal(mine.salary, 85000);
@@ -69,8 +70,8 @@ test('the employer makes an offer with salary; the candidate sees it and is emai
 
 test('accept → Offer accepted; offer letter (text and PDF); Joined makes the employment active', async () => {
   const id = (await api('Cand', 'GET', '/employment/mine')).body.data[0]._id;
-  expect(await api('Cand2', 'PATCH', `/employment/${id}/respond`, { decision: 'accepted' }), 403);
-  expect(await api('Cand', 'PATCH', `/employment/${id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api('Cand2', 'PATCH', `/employment/${id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 403);
+  expect(await api('Cand', 'PATCH', `/employment/${id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 200);
   assert.equal((await model('JobApplication').findById(S.app)).status, 'accepted');
   assert.equal((await model('Employment').findById(id)).status, 'accepted', 'not active before joining');
   expect(await api('Employer', 'POST', `/jobs/applications/${S.app}/offer`, { salary: 90000 }), 409, 'no new offer after acceptance');
@@ -92,7 +93,7 @@ test('decline → application withdrawn; expired offers cannot be accepted', asy
   await api('Employer', 'POST', `/jobs/applications/${S.app2}/offer`, { salary: 70000, expiresAt: '2027-01-01' });
   const emp = await model('Employment').findOne({ application: S.app2 });
   await model('Employment').updateOne({ _id: emp._id }, { $set: { 'offer.expiresAt': new Date(Date.now() - 1000) } });
-  expect(await api('Cand2', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted' }), 409, 'expired');
+  expect(await api('Cand2', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 409, 'expired');
   await model('Employment').updateOne({ _id: emp._id }, { $set: { 'offer.expiresAt': null } });
   expect(await api('Cand2', 'PATCH', `/employment/${emp._id}/respond`, { decision: 'declined' }), 200);
   assert.equal((await model('JobApplication').findById(S.app2)).status, 'withdrawn');

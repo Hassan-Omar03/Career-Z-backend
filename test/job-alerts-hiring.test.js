@@ -148,7 +148,7 @@ test('hiring stages: history, notes, agent joining needs the candidate, then com
   expect(await api('Agent', 'POST', `/jobs/applications/${app._id}/offer`, { salary: 50000, currency: 'PKR' }), 200);
   expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' }), 409, 'not joined before the offer is accepted');
   const offer = await model('Employment').findOne({ application: app._id });
-  expect(await api('Skilled', 'PATCH', `/employment/${offer._id}/respond`, { decision: 'accepted' }), 200);
+  expect(await api('Skilled', 'PATCH', `/employment/${offer._id}/respond`, { decision: 'accepted', signedName: 'Signed Candidate' }), 200);
   assert.ok((await notes('Skilled', { category: 'application' })).some((n) => n.body === 'Interview on Monday at 10am.'), 'agent note reaches the candidate');
   expect(await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'completed' }), 409, 'cannot complete before joining');
   const joined = await api('Agent', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'hired' });

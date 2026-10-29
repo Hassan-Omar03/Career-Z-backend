@@ -69,14 +69,15 @@ beforeEach(async () => {
 
 async function setup(){outsider.roles=['employer'];await outsider.save();const job=await Job.create({postedBy:outsider._id,title:'Intern',company:'Demo',country:'PK',status:'active'});return job;}
 test('both partnership request directions require other-party approval and support ending',async()=>{
- await setup();let r=await invoke(ctrl.requestPartnership,{user:outsider,body:{institutionId:institution._id,employerEmail:outsider.email}});assert.equal(r.status,201);const id=r.body.data._id;
- assert.equal((await invoke(ctrl.respondPartnership,{user:outsider,params:{id},body:{decision:'active'}})).status,403);
- let list=await invoke(ctrl.myPartnerships,{user:owner});assert.equal(list.body.data[0].canRespond,true);
- assert.equal((await invoke(ctrl.respondPartnership,{user:owner,params:{id},body:{decision:'active'}})).status,200);
+ await setup();assert.equal((await invoke(ctrl.requestPartnership,{user:outsider,body:{institutionId:institution._id,employerEmail:outsider.email}})).status,422,'MoU must be signed');let r=await invoke(ctrl.requestPartnership,{user:outsider,body:{institutionId:institution._id,employerEmail:outsider.email,signedName:'Signer Name'}});assert.equal(r.status,201);const id=r.body.data._id;
+ assert.equal((await invoke(ctrl.respondPartnership,{user:outsider,params:{id},body:{decision:'active',signedName:'Signer Name'}})).status,403);
+ let list=await invoke(ctrl.myPartnerships,{user:owner});assert.equal(list.body.data[0].canRespond,true);assert.equal(list.body.data[0].mou.requesterSign.name,'Signer Name');assert.ok(list.body.data[0].mouTerms.length>3);assert.deepEqual(list.body.data[0].stats,{referred:0,applied:0,hired:0});
+assert.equal((await invoke(ctrl.respondPartnership,{user:owner,params:{id},body:{decision:'active'}})).status,422,'accepting needs a signature');
+ assert.equal((await invoke(ctrl.respondPartnership,{user:owner,params:{id},body:{decision:'active',signedName:'Signer Name'}})).status,200);
  assert.equal((await invoke(ctrl.endPartnership,{user:owner,params:{id}})).status,200);
- r=await invoke(ctrl.requestPartnership,{user:owner,body:{institutionId:institution._id,employerEmail:outsider.email}});assert.equal(r.status,201);
- assert.equal((await invoke(ctrl.respondPartnership,{user:owner,params:{id:r.body.data._id},body:{decision:'active'}})).status,403);
- assert.equal((await invoke(ctrl.respondPartnership,{user:outsider,params:{id:r.body.data._id},body:{decision:'active'}})).status,200);
+ r=await invoke(ctrl.requestPartnership,{user:owner,body:{institutionId:institution._id,employerEmail:outsider.email,signedName:'Signer Name'}});assert.equal(r.status,201);
+ assert.equal((await invoke(ctrl.respondPartnership,{user:owner,params:{id:r.body.data._id},body:{decision:'active',signedName:'Signer Name'}})).status,403);
+ assert.equal((await invoke(ctrl.respondPartnership,{user:outsider,params:{id:r.body.data._id},body:{decision:'active',signedName:'Signer Name'}})).status,200);
 });
 test('student referral apply has real application status and accurate statistics',async()=>{
  const job=await setup();await InstitutionEmployerPartnership.create({institution:institution._id,employer:outsider._id,requestedBy:owner._id,status:'active'});

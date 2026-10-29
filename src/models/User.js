@@ -64,6 +64,26 @@ const userSchema = new mongoose.Schema(
     unsubscribeToken: { type: String, default: null, index: { sparse: true } },
     // Public recruitment profile institutes see in Find Agents (agents only).
     // Super Admin sanctions on an agent (master: job-posting ban, agent licence cancellation).
+    // Made by marketplace quick checkout (no account type); can order, pay and track orders.
+    quickBuyer: { type: Boolean, default: false },
+    // The last delivery details a buyer used, offered again on the next order.
+    shippingProfile: { type: Object, default: undefined, select: false },
+    // Master 12.18 what the employer bought: badges, subscription, premium tools, featured credits.
+    employerPerks: {
+      topHiringUntil: { type: Date, default: null },
+      planUntil: { type: Date, default: null },
+      planJobLimit: { type: Number, default: 0 },
+      premiumUntil: { type: Date, default: null },
+      featuredCredits: { type: Number, default: 0 }
+    },
+    // Master 12.17 employer fraud ladder: warning → temporary suspension → permanent ban.
+    employerSanctions: {
+      level: { type: String, enum: ['none', 'warning', 'suspended', 'banned'], default: 'none' },
+      warnings: { type: Number, default: 0 },
+      suspendedUntil: { type: Date, default: null },
+      bannedAt: { type: Date, default: null },
+      reason: { type: String, default: '' }
+    },
     agentSanctions: {
       postingBanned: { type: Boolean, default: false },
       postingBanUntil: { type: Date, default: null },

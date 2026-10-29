@@ -77,6 +77,7 @@ function jobCard(j, publisherRoles = new Map()) {
     _id: j._id, title: j.title, company: j.company, type: j.type, workMode: j.workMode, city: j.city || '', country: j.country,
     salaryMin: j.salaryMin, salaryMax: j.salaryMax, currency: j.currency, experienceYears: j.experienceYears || 0,
     applicationDeadline: j.applicationDeadline, postedAt: j.createdAt, featured: !!j.featured, visaSponsorship: !!j.visaSponsorship,
+    sponsored: !!j.sponsored, urgent: !!j.urgent, topHiring: !j.institution && Boolean(j.postedBy && publisherRoles.topHiring?.has(String(j.postedBy._id))), vacancies: j.vacancies || 1,
     companyLogo: /^https:\/\//.test(j.companyLogo || '') ? j.companyLogo : null,
     category: j.category || 'other', institution: j.institution ? String(j.institution._id || j.institution) : null,
     postedBy: j.institution ? { name: j.company, kind: 'institute' } : j.postedBy ? { name: j.postedBy.fullName, kind: publisherRoles.get(String(j.postedBy._id)) || 'employer' } : null,
@@ -85,14 +86,21 @@ function jobCard(j, publisherRoles = new Map()) {
 }
 async function publisherKinds(rows, field) {
   const ids = rows.map((r) => r[field]?._id).filter(Boolean);
-  const users = await User.find({ _id: { $in: ids } }).select('roles').lean();
-  return new Map(users.map((u) => [String(u._id), u.roles.includes('education_agent') ? 'agent' : 'employer']));
+  const users = await User.find({ _id: { $in: ids } }).select('roles employerPerks.topHiringUntil').lean();
+  const map = new Map(users.map((u) => [String(u._id), u.roles.includes('education_agent') ? 'agent' : 'employer']));
+  map.topHiring = new Set(users.filter((u) => u.employerPerks?.topHiringUntil && new Date(u.employerPerks.topHiringUntil) > new Date()).map((u) => String(u._id)));
+  return map;
 }
 async function listJobs(query = {}) {
   const { limit, page, skip } = paging(query);
+  const now = new Date();
+  await Promise.all([
+    Job.updateMany({ sponsored: true, sponsoredUntil: { $lt: now } }, { $set: { sponsored: false } }),
+    Job.updateMany({ urgent: true, urgentUntil: { $lt: now } }, { $set: { urgent: false } })
+  ]);
   const filter = await jobFilter(query);
   const [rows, total] = await Promise.all([
-    Job.find(filter).populate('postedBy', 'fullName').sort({ featured: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
+    Job.find(filter).populate('postedBy', 'fullName').sort({ featured: -1, sponsored: -1, createdAt: -1 }).skip(skip).limit(limit).lean(),
     Job.countDocuments(filter)
   ]);
   const kinds = await publisherKinds(rows, 'postedBy');
@@ -103,7 +111,7 @@ async function jobDetail(id) {
   const job = await Job.findOne({ ...filter, _id: id }).populate('postedBy', 'fullName').lean();
   if (!job) return null;
   const kinds = await publisherKinds([job], 'postedBy');
-  return { ...jobCard(job, kinds), description: job.description || '', skills: job.skills || [], education: job.education || '', isGovernment: !!job.isGovernment };
+  return { ...jobCard(job, kinds), employerId: !job.institution && job.postedBy ? job.postedBy._id : null, description: job.description || '', skills: job.skills || [], education: job.education || '', isGovernment: !!job.isGovernment };
 }
 
 // ---------------------------------------------------------------- scholarships (posted by donors)
@@ -208,12 +216,14 @@ async function instituteDetail(id) {
 // ---------------------------------------------------------------- marketplace
 const PRODUCT_CATEGORIES = ['books', 'stationery', 'uniform', 'electronics', 'courses', 'services', 'other'];
 async function productFilter(query = {}) {
-  const and = [{ status: 'active', stock: { $gt: 0 } }];
+  const and = [{ status: 'active', $or: [{ stock: { $gt: 0 } }, { category: { $in: ['courses', 'services', 'notes'] } }, { 'digital.file': { $ne: null } }] }];
   if (PRODUCT_CATEGORIES.includes(query.category)) and.push({ category: query.category });
   if (num(query.minPrice) !== null) and.push({ price: { $gte: num(query.minPrice) } });
   if (num(query.maxPrice) !== null) and.push({ price: { $lte: num(query.maxPrice) } });
   if (query.q) and.push(textMatch(query.q, ['title', 'description', 'category']));
-  const sellers = await eligiblePublishers(await Product.distinct('seller', { $and: and }), 'marketplace_seller');
+  const posters = await Product.distinct('seller', { $and: and });
+  // Verified sellers, and verified students (who may sell in the student marketplace).
+  const sellers = [...await eligiblePublishers(posters, 'marketplace_seller'), ...await eligiblePublishers(posters, 'student')];
   return { $and: and, seller: { $in: sellers } };
 }
 const productCard = (p) => ({
@@ -231,7 +241,7 @@ async function listProducts(query = {}) {
 async function productDetail(id) {
   const filter = await productFilter({});
   const p = await Product.findOne({ ...filter, _id: id }).populate('seller', 'fullName city').lean();
-  return p ? { ...productCard(p), description: p.description || '', images: (p.images || []).filter((u) => /^https:\/\//.test(u) || /^data:image\//.test(u)).slice(0, 6) } : null;
+  return p ? { ...productCard(p), sellerId: p.seller?._id || null, digital: p.digital?.file ? { pages: p.digital.pages || 0, access: p.digital.access || 'download' } : null, description: p.description || '', images: (p.images || []).filter((u) => /^https:\/\//.test(u) || /^data:image\//.test(u)).slice(0, 6) } : null;
 }
 
 // ---------------------------------------------------------------- donors (opt-in public profiles)

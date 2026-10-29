@@ -20,26 +20,48 @@ const publishing = require('../services/jobPublishing.service');
 const { JOB_CATEGORIES } = require('../models/Job');
 
 // The poster, or the owner / recruitment staff of the job's institute (see jobAccess.service).
-async function assertOwnsJob(job, userOrId) {
+async function assertOwnsJob(job, userOrId, perm) {
   const user = userOrId?._id ? userOrId : { _id: userOrId };
-  await jobAccess.assertCanManageJob(job, user);
+  await jobAccess.assertCanManageJob(job, user, perm);
 }
 
 // Fields that change what applicants read; editing them on a live job re-runs the risk scan.
 const CONTENT_FIELDS = ['title', 'company', 'description', 'salaryMin', 'salaryMax', 'visaSponsorship', 'contactEmail', 'contactPhone', 'skills'];
 
 // POST /api/jobs
+// Vacancies, gender and age range (optional) and saved interview questions on a job post.
+function checkPostingExtras(body) {
+  const blankToNull = (k) => { if (body[k] === '' ) body[k] = null; };
+  ['ageMin', 'ageMax'].forEach(blankToNull);
+  if (body.vacancies !== undefined) {
+    const v = Number(body.vacancies);
+    if (!Number.isInteger(v) || v < 1 || v > 1000) throw new AppError('Vacancies must be a whole number from 1 to 1000.', 422);
+    body.vacancies = v;
+  }
+  if (body.genderPreference !== undefined && !['any', 'male', 'female'].includes(body.genderPreference)) throw new AppError('Choose any, male or female.', 422);
+  for (const k of ['ageMin', 'ageMax']) {
+    if (body[k] === undefined || body[k] === null) continue;
+    const n = Number(body[k]);
+    if (!Number.isInteger(n) || n < 14 || n > 80) throw new AppError('Age must be a whole number from 14 to 80.', 422);
+    body[k] = n;
+  }
+  if (body.ageMin != null && body.ageMax != null && body.ageMin > body.ageMax) throw new AppError('Minimum age cannot be more than maximum age.', 422);
+  if (body.interviewQuestions !== undefined) body.interviewQuestions = [].concat(body.interviewQuestions || []).map((q) => String(q).trim()).filter(Boolean).slice(0, 20).map((q) => q.slice(0, 300));
+}
+
 const createJob = asyncHandler(async (req, res) => {
-  const publisher = await jobAccess.publisherFor(req.user, req.body.institution, req.body.agreement);
+  const publisher = await jobAccess.publisherFor(req.user, req.body.institution, req.body.agreement, req.body.employer);
   if (publisher.role === 'education_agent') await require('../services/agentWork.service').assertMayPost(req.user);
 
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'isGovernment', 'status', 'category'
+    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'isGovernment', 'status', 'category',
+    'vacancies', 'genderPreference', 'ageMin', 'ageMax', 'interviewQuestions'
   ];
   const body = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) body[f] = req.body[f]; });
+  checkPostingExtras(body);
   if (!body.title || !body.company || !body.country) {
     throw new AppError('title, company and country are required.', 422);
   }
@@ -51,12 +73,14 @@ const createJob = asyncHandler(async (req, res) => {
   // An institute's job always carries the institute's own name and logo.
   if (publisher.institution) { body.company = publisher.institution.name; if (!body.companyLogo && publisher.institution.logo) body.companyLogo = publisher.institution.logo; }
   const wantsPublish = (body.status || 'active') === 'active';
-  const job = await Job.create({ ...body, status: 'draft', postedBy: req.user._id, institution: publisher.institution?._id || null,
+  if (wantsPublish && publisher.role === 'employer') await require('../services/employerPackages.service').assertMayGoLive(publisher.postedBy || req.user._id);
+  const job = await Job.create({ ...body, status: 'draft', postedBy: publisher.postedBy || req.user._id, institution: publisher.institution?._id || null,
     agreement: publisher.agreement?._id || null, recruitmentRequest: publisher.agreement?.request || null });
   if (publisher.role === 'education_agent' && !publisher.agreement && req.body.employerEmail) {
     try { await require('../services/agentWork.service').linkEmployer(job, req.user, req.body.employerEmail); } catch (e) { await Job.deleteOne({ _id: job._id }); throw e; }
   }
   const outcome = wantsPublish ? await publishing.submit(job, req.user, publisher.role === 'institution_staff' ? null : publisher.role) : { published: false, flags: [] };
+  if (outcome.published) require('./placement.controller').tellPartnersOfNewJob(await Job.findById(job._id).lean()).catch(() => {});
   return created(res, { ...job.toObject(), outcome }, !wantsPublish ? 'Job saved as draft.' : outcome.published ? 'Job published.' : 'Job sent to admin review before it goes live.');
 
 });
@@ -75,7 +99,7 @@ const listJobs = asyncHandler(async (req, res) => {
   // A featured badge that outlived its paid window shouldn't keep jumping the queue.
   await Job.updateMany({ featured: true, featuredUntil: { $lt: new Date() } }, { featured: false, featuredUntil: null });
 
-  const jobs = await Job.find(filter).populate('postedBy', 'fullName').sort({ featured: -1, createdAt: -1 }).limit(100);
+  const jobs = await Job.find(filter).populate('postedBy', 'fullName').sort({ featured: -1, sponsored: -1, createdAt: -1 }).limit(100);
   return ok(res, jobs);
 });
 
@@ -88,6 +112,7 @@ const getJob = asyncHandler(async (req, res) => {
     throw new AppError('Job not found.', 404);
   }
 
+  if (!req.user || String(req.user._id) !== String(job.postedBy?._id || job.postedBy)) Job.updateOne({ _id: job._id }, { $inc: { views: 1 } }).catch(() => {});
   // "Recently viewed jobs" — only for a signed-in viewer actually opening the job's own
   // detail view, not every list/search hit. Dedupe (most-recent-first), cap at 20.
   if (req.user) {
@@ -106,11 +131,14 @@ const myJobs = asyncHandler(async (req, res) => {
   const institutions = await jobAccess.manageableInstitutionIds(req.user);
   const wanted = req.query.institution;
   let filter;
-  if (wanted) {
+  if (req.query.employer) {
+    if (!(await require('../services/employerStaff.service').hasPermission(req.user._id, req.query.employer, ['post_jobs', 'manage_applicants']))) throw new AppError('You do not have hiring permission for this company.', 403);
+    filter = { postedBy: req.query.employer, institution: null, agreement: null };
+  } else if (wanted) {
     if (!institutions.some((id) => String(id) === String(wanted))) throw new AppError('You cannot manage this institute\'s jobs.', 403);
     filter = { institution: wanted, agreement: null };
   } else filter = { $or: [{ postedBy: req.user._id }, ...(institutions.length ? [{ institution: { $in: institutions }, agreement: null }] : [])] };
-  const jobs = await Job.find(filter).sort({ createdAt: -1 });
+  const jobs = await Job.find(filter).select('+interviewQuestions').sort({ createdAt: -1 });
   const counts = await JobApplication.aggregate([
     { $match: { job: { $in: jobs.map((j) => j._id) } } },
     { $group: { _id: '$job', count: { $sum: 1 } } }
@@ -128,7 +156,8 @@ const myJobs = asyncHandler(async (req, res) => {
 // Also runs the "Interview reminder" / "Job expiry reminder" lazy checks (no cron in this app)
 // since this endpoint is guaranteed to load every time the dashboard opens.
 const myJobsSummary = asyncHandler(async (req, res) => {
-  const jobs = await Job.find({ postedBy: req.user._id }).select('_id status title applicationDeadline');
+  const owner = req.actingFor || req.user._id;
+  const jobs = await Job.find({ postedBy: owner }).select('_id status title applicationDeadline');
   const jobIds = jobs.map((j) => j._id);
   const now = new Date();
   const in48h = new Date(now.getTime() + 48 * 60 * 60 * 1000);
@@ -139,8 +168,8 @@ const myJobsSummary = asyncHandler(async (req, res) => {
       { $match: { job: { $in: jobIds } } },
       { $group: { _id: '$status', count: { $sum: 1 } } }
     ]),
-    Interview.countDocuments({ scheduledBy: req.user._id, status: 'scheduled', scheduledDate: { $gte: now } }),
-    Interview.find({ scheduledBy: req.user._id, status: 'scheduled', scheduledDate: { $gte: now, $lte: in48h } })
+    Interview.countDocuments({ $or: [{ scheduledBy: req.user._id }, { job: { $in: jobIds } }], status: 'scheduled', scheduledDate: { $gte: now } }),
+    Interview.find({ $or: [{ scheduledBy: req.user._id }, { job: { $in: jobIds } }], status: 'scheduled', scheduledDate: { $gte: now, $lte: in48h } })
       .populate('candidate', 'fullName')
   ]);
   const countByStatus = Object.fromEntries(appCounts.map((c) => [c._id, c.count]));
@@ -169,13 +198,14 @@ const myJobsSummary = asyncHandler(async (req, res) => {
 // GET /api/jobs/mine/recent-activity — Employer/Agent dashboard feed, all 7 event types built
 // from real records (Job/JobApplication/Interview/Commission/Withdrawal), not fabricated.
 const myRecentActivity = asyncHandler(async (req, res) => {
-  const jobs = await Job.find({ postedBy: req.user._id }).select('_id title createdAt');
+  const owner = req.actingFor || req.user._id;
+  const jobs = await Job.find({ postedBy: owner }).select('_id title createdAt');
   const jobIds = jobs.map((j) => j._id);
 
   const [applications, interviews, commissions, withdrawals] = await Promise.all([
     JobApplication.find({ job: { $in: jobIds } }).populate('applicant', 'fullName').populate('job', 'title').sort({ createdAt: -1 }).limit(20),
-    Interview.find({ scheduledBy: req.user._id }).populate('candidate', 'fullName').populate('job', 'title').sort({ createdAt: -1 }).limit(10),
-    Commission.find({ agent: req.user._id }).populate('candidate', 'fullName').populate('job', 'title').sort({ createdAt: -1 }).limit(10),
+    Interview.find({ $or: [{ scheduledBy: req.user._id }, { job: { $in: jobIds } }] }).populate('candidate', 'fullName').populate('job', 'title').sort({ createdAt: -1 }).limit(10),
+    Commission.find({ agent: owner }).populate('candidate', 'fullName').populate('job', 'title').sort({ createdAt: -1 }).limit(10),
     Withdrawal.find({ agent: req.user._id }).sort({ createdAt: -1 }).limit(10)
   ]);
 
@@ -196,13 +226,19 @@ const myRecentActivity = asyncHandler(async (req, res) => {
 const updateJob = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
-  await assertOwnsJob(job, req.user);
+  await assertOwnsJob(job, req.user, 'post_jobs');
+  if (req.body.status === 'active' && !job.institution && !job.agreement) {
+    await require('../services/employerTrust.service').assertEmployerMayPost(job.postedBy);
+    if (job.status !== 'active') await require('../services/employerPackages.service').assertMayGoLive(job.postedBy, job._id);
+  }
 
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'category'
+    'visaSponsorship', 'companyLogo', 'contactEmail', 'contactPhone', 'category',
+    'vacancies', 'genderPreference', 'ageMin', 'ageMax', 'interviewQuestions'
   ];
+  checkPostingExtras(req.body);
   if (req.body.category !== undefined && !JOB_CATEGORIES.includes(req.body.category)) throw new AppError('Choose a valid job category.', 422);
   const contentChanged = CONTENT_FIELDS.some((f) => req.body[f] !== undefined && JSON.stringify(req.body[f]) !== JSON.stringify(job[f]));
   allowed.forEach((f) => { if (req.body[f] !== undefined) job[f] = req.body[f]; });
@@ -493,10 +529,17 @@ const listApplicants = asyncHandler(async (req, res) => {
 
   const offers = await require('../models/Employment').find({ application: { $in: applications.map((a) => a._id) } }).select('application status salary currency startDate offer offerLetter').lean();
   const offerOf = new Map(offers.map((o) => [String(o.application), o]));
-  const upcoming = await Interview.find({ application: { $in: applications.map((a) => a._id) }, status: 'scheduled', scheduledDate: { $gte: new Date(Date.now() - 4 * 3600000) } }).sort({ scheduledDate: 1 }).select('application scheduledDate mode location round status').lean();
+  const upcoming = await Interview.find({ application: { $in: applications.map((a) => a._id) }, status: 'scheduled', scheduledDate: { $gte: new Date(Date.now() - 4 * 3600000) } }).sort({ scheduledDate: 1 }).select('application scheduledDate mode location round status provider externalUrl').lean();
   const interviewOf = new Map();
   for (const i of upcoming) if (!interviewOf.has(String(i.application))) interviewOf.set(String(i.application), i);
-  return ok(res, applications.map((a) => ({ ...a.toObject(), employment: offerOf.get(String(a._id)) || null, nextInterview: interviewOf.get(String(a._id)) || null, messageCount: (a.messages || []).length, messages: undefined })));
+  // The latest finished interview, so the employer can choose the next step from its result.
+  const done = await Interview.find({ application: { $in: applications.map((a) => a._id) }, status: 'completed' }).sort({ updatedAt: -1 }).select('application scheduledDate round result feedback').lean();
+  const lastOf = new Map();
+  for (const i of done) if (!lastOf.has(String(i.application))) lastOf.set(String(i.application), i);
+  // Students referred by a partner institute (Placement Office).
+  const refs = await require('../models/PlacementReferral').find({ application: { $in: applications.map((a) => a._id) } }).populate('institution', 'name').select('application institution').lean();
+  const referredOf = new Map(refs.map((r) => [String(r.application), r.institution?.name || 'an institute']));
+  return ok(res, applications.map((a) => ({ ...a.toObject(), employment: offerOf.get(String(a._id)) || null, referredBy: referredOf.get(String(a._id)) || null, nextInterview: interviewOf.get(String(a._id)) || null, lastInterview: lastOf.get(String(a._id)) || null, messageCount: (a.messages || []).length, messages: undefined })));
 });
 
 // PATCH /api/jobs/applications/:appId/status
@@ -511,7 +554,7 @@ const STAGE_LABEL = { pending: 'Applied', viewed: 'Screening', shortlisted: 'Sho
 async function isHiringOrganization(job, user) {
   if (job.agreement) return false; // the institute confirms from its Agents tab (recruitment hires)
   if (job.institution) return jobAccess.canManageJob(job, user);
-  if (String(job.postedBy) !== String(user._id)) return false;
+  if (String(job.postedBy) !== String(user._id) && !(await require('../services/employerStaff.service').hasPermission(user._id, job.postedBy, ['manage_applicants']))) return false;
   return (await publisherRole(job, user)) === 'employer';
 }
 
@@ -663,6 +706,7 @@ const scheduleInterview = asyncHandler(async (req, res) => {
 
   const { scheduledDate, mode, location } = req.body;
   if (!scheduledDate) throw new AppError('scheduledDate is required.', 422);
+  const meeting = (mode || 'online') === 'online' ? require('../utils/meetingProviders').normalise(req.body.provider, req.body.externalUrl) : { provider: 'careerz', externalUrl: '' };
   const when = new Date(scheduledDate);
   if (Number.isNaN(when.getTime()) || when < new Date(Date.now() - 5 * 60000)) throw new AppError('Choose a future date and time for the interview.', 422);
   if (mode === 'physical' && !String(location || '').trim()) throw new AppError('Enter the interview address.', 422);
@@ -677,11 +721,13 @@ const scheduleInterview = asyncHandler(async (req, res) => {
     scheduledDate,
     mode: mode || 'online',
     location: location || '',
-    meetingLink: '',
+    meetingLink: meeting.externalUrl,
+    provider: meeting.provider,
+    externalUrl: meeting.externalUrl,
     round
   });
-  // Online interviews use CareerZ's own video room; the link opens it inside the dashboard.
-  if (interview.mode === 'online') { interview.meetingLink = require('../services/interviewVideo.service').link(interview._id); await interview.save(); }
+  // Built-in interviews open CareerZ's own video room; the link opens it inside the dashboard.
+  if (interview.mode === 'online' && interview.provider === 'careerz') { interview.meetingLink = require('../services/interviewVideo.service').link(interview._id); await interview.save(); }
 
   application.status = round;
   application.statusHistory.push({ status: round, by: req.user._id, byRole: (await isHiringOrganization(application.job, req.user)) ? 'hiring_organization' : 'agent', note: `${STAGE_LABEL[round]} on ${when.toLocaleString()}` });
@@ -689,7 +735,7 @@ const scheduleInterview = asyncHandler(async (req, res) => {
 
   await notify(application.applicant, {
     title: `${round === 'final_interview' ? 'Final interview' : 'Interview'} scheduled: ${application.job.title} @ ${application.job.company}`,
-    body: `${new Date(scheduledDate).toLocaleString()} — ${mode === 'physical' ? location : 'online on CareerZ (join from Jobs & Applications → Interviews)'}`,
+    body: `${new Date(scheduledDate).toLocaleString()} — ${mode === 'physical' ? location : meeting.provider === 'careerz' ? 'online on CareerZ (join from Jobs & Applications → Interviews)' : `online on ${require('../utils/meetingProviders').PROVIDERS[meeting.provider].label}: ${meeting.externalUrl}`}`,
     sentBy: req.user._id, link: require('../utils/dashLinks').candidate(['interview','final_interview'].includes(application.status) ? 'interviews' : 'applications'), category: 'application'
   }, { email: true, emailPreference: 'applicationEmails', ctaLabel: 'View job' }).catch(() => {});
 
@@ -710,8 +756,12 @@ const updateInterview = asyncHandler(async (req, res) => {
   if (scheduledDate !== undefined) interview.scheduledDate = scheduledDate;
   if (mode !== undefined) interview.mode = mode;
   if (location !== undefined) interview.location = location;
-  // Outside meeting links are not used: online interviews always open CareerZ's own video room.
-  interview.meetingLink = interview.mode === 'online' ? require('../services/interviewVideo.service').link(interview._id) : '';
+  if (interview.mode === 'online' && (req.body.provider !== undefined || req.body.externalUrl !== undefined)) {
+    const next = require('../utils/meetingProviders').normalise(req.body.provider ?? interview.provider, req.body.externalUrl ?? interview.externalUrl);
+    interview.provider = next.provider; interview.externalUrl = next.externalUrl;
+  }
+  if (interview.mode !== 'online') { interview.provider = 'careerz'; interview.externalUrl = ''; }
+  interview.meetingLink = interview.mode !== 'online' ? '' : interview.provider === 'careerz' ? require('../services/interviewVideo.service').link(interview._id) : interview.externalUrl;
   if (status !== undefined) {
     if (!['scheduled', 'completed', 'cancelled'].includes(status)) throw new AppError('Invalid status.', 422);
     interview.status = status;
@@ -719,6 +769,11 @@ const updateInterview = asyncHandler(async (req, res) => {
   if (feedback !== undefined) {
     interview.feedback = feedback;
     interview.status = 'completed'; // giving feedback implies the interview actually happened
+  }
+  if (req.body.result !== undefined) {
+    if (!['passed', 'not_passed', 'no_show'].includes(req.body.result)) throw new AppError('Choose passed, not passed or did not come.', 422);
+    interview.result = req.body.result;
+    interview.status = 'completed';
   }
   await interview.save();
 

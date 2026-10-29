@@ -19,6 +19,7 @@ router.post('/blog', ...staffGate, ctrl.createPost);
 router.patch('/blog/:id', ...staffGate, ctrl.updatePost);
 router.delete('/blog/:id', ...staffGate, ctrl.deletePost);
 router.get('/blog', ctrl.listPublishedPosts);
+router.get('/blog/cover/:slug', ctrl.postCover);
 router.get('/blog/:slug', ctrl.getPublishedPost);
 
 module.exports = router;
