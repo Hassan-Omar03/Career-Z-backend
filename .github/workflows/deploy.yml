@@ -56,4 +56,4 @@ jobs:
           done
           exit 1
       - name: Check the live API
-        run: curl -fsS --retry 5 --retry-delay 3 https://srv2051555.hstgr.cloud/api/health
+        run: curl -fsS --retry 5 --retry-delay 3 https://careerz.pk/api/health
