@@ -58,7 +58,9 @@ const jobSchema = new mongoose.Schema(
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
     // pending_review: held by the risk scan for an admin (Master 12.5); rejected: admin declined.
-    status: { type: String, enum: ['draft', 'pending_review', 'active', 'paused', 'closed', 'filled', 'rejected'], default: 'active' },
+    status: { type: String, enum: ['draft', 'pending_review', 'active', 'paused', 'closed', 'filled', 'rejected', 'removed_by_admin'], default: 'active' },
+    // Removed by a CareerZ admin (fake or suspicious): hidden everywhere; the owner sees the reason.
+    adminRemoval: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, reason: { type: String, default: '' }, previousStatus: { type: String, default: '' } },
     moderation: {
       riskScore: { type: Number, default: 0 },
       flags: [{ code: String, label: String, points: Number, _id: false }],

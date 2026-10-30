@@ -228,6 +228,7 @@ const updateJob = asyncHandler(async (req, res) => {
   const job = await Job.findById(req.params.id);
   if (!job) throw new AppError('Job not found.', 404);
   await assertOwnsJob(job, req.user, 'post_jobs');
+  if (job.status === 'removed_by_admin') throw new AppError(`CareerZ admin removed this: ${job.adminRemoval?.reason || 'it broke the rules'}. Contact support if you think this is wrong.`, 403);
   if (req.body.status === 'active' && !job.institution && !job.agreement) {
     await require('../services/employerTrust.service').assertEmployerMayPost(job.postedBy);
     if (job.status !== 'active') await require('../services/employerPackages.service').assertMayGoLive(job.postedBy, job._id);

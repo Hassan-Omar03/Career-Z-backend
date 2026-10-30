@@ -86,6 +86,7 @@ const updateScholarship = asyncHandler(async (req, res) => {
   const scholarship = await Scholarship.findById(req.params.id);
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
   assertOwnsScholarship(scholarship, req.user._id);
+  if (scholarship.status === 'removed_by_admin') throw new AppError(`CareerZ admin removed this: ${scholarship.adminRemoval?.reason || 'it broke the rules'}. Contact support if you think this is wrong.`, 403);
 
   const allowed = [
     'title', 'description', 'amount', 'currency', 'eligibilityCriteria',

@@ -107,6 +107,7 @@ const mine = asyncHandler(async (req, res) => {
 const update = asyncHandler(async (req, res) => {
   const s = mongoose.isValidObjectId(req.params.id) ? await Scholarship.findById(req.params.id) : null;
   if (!s || String(s.publishedBy) !== String(req.user._id)) throw fail('Scholarship not found.', 404);
+  if (s.status === 'removed_by_admin') throw fail(`CareerZ admin removed this: ${s.adminRemoval?.reason || 'it broke the rules'}. Contact support if you think this is wrong.`, 403);
   if (req.body?.status === 'closed') {
     s.status = 'closed';
     await s.save();

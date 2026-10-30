@@ -533,6 +533,7 @@ const updateProduct = asyncHandler(async (req, res) => {
   const product = await Product.findById(req.params.id);
   if (!product || product.status === 'removed') throw new AppError('Listing not found.', 404);
   assertOwnsProduct(product, req.user._id);
+  if (product.status === 'removed_by_admin') throw new AppError(`CareerZ admin removed this: ${product.adminRemoval?.reason || 'it broke the rules'}. Contact support if you think this is wrong.`, 403);
   if (req.body.status === 'removed') throw new AppError('Use Delete to remove a listing.', 422);
   if (req.body.status === 'pending_approval') { if (!['draft', 'rejected'].includes(product.status)) throw new AppError('Only a draft can be submitted.', 422); }
   const contentChanged = ['title', 'description', 'category', 'images'].some((f) => req.body[f] !== undefined && JSON.stringify(req.body[f]) !== JSON.stringify(product[f])) || Boolean(req.body.digitalFile?.data);

@@ -28,9 +28,11 @@ const productSchema = new mongoose.Schema(
     // out_of_stock: system-set automatically when stock hits 0 -> paused: seller took it down themselves.
     status: {
       type: String,
-      enum: ['draft', 'pending_approval', 'active', 'rejected', 'out_of_stock', 'paused', 'removed'],
+      enum: ['draft', 'pending_approval', 'active', 'rejected', 'out_of_stock', 'paused', 'removed', 'removed_by_admin'],
       default: 'pending_approval'
     },
+    // Removed by a CareerZ admin (fake or suspicious): hidden everywhere; the owner sees the reason.
+    adminRemoval: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, reason: { type: String, default: '' }, previousStatus: { type: String, default: '' } },
     reviewNotes: { type: String, default: '' },
     // The automatic check (autoModeration.service): reasons when it held the listing for an admin.
     moderation: { flags: [{ code: String, label: String, points: Number, hold: Boolean, _id: false }], held: { type: Boolean, default: false }, checkedAt: { type: Date, default: null } }

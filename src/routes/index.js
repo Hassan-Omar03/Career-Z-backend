@@ -60,6 +60,8 @@ router.use('/academy', moduleGate('academy'), require('./academy.routes'));
 router.use('/visa', moduleGate('visa'), require('./visa.routes'));
 router.use('/ads', require('./ads.routes'));
 router.use('/admin/comments-ratings', require('./commentsRatings.routes'));
+router.use('/admin/moderation', require('./adminModeration.routes'));
+router.use('/site-content', require('./siteContent.routes'));
 router.use('/plugins', require('./plugins.routes'));
 router.use('/seo', require('./seo.routes'));
 router.use('/mock-interviews', moduleGate('mock_interview'), require('./mockInterview.routes'));

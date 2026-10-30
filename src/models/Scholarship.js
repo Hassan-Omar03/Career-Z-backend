@@ -17,7 +17,9 @@ const scholarshipSchema = new mongoose.Schema(
     applicationDeadline: { type: Date },
     seatsAvailable: { type: Number, default: 1, min: 0 },
     seatRevision: { type: Number, default: 0 },
-    status: { type: String, enum: ['open', 'closed', 'pending_review', 'rejected'], default: 'open' },
+    status: { type: String, enum: ['open', 'closed', 'pending_review', 'rejected', 'removed_by_admin'], default: 'open' },
+    // Removed by a CareerZ admin (fake or suspicious): hidden everywhere; the owner sees the reason.
+    adminRemoval: { by: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, at: { type: Date, default: null }, reason: { type: String, default: '' }, previousStatus: { type: String, default: '' } },
     // Who the scholarship is for; teachers only get alerts when the publisher includes them.
     audience: { type: [{ type: String, enum: ['students', 'teachers'] }], default: ['students'] },
     publishedAt: { type: Date, default: null },
