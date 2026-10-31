@@ -5,6 +5,7 @@ router.get('/internal/family-automation',require('../utils/asyncHandler')(async(
 router.use('/auth', require('./auth.routes'));
 router.use('/roles', require('./role.routes'));
 router.use('/config', require('./config.routes'));
+router.use('/', require('./institutionInvite.routes'));
 router.use('/institutions', require('./institution.routes'));
 router.use('/students', require('./student.routes'));
 router.use('/teachers', require('./teacher.routes'));

@@ -60,7 +60,7 @@ async function gateFor(user) {
 // API paths an account may use before it is approved and its profile is complete.
 const OPEN_PATHS = [
   /^\/api\/auth\//, /^\/api\/onboarding(\/|$)/, /^\/api\/users\/me\/?$/, /^\/api\/notifications\/(mine|push)/, /^\/api\/notifications\/[a-f0-9]{24}\/read$/,
-  /^\/api\/roles\/my-requests/, /^\/api\/config\//, /^\/api\/translate/, /^\/api\/health/
+  /^\/api\/roles\/my-requests/, /^\/api\/config\//, /^\/api\/translate/, /^\/api\/health/, /^\/api\/invites\//
 ];
 const isOpenPath = (url) => OPEN_PATHS.some((re) => re.test(String(url || '').split('?')[0]));
 
