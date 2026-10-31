@@ -19,6 +19,7 @@ const detail = (loader, label) => asyncHandler(async (req, res) => {
 });
 
 router.get('/home', asyncHandler(async (req, res) => ok(res, await listings.home())));
+router.get('/activity', asyncHandler(async (req, res) => ok(res, await require('../services/publicActivity.service').activity())));
 router.get('/stats', asyncHandler(async (req, res) => ok(res, await listings.stats())));
 router.get('/jobs', asyncHandler(async (req, res) => ok(res, await listings.listJobs(req.query))));
 // Opening the public job page counts as a view (employer analytics).
