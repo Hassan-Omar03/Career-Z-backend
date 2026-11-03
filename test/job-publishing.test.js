@@ -156,3 +156,18 @@ test('institute jobs are managed by the owner and recruitment staff only', async
   expect(await api('HR', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'shortlisted' }), 200);
   expect(await api('Clerk', 'PATCH', `/jobs/applications/${app._id}/status`, { status: 'rejected' }), 403);
 });
+
+test('a job may carry an optional picture: uploaded links only, shown publicly, and removable', async () => {
+  expect(await api('Employer', 'POST', '/jobs', goodJob({ title: 'Picture job one', image: 'http://insecure.test/a.jpg' })), 422, 'plain http');
+  expect(await api('Employer', 'POST', '/jobs', goodJob({ title: 'Picture job two', image: 'javascript:alert(1)' })), 422, 'script link');
+  const plain = await api('Employer', 'POST', '/jobs', goodJob({ title: 'Job without a picture' }));
+  expect(plain, 201, 'no picture is fine');
+  const made = await api('Employer', 'POST', '/jobs', goodJob({ title: 'Job with a picture', image: 'https://res.cloudinary.com/x/job.jpg' }));
+  expect(made, 201, 'with picture');
+  const id = made.body.data._id || made.body.data.job?._id;
+  const open = await api(null, 'GET', `/jobs/${id}`);
+  expect(open, 200, 'public');
+  assert.equal(open.body.data.image, 'https://res.cloudinary.com/x/job.jpg');
+  expect(await api('Employer', 'PATCH', `/jobs/${id}`, { image: '' }), 200, 'remove');
+  assert.equal((await api(null, 'GET', `/jobs/${id}`)).body.data.image, '');
+});

@@ -79,6 +79,7 @@ function jobCard(j, publisherRoles = new Map()) {
     applicationDeadline: j.applicationDeadline, postedAt: j.createdAt, featured: !!j.featured, visaSponsorship: !!j.visaSponsorship,
     sponsored: !!j.sponsored, urgent: !!j.urgent, topHiring: !j.institution && Boolean(j.postedBy && publisherRoles.topHiring?.has(String(j.postedBy._id))), vacancies: j.vacancies || 1,
     companyLogo: /^https:\/\//.test(j.companyLogo || '') ? j.companyLogo : null,
+    image: /^https:\/\//.test(j.image || '') ? j.image : '',
     category: j.category || 'other', institution: j.institution ? String(j.institution._id || j.institution) : null,
     postedBy: j.institution ? { name: j.company, kind: 'institute' } : j.postedBy ? { name: j.postedBy.fullName, kind: publisherRoles.get(String(j.postedBy._id)) || 'employer' } : null,
     verifiedPublisher: true
