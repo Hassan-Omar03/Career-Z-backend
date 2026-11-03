@@ -26,9 +26,10 @@ const liveClassSessionSchema = new mongoose.Schema({
   board: [{type:mongoose.Schema.Types.Mixed}],
   sharedFiles: [{name:String,url:String}],
   classroomQuiz: {type:mongoose.Schema.Types.Mixed},
-  institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
+  // Empty for a teacher's own course, which has no institute or class section.
+  institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null, index: true },
   course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', required: true, index: true },
-  classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', required: true },
+  classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
   teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
   timetableEntry: { type: mongoose.Schema.Types.ObjectId, ref: 'TimetableEntry', default: null },
   title: { type: String, required: true, trim: true },

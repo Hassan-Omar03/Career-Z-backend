@@ -76,7 +76,7 @@ const allowedDocumentTypes = (role, subtype) => new Set(documentRequirements(rol
 // Field catalogue. `when` makes a field required only for some subtypes.
 const F = (key, label, opts = {}) => ({ key, label, required: true, ...opts });
 const PERSON = [F('firstName', 'First name'), F('lastName', 'Last name / surname'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'] }), F('dateOfBirth', 'Date of birth', { type: 'date' })];
-const ADDRESS = [F('address', 'Complete residential address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country')];
+const ADDRESS = [F('address', 'Complete residential address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City')];
 
 function profileFields(role, subtype = '') {
   const individual = !(role === 'donor' && subtype === 'organization') && !(role === 'marketplace_seller' && subtype === 'business');
@@ -87,7 +87,7 @@ function profileFields(role, subtype = '') {
       F('highestQualification', 'Highest qualification'), F('degreeTitle', 'Degree title'), F('specialization', 'Specialization / subject'), F('university', 'University / institute name'), F('graduationYear', 'Graduation year', { pattern: 'year' }), F('teachingExperience', 'Teaching experience (years)', { required: false })];
     case 'institution_owner': case 'academy_owner': return [F('instituteName', 'Institute name'), F('instituteType', 'Institute type', { type: 'select', options: ['school', 'college', 'university', 'academy', 'training_center', 'other'] }), F('registrationNumber', 'Institute registration number'),
       F('instituteEmail', 'Institute email address', { pattern: 'email' }), F('officialContactNumber', 'Official contact number', { pattern: 'phone' }), F('alternateContactNumber', 'Alternate contact number', { required: false, pattern: 'phone' }),
-      F('address', 'Complete institute address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'), F('location', 'Institute location (map link or coordinates)'),
+      F('address', 'Complete institute address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'), F('location', 'Institute location (map link or coordinates)'),
       F('representativeName', 'Authorized representative name'), F('representativeCnic', 'Authorized representative CNIC', { sensitive: true, pattern: 'cnic' }), F('description', 'Institute description', { type: 'textarea' }), F('website', 'Website', { required: false, pattern: 'url' })];
     case 'education_agent': return [F('firstName', 'First name'), F('lastName', 'Last name'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'] }), F('dateOfBirth', 'Date of birth', { type: 'date' }),
       F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic' }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }), F('agencyName', 'Agency / business name', { required: subtype === 'agency' }),
@@ -95,19 +95,19 @@ function profileFields(role, subtype = '') {
       // Master 6.9: identity, business details, experience, office address and the agreement.
       F('experienceYears', 'Recruitment / placement experience', { type: 'select', options: ['less_than_1_year', '1_to_2_years', '3_to_5_years', '6_to_10_years', 'more_than_10_years'] }),
       F('experienceDetails', 'Experience details (fields, past placements, organisations you worked with)', { type: 'textarea' }),
-      F('agentAgreement', 'CareerZ agent agreement: I recruit honestly, only for employers and institutes that authorise me, keep candidate data private, and pay CareerZ its service fee on every hire', { type: 'select', options: ['i_accept_the_agreement'] }), F('address', 'Personal residential address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country')];
+      F('agentAgreement', 'CareerZ agent agreement: I recruit honestly, only for employers and institutes that authorise me, keep candidate data private, and pay CareerZ its service fee on every hire', { type: 'select', options: ['i_accept_the_agreement'] }), F('address', 'Personal residential address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City')];
     case 'donor': return [F('firstName', 'First name'), F('lastName', 'Last name'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'], required: individual }), F('dateOfBirth', 'Date of birth', { type: 'date', required: individual }),
-      F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic', required: individual }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }), F('address', 'Complete address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'),
+      F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic', required: individual }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }), F('address', 'Complete address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'),
       F('organizationName', 'Organization name', { required: !individual }), F('organizationRegistrationNumber', 'Organization registration number', { required: !individual })];
     case 'marketplace_seller': return [F('firstName', 'First name'), F('lastName', 'Last name'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'], required: individual }), F('dateOfBirth', 'Date of birth', { type: 'date', required: individual }),
       F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic', required: individual }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }),
-      F('businessName', 'Business / shop name', { required: !individual }), F('businessRegistrationNumber', 'Business registration number', { required: !individual }), F('address', 'Complete address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'), F('businessDescription', 'Business description', { type: 'textarea', required: !individual })];
+      F('businessName', 'Business / shop name', { required: !individual }), F('businessRegistrationNumber', 'Business registration number', { required: !individual }), F('address', 'Complete address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'), F('businessDescription', 'Business description', { type: 'textarea', required: !individual })];
     case 'employer': {
       const registered = subtype !== 'startup';
       return [F('companyName', subtype === 'startup' ? 'Startup / business name' : 'Company name'), F('companyRegistrationNumber', 'Company registration number', { required: registered }),
         F('taxNumber', 'Tax number (NTN)', { required: false }), F('recruitmentLicenseNumber', 'Recruitment licence number', { required: subtype === 'recruitment_agency' }),
         F('website', 'Website', { required: false, pattern: 'url' }), F('officialEmail', 'Official company email', { pattern: 'email' }), F('contactNumber', 'Official contact number', { pattern: 'phone' }),
-        F('address', 'Office address', { type: 'textarea' }), F('city', 'City'), F('province', 'Province'), F('country', 'Country'),
+        F('address', 'Office address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'),
         F('authorizedPersonName', 'Authorized person name'), F('authorizedPersonDesignation', 'Authorized person designation'), F('authorizedPersonCnic', 'Authorized person CNIC', { sensitive: true, pattern: 'cnic' }),
         F('description', 'About the company', { type: 'textarea' })];
     }

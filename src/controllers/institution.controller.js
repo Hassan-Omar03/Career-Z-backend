@@ -876,6 +876,7 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   course.creditHours = Number(creditHours) || 3;
   course.academicTerm = String(academicTerm || '').trim();
   await course.save();
+  await require('../utils/sectionEnrollment').enrollSectionStudents(course);
   await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
   await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);
   return ok(res, course, 'Course academic assignment updated.');
@@ -1023,6 +1024,7 @@ const updateStudentStatus = asyncHandler(async (req, res) => {
   if (classSection !== undefined) profile.classSection = classSection || null;
   if (rollNumber !== undefined) profile.rollNumber = rollNumber;
   await profile.save();
+  if (classSection) await require('../utils/sectionEnrollment').enrollStudentInSection(profile.user, classSection);
   const refreshed = await StudentProfile.findById(profile._id).populate('primaryInstitution', 'name');
   return ok(res, refreshed, 'Student record updated.');
 });

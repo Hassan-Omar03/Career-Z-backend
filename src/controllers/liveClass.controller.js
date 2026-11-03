@@ -31,30 +31,32 @@ async function notifyCourseStudents(courseId, payload, sentBy) {
   if (enrollments.length) await notifyMany(enrollments.map((row) => row.student), { ...payload, sentBy });
 }
 
+const { enrollSectionStudents } = require('../utils/sectionEnrollment');
+
 const schedule = asyncHandler(async (req, res) => {
-  const institution = await Institution.findById(req.body.institution);
-  if (!institution) throw new AppError('Institution not found.', 404);
-  const course = await Course.findOne({ _id: req.body.course, institution: institution._id });
-  if (!course) throw new AppError('Select a course belonging to this institution.', 422);
+  const course = await Course.findById(req.body.course);
+  if (!course) throw new AppError('Select a course.', 422);
+  if (req.body.institution && String(course.institution) !== String(req.body.institution)) throw new AppError('Select a course belonging to this institution.', 422);
   const isAssignedTeacher = String(course.teacher) === String(req.user._id);
   if (!isAssignedTeacher) throw new AppError('Only the teacher assigned to this course can schedule its live class.', 403);
-  if (!course.classSection) throw new AppError('Assign this course to a class section first.', 422);
+  if (course.institution && !course.classSection) throw new AppError('Assign this course to a class section first.', 422);
+  if (!course.published) throw new AppError('Publish this course first. Students cannot join an unpublished course.', 422);
   const teacherId = course.teacher;
   const scheduledStart = new Date(req.body.scheduledStart);
   const scheduledEnd = new Date(req.body.scheduledEnd);
   if (!Number.isFinite(scheduledStart.getTime()) || !Number.isFinite(scheduledEnd.getTime()) || scheduledEnd <= scheduledStart) {
     throw new AppError('Choose a valid start and end time.', 422);
   }
-  await require('../utils/workingHours').assertWithinWorkingHours(institution._id, scheduledStart, scheduledEnd, 'liveClasses', 'Live classes');
+  await require('../utils/workingHours').assertWithinWorkingHours(course.institution, scheduledStart, scheduledEnd, 'liveClasses', 'Live classes');
   const provider = course.studyMode !== 'physical' && req.body.provider === 'external' ? 'external' : 'careerz_jitsi';
   if (provider === 'external' && !/^https:\/\//i.test(req.body.externalMeetingUrl || '')) {
     throw new AppError('A secure external meeting URL is required.', 422);
   }
   const roomName = `careerz-${String(course._id).slice(-8)}-${crypto.randomBytes(10).toString('hex')}`;
   const session = await LiveClassSession.create({
-    institution: institution._id,
+    institution: course.institution || null,
     course: course._id,
-    classSection: course.classSection,
+    classSection: course.classSection || null,
     teacher: teacherId,
     mode: ['physical','hybrid'].includes(course.studyMode) ? course.studyMode : 'online',
     timetableEntry: req.body.timetableEntry || null,
@@ -66,6 +68,7 @@ const schedule = asyncHandler(async (req, res) => {
     externalMeetingUrl: provider === 'external' ? req.body.externalMeetingUrl : '',
     createdBy: req.user._id
   });
+  await enrollSectionStudents(course);
   await notifyCourseStudents(course._id, {
     title: `Live class scheduled: ${session.title}`,
     body: `${scheduledStart.toLocaleString()} — open My Classes at class time to join.`
@@ -103,6 +106,7 @@ const start = asyncHandler(async (req, res) => {
     session.recordingConsentRequired = Boolean(classroomSettings.requireStudentConsent);
   }
   await session.save();
+  await enrollSectionStudents(await Course.findById(session.course));
   await notifyCourseStudents(session.course, { title: `${session.title} is live now`, body: 'Open My Classes and select Join Class.' }, req.user._id);
   return ok(res, await populated(LiveClassSession.findById(session._id)), 'Live class started.');
 });

@@ -181,6 +181,7 @@ const updateCourse = asyncHandler(async (req, res) => {
 
   if (course.approvalWorkflow === 'staged') { course.published = false; course.approvalStatus = 'draft'; }
   await course.save();
+  await require('../utils/sectionEnrollment').enrollSectionStudents(course);
   // Changing the rules can move students in either direction (stricter rules reopen someone who
   // was done under the old ones; looser rules complete someone who was blocked under the old ones).
   if (rulesChanged) await recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
