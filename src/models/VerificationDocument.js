@@ -18,6 +18,9 @@ const verificationDocumentSchema = new mongoose.Schema({
   verifiedAt: { type: Date, default: null },
   rejectionReason: { type: String, default: '' },
   // Replaced documents are kept (not deleted) for the verification history.
+  // Sent instead of a required document the person does not have; the note says what it is and why.
+  isAlternate: { type: Boolean, default: false },
+  alternateNote: { type: String, default: '', maxlength: 500 },
   active: { type: Boolean, default: true, index: true },
   replacedAt: { type: Date, default: null }
 }, { timestamps: true });

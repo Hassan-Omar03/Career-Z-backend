@@ -16,6 +16,8 @@ const LOGO = () => `${SITE()}/logo2.png`;
 const esc = (v) => String(v ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 const json = (v) => JSON.stringify(v).replace(/</g, '\\u003c');
 const plain = (html, n = 0) => { const t = String(html || '').replace(/<[^>]*>/g, ' ').replace(/&nbsp;/g, ' ').replace(/\s+/g, ' ').trim(); return n && t.length > n ? `${t.slice(0, n - 1).replace(/\s+\S*$/, '')}…` : t; };
+// A job description may hold a Markdown table; search engines get its words without the table marks.
+const jobText = (s) => String(s || '').replace(/^\s*\|?\s*:?-{2,}.*$/gm, ' ').replace(/\|/g, ' ').replace(/\*\*/g, '').replace(/[ \t]+/g, ' ').trim();
 const iso = (d) => (d ? new Date(d).toISOString() : undefined);
 const isId = (id) => mongoose.isValidObjectId(id);
 const httpsImg = (u) => (/^https:\/\//.test(u || '') ? u : null);
@@ -115,10 +117,11 @@ async function jobPage(id) {
   const where = place(j.city, j.country);
   const path = `/jobs/${j._id}`;
   const salary = j.salaryMin || j.salaryMax ? `${money(j.currency, j.salaryMin)}${j.salaryMax ? ` – ${money(j.currency, j.salaryMax)}` : ''}` : '';
-  const title = `${j.title} job at ${j.company}${where ? ` in ${where}` : ''}`;
-  const description = plain(`${TYPE_LABEL[j.type] || ''} ${j.title} job at ${j.company}${where ? `, ${where}` : ''}.${salary ? ` Salary ${salary}.` : ''}${j.visaSponsorship ? ' Visa sponsorship available.' : ''} ${plain(j.description)}`, 158);
+  const full = /\bjobs?\b/i.test(j.title) ? j.title : `${j.title} job at ${j.company}${where ? ` in ${where}` : ''}`;
+  const title = full.length <= 65 ? full : /\bjobs?\b/i.test(j.title) ? j.title : `${j.title} job at ${j.company}`;
+  const description = plain(`${TYPE_LABEL[j.type] || ''} ${j.title} job at ${j.company}${where ? `, ${where}` : ''}.${salary ? ` Salary ${salary}.` : ''}${j.visaSponsorship ? ' Visa sponsorship available.' : ''} ${plain(jobText(j.description))}`, 158);
   const jobPosting = {
-    '@type': 'JobPosting', title: j.title, description: String(j.description || j.title).slice(0, 8000), datePosted: iso(j.postedAt), validThrough: iso(j.applicationDeadline),
+    '@type': 'JobPosting', title: j.title, description: (jobText(j.description) || j.title).slice(0, 8000), datePosted: iso(j.postedAt), validThrough: iso(j.applicationDeadline),
     employmentType: EMPLOYMENT[j.type] || 'FULL_TIME', identifier: { '@type': 'PropertyValue', name: j.company, value: String(j._id) },
     hiringOrganization: { '@type': 'Organization', name: j.company, ...(j.companyLogo ? { logo: j.companyLogo } : {}) },
     directApply: true, url: SITE() + path, industry: j.category || undefined, skills: (j.skills || []).join(', ') || undefined,
@@ -134,7 +137,7 @@ async function jobPage(id) {
   return {
     meta,
     head: { title, description, path, image: j.companyLogo, keywords: [`${j.title} jobs`, `${j.title} jobs in ${j.city || 'Pakistan'}`, `jobs in ${j.city || 'Pakistan'}`, `${j.company} jobs`, `jobs in Pakistan ${year()}`, j.category && `${j.category} jobs`, j.visaSponsorship && 'visa sponsorship jobs', j.workMode === 'remote' && 'remote jobs Pakistan', TYPE_LABEL[j.type] && `${TYPE_LABEL[j.type].toLowerCase()} jobs`, ...(j.skills || []).slice(0, 5)].filter(Boolean), schema: graph(jobPosting, crumbs(c)) },
-    body: { crumbs: c, h1: j.title, sub: `${j.company}${where ? ` · ${where}` : ''}`, facts: [['Job type', TYPE_LABEL[j.type]], ['Work mode', j.workMode], ['Salary', salary], ['Experience', j.experienceYears ? `${j.experienceYears}+ years` : ''], ['Vacancies', j.vacancies], ['Apply before', j.applicationDeadline ? new Date(j.applicationDeadline).toDateString() : ''], ['Visa sponsorship', j.visaSponsorship ? 'Yes' : '']], paragraphs: [plain(j.description)], lists: [{ title: 'Skills', items: (j.skills || []).map((s) => ({ text: s })) }] }
+    body: { crumbs: c, h1: j.title, sub: `${j.company}${where ? ` · ${where}` : ''}`, facts: [['Job type', TYPE_LABEL[j.type]], ['Work mode', j.workMode], ['Salary', salary], ['Experience', j.experienceYears ? `${j.experienceYears}+ years` : ''], ['Vacancies', j.vacancies], ['Apply before', j.applicationDeadline ? new Date(j.applicationDeadline).toDateString() : ''], ['Visa sponsorship', j.visaSponsorship ? 'Yes' : '']], paragraphs: [plain(jobText(j.description))], lists: [{ title: 'Skills', items: (j.skills || []).map((s) => ({ text: s })) }] }
   };
 }
 

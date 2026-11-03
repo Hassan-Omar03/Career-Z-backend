@@ -15,7 +15,7 @@ const { encrypt } = require('../utils/encryption');
 const cfg = require('../config/accountVerification');
 
 const SEED_EMAILS = [
-  'gcuf.admin@careerz.local', 'hassanomar3345@gmail.com', 'ayesha.teacher@careerz.local', 'bilal.teacher@careerz.local',
+  'gcuf.admin@careerz.local', 'hassan.teacher@careerz.local', 'ayesha.teacher@careerz.local', 'bilal.teacher@careerz.local',
   'sara.teacher@careerz.local', 'baitcvs@gmail.com', 'test@gmail.com', 'hostel.warden@careerz.local', 'gcuf.driver@careerz.local'
 ];
 const TEST_CNIC = '3520200000001';

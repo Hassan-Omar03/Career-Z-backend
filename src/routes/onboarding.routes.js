@@ -3,7 +3,7 @@ const router = express.Router();
 const ctrl = require('../controllers/onboarding.controller');
 const { protect } = require('../middleware/auth');
 
-const uploadLimit = require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+const uploadLimit = require('express-rate-limit')({ windowMs: 15 * 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false });
 
 router.get('/requirements', ctrl.requirements);
 
@@ -15,6 +15,7 @@ router.patch('/account-types/:role', ctrl.setSubtype);
 // Raw file bytes (not JSON/base64) so 10 MB PDFs fit; the type is sniffed from the bytes.
 router.post('/documents', uploadLimit, express.raw({ type: () => true, limit: '11mb' }), ctrl.uploadDocument);
 router.get('/documents/:id/file', ctrl.documentFile);
+router.delete('/documents/:id', ctrl.removeDocument);
 router.post('/submit', ctrl.submit);
 router.put('/profile', ctrl.saveProfile);
 

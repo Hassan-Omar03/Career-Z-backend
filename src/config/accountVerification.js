@@ -25,9 +25,13 @@ const DOCUMENT_TYPES = {
   business_registration_certificate: 'Business registration certificate', owner_identity: 'Business owner / representative identity document',
   company_registration_certificate: 'Company registration certificate', company_tax_certificate: 'Tax registration (NTN) certificate',
   authorized_person_identity: 'Authorized person identity document (CNIC / passport)', company_logo: 'Company logo',
-  recruitment_license: 'Recruitment / overseas employment licence'
+  recruitment_license: 'Recruitment / overseas employment licence',
+  additional_document: 'Other supporting documents'
 };
 const IMAGE_ONLY = new Set(['profile_picture', 'institute_logo', 'company_logo']);
+// One file only: a photo or logo, or one side of a CNIC. Every other document can have several files.
+const SINGLE_FILE = new Set([...IMAGE_ONLY, 'cnic_front', 'cnic_back']);
+const MAX_FILES_PER_DOCUMENT = 10;
 
 // Identity: CNIC front+back, or the alternative listed for that role.
 const identity = (alternative) => ({ anyOf: [['cnic_front', 'cnic_back'], [alternative]], label: `CNIC (front and back) or ${DOCUMENT_TYPES[alternative]}` });
@@ -63,6 +67,8 @@ function documentRequirements(role, subtype = '') {
       break;
     default: break;
   }
+  // Anyone may add further papers that support their application.
+  if (groups.length) add(['additional_document'], null, false);
   return groups;
 }
 const allowedDocumentTypes = (role, subtype) => new Set(documentRequirements(role, subtype).flatMap((g) => g.anyOf.flat()));
@@ -118,4 +124,4 @@ const SUBTYPES = {
 
 const STATUSES = ['awaiting_documents', 'pending_approval', 'under_review', 'approved', 'rejected', 'resubmission_required', 'suspended'];
 
-module.exports = { ACCOUNT_TYPES, VERIFIED_ROLES, ROLE_LABEL, roleFor, DOCUMENT_TYPES, IMAGE_ONLY, documentRequirements, allowedDocumentTypes, profileFields, SUBTYPES, STATUSES };
+module.exports = { ACCOUNT_TYPES, VERIFIED_ROLES, ROLE_LABEL, roleFor, DOCUMENT_TYPES, IMAGE_ONLY, SINGLE_FILE, MAX_FILES_PER_DOCUMENT, documentRequirements, allowedDocumentTypes, profileFields, SUBTYPES, STATUSES };

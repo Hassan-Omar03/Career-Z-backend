@@ -239,6 +239,54 @@ test('documents are private: owner and verification admins only, file type and s
   assert.equal(await VerificationDocument.countDocuments({ user: user._id }), 2);
 });
 
+test('several files under one document, an alternate for a missing one, and removing a file', async () => {
+  const { token } = await register('teacher');
+  const groups = cfg.documentRequirements('teacher', '');
+  const multi = groups.flatMap((g) => g.anyOf.flat()).find((t) => !cfg.SINGLE_FILE.has(t) && t !== 'additional_document');
+  const send = (type, query = '') => call('POST', `/onboarding/documents?role=teacher&type=${type}${query}`, { token, raw: fileFor(type) });
+  const groupOf = async (type) => (await call('GET', '/onboarding/status', { token })).body.data.roles.find((a) => a.role === 'teacher').documents.groups.find((g) => g.options.flat().some((o) => o.type === type));
+  const optionOf = (g, type) => g.options.flat().find((o) => o.type === type);
+
+  // Adding keeps the first file; without add the first file is replaced.
+  const first = await send(multi);
+  assert.equal((await send(multi, '&add=1')).status, 201);
+  assert.equal(optionOf(await groupOf(multi), multi).files.length, 2);
+  assert.equal((await send(multi)).status, 201);
+  const afterReplace = optionOf(await groupOf(multi), multi).files;
+  assert.equal(afterReplace.length, 2);
+  assert.ok(!afterReplace.some((f) => f._id === first.body.data._id));
+
+  // One side of a CNIC stays a single file even when add is sent.
+  assert.equal((await send('cnic_front', '&add=1')).status, 201);
+  assert.equal((await send('cnic_front', '&add=1')).status, 201);
+  assert.equal(optionOf(await groupOf('cnic_front'), 'cnic_front').files.length, 1);
+
+  // An alternate needs a real note, a photo cannot have one, and it satisfies the group.
+  const missing = groups.find((g) => g.mandatory !== false && g.anyOf.flat().every((t) => !cfg.IMAGE_ONLY.has(t)) && !g.anyOf.flat().includes(multi) && !g.anyOf.flat().includes('cnic_front'));
+  if (missing) {
+    const type = (await groupOf(missing.anyOf[0][0])).alternateType;
+    assert.equal((await send(type, '&alternate=no')).status, 422);
+    const alt = await send(type, `&alternate=${encodeURIComponent('Not issued yet, sending my certificate')}`);
+    assert.equal(alt.status, 201);
+    const g = await groupOf(type);
+    assert.equal(g.satisfied, true);
+    assert.equal(g.alternates.length, 1);
+    assert.equal(g.alternates[0].alternateNote, 'Not issued yet, sending my certificate');
+    assert.equal(optionOf(g, type).uploaded, null);
+    assert.equal((await call('DELETE', `/onboarding/documents/${alt.body.data._id}`, { token })).status, 200);
+    assert.equal((await groupOf(type)).satisfied, false);
+  }
+  const photo = groups.flatMap((g) => g.anyOf.flat()).find((t) => cfg.IMAGE_ONLY.has(t));
+  if (photo) assert.equal((await send(photo, `&alternate=${encodeURIComponent('I have no photo with me')}`)).status, 422);
+
+  // Someone else cannot remove a file; a removed file is gone from the list.
+  const other = await register('parent');
+  const victim = afterReplace[1]._id;
+  assert.equal((await call('DELETE', `/onboarding/documents/${victim}`, { token: other.token })).status, 404);
+  assert.equal((await call('DELETE', `/onboarding/documents/${victim}`, { token })).status, 200);
+  assert.equal(optionOf(await groupOf(multi), multi).files.length, 1);
+});
+
 test('admins cannot approve their own account; suspend and reinstate', async () => {
   const { token, user } = await register('donor', 'individual');
   await uploadMandatory(token, 'donor', 'individual');

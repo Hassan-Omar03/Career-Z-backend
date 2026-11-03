@@ -97,7 +97,7 @@ async function seedGcufAcademicDemo() {
   }
 
   const teacherSpecs = [
-    { fullName: 'Hassan', email: 'hassanomar3345@gmail.com', subjects: ['Introduction to Computing', 'Programming Fundamentals'], qualification: 'MS Computer Science' },
+    { fullName: 'Hassan', email: 'hassan.teacher@careerz.local', subjects: ['Introduction to Computing', 'Programming Fundamentals'], qualification: 'MS Computer Science' },
     { fullName: 'Dr. Ayesha Khalid', email: 'ayesha.teacher@careerz.local', subjects: ['Discrete Structures'], qualification: 'PhD Computer Science' },
     { fullName: 'Engr. Bilal Ahmed', email: 'bilal.teacher@careerz.local', subjects: ['Digital Logic Design'], qualification: 'MS Computer Engineering' }
   ];

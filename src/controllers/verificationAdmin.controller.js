@@ -60,7 +60,7 @@ const detail = asyncHandler(async (req, res) => {
   return ok(res, {
     request: { ...request.toObject(), status: request.status === 'pending' ? 'pending_approval' : request.status, accountType: cfg.ROLE_LABEL[request.requestedRole] },
     requirements: service.evaluateDocuments(request.requestedRole, request.subtype, documents.filter((d) => d.active)),
-    documents: documents.map((d) => ({ _id: d._id, documentType: d.documentType, label: cfg.DOCUMENT_TYPES[d.documentType] || d.documentType, contentType: d.contentType, size: d.size, active: d.active, verificationStatus: d.verificationStatus, rejectionReason: d.rejectionReason, createdAt: d.createdAt, replacedAt: d.replacedAt, alsoUsedBy: sharedBy.get(d.sha256) || [] })),
+    documents: documents.map((d) => ({ _id: d._id, documentType: d.documentType, label: cfg.DOCUMENT_TYPES[d.documentType] || d.documentType, isAlternate: Boolean(d.isAlternate), alternateNote: d.alternateNote || '', originalName: d.originalName || '', contentType: d.contentType, size: d.size, active: d.active, verificationStatus: d.verificationStatus, rejectionReason: d.rejectionReason, createdAt: d.createdAt, replacedAt: d.replacedAt, alsoUsedBy: sharedBy.get(d.sha256) || [] })),
     profile: { completed: Boolean(profile?.completed), percent: profile?.percent || 0, fields },
     history,
     actions: Object.entries(service.ACTIONS).filter(([, r]) => r.from.includes(request.status === 'pending' ? 'pending_approval' : request.status)).map(([k]) => k),

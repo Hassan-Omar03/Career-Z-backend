@@ -59,10 +59,13 @@ const setSubtype = asyncHandler(async (req, res) => {
 // POST /api/onboarding/documents?role=&type=  (raw file body; Content-Type: the file's type)
 const uploadDocument = asyncHandler(async (req, res) => {
   if (!Buffer.isBuffer(req.body)) throw new AppError('Send the file as the request body.', 422);
-  const result = await service.uploadDocument({ user: req.user, role: String(req.query.role || ''), documentType: String(req.query.type || ''), buffer: req.body, originalName: decodeURIComponent(String(req.headers['x-file-name'] || '')) });
+  const result = await service.uploadDocument({ user: req.user, role: String(req.query.role || ''), documentType: String(req.query.type || ''), buffer: req.body, originalName: decodeURIComponent(String(req.headers['x-file-name'] || '')), add: req.query.add === '1', alternateNote: String(req.query.alternate || '') });
   const d = result.document;
   return (result.unchanged ? ok : created)(res, { _id: d._id, documentType: d.documentType, contentType: d.contentType, size: d.size, verificationStatus: d.verificationStatus, createdAt: d.createdAt }, result.unchanged ? 'This file is already uploaded.' : 'Document uploaded. It will be verified by the admin team.');
 });
+
+// DELETE /api/onboarding/documents/:id — the owner removes one file.
+const removeDocument = asyncHandler(async (req, res) => ok(res, await service.removeDocument(req.user, req.params.id), 'File removed.'));
 
 // GET /api/onboarding/documents/:id/file — the owner or a verification admin; never public.
 const documentFile = asyncHandler(async (req, res) => {
@@ -93,4 +96,4 @@ const myHistory = asyncHandler(async (req, res) => {
   return ok(res, rows);
 });
 
-module.exports = { requirements, status, addAccountType, setSubtype, uploadDocument, documentFile, submit, saveProfile, myHistory };
+module.exports = { requirements, status, addAccountType, setSubtype, uploadDocument, removeDocument, documentFile, submit, saveProfile, myHistory };

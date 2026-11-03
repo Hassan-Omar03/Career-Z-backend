@@ -45,10 +45,16 @@ async function activeDocuments(userId, role) {
 }
 
 function evaluateDocuments(role, subtype, docs) {
-  const byType = new Map(docs.map((d) => [d.documentType, d]));
+  // Oldest first, so the first file stays first when more are added.
+  const ofType = (t) => docs.filter((d) => d.documentType === t && !d.isAlternate).sort((a, b) => new Date(a.createdAt) - new Date(b.createdAt));
+  const byType = new Map(cfg.documentRequirements(role, subtype).flatMap((g) => g.anyOf.flat()).map((t) => [t, ofType(t)[0]]).filter(([, d]) => d));
   const groups = cfg.documentRequirements(role, subtype).map((g) => {
-    const satisfied = g.anyOf.some((set) => set.every((t) => byType.has(t)));
-    return { label: g.label, mandatory: g.mandatory !== false, satisfied, options: g.anyOf.map((set) => set.map((t) => ({ type: t, label: cfg.DOCUMENT_TYPES[t], imageOnly: cfg.IMAGE_ONLY.has(t), uploaded: byType.get(t) || null }))) };
+    const types = g.anyOf.flat();
+    // A person without a required document may send an alternative; the admin judges it.
+    const alternates = docs.filter((d) => d.isAlternate && types.includes(d.documentType));
+    const alternateType = types.find((t) => !cfg.IMAGE_ONLY.has(t) && t !== 'additional_document') || null;
+    const satisfied = g.anyOf.some((set) => set.every((t) => byType.has(t))) || alternates.length > 0;
+    return { label: g.label, mandatory: g.mandatory !== false, satisfied, alternates, alternateType, options: g.anyOf.map((set) => set.map((t) => ({ type: t, label: cfg.DOCUMENT_TYPES[t], imageOnly: cfg.IMAGE_ONLY.has(t), multiple: !cfg.SINGLE_FILE.has(t), uploaded: byType.get(t) || null, files: ofType(t) }))) };
   });
   return { groups, complete: groups.every((g) => !g.mandatory || g.satisfied) };
 }
@@ -95,7 +101,7 @@ async function statusFor(user, gate) {
 }
 
 // ---------- documents ----------
-async function uploadDocument({ user, role, documentType, buffer, originalName }) {
+async function uploadDocument({ user, role, documentType, buffer, originalName, add = false, alternateNote = '' }) {
   const request = await latestRequest(user._id, role);
   if (!request || !(user.roles || []).includes(role)) throw new AppError('Choose one of your own account types.', 403);
   const status = normalize(request.status);
@@ -109,13 +115,21 @@ async function uploadDocument({ user, role, documentType, buffer, originalName }
   if (buffer.length > limit) throw new AppError(`File too large — maximum ${Math.round(limit / 1048576)} MB.`, 413);
   const sha256 = crypto.createHash('sha256').update(buffer).digest('hex');
 
-  const current = await VerificationDocument.findOne({ user: user._id, role, documentType, active: true });
-  if (current?.sha256 === sha256) return { document: current, unchanged: true };
+  const same = await VerificationDocument.findOne({ user: user._id, role, documentType, active: true, sha256 });
+  if (same) return { document: same, unchanged: true };
+  const note = String(alternateNote || '').trim().slice(0, 500);
+  const alternate = Boolean(note);
+  if (alternate && cfg.IMAGE_ONLY.has(documentType)) throw new AppError('A photo or logo has no alternative. Upload a JPG or PNG image.', 422);
+  if (alternate && note.length < 5) throw new AppError('Write what this document is and why you do not have the required one.', 422);
+  // Adding keeps the files already there; otherwise the new file replaces the current one.
+  const keep = alternate || (add && !cfg.SINGLE_FILE.has(documentType));
+  if (keep && await VerificationDocument.countDocuments({ user: user._id, role, documentType, active: true }) >= cfg.MAX_FILES_PER_DOCUMENT) throw new AppError(`You can upload up to ${cfg.MAX_FILES_PER_DOCUMENT} files for one document.`, 422);
+  const current = keep ? null : await VerificationDocument.findOne({ user: user._id, role, documentType, active: true, isAlternate: { $ne: true } }).sort({ createdAt: 1 });
   const reusedHere = await VerificationDocument.findOne({ user: user._id, role, sha256, active: true, documentType: { $ne: documentType } });
   if (reusedHere) throw new AppError(`This is the same file you uploaded as "${cfg.DOCUMENT_TYPES[reusedHere.documentType]}". Upload the correct document.`, 409);
 
   const file = await VerificationDocumentFile.create({ owner: user._id, data: buffer });
-  const document = await VerificationDocument.create({ user: user._id, role, documentType, file: file._id, originalName: String(originalName || '').slice(0, 200), contentType, size: buffer.length, sha256 });
+  const document = await VerificationDocument.create({ user: user._id, role, documentType, file: file._id, originalName: String(originalName || '').slice(0, 200), contentType, size: buffer.length, sha256, isAlternate: alternate, alternateNote: note });
   if (current) await VerificationDocument.updateOne({ _id: current._id }, { $set: { active: false, replacedAt: new Date() } });
 
   // Replacing an identity document on an approved account needs the admin to look again.
@@ -127,6 +141,24 @@ async function uploadDocument({ user, role, documentType, buffer, originalName }
     await notifyAdmins(`Re-verification needed: ${cfg.ROLE_LABEL[role]}`, `${user.fullName} (${user.email}) replaced their ${cfg.DOCUMENT_TYPES[documentType]}.`);
   }
   return { document, unchanged: false };
+}
+
+// The owner removes one file. An approved account cannot remove what its approval rests on.
+async function removeDocument(user, documentId) {
+  const doc = require('mongoose').isValidObjectId(documentId) ? await VerificationDocument.findOne({ _id: documentId, user: user._id, active: true }) : null;
+  if (!doc) throw new AppError('Document not found.', 404);
+  const request = await latestRequest(user._id, doc.role);
+  const status = normalize(request?.status);
+  if (['pending_approval', 'under_review', 'suspended'].includes(status)) throw new AppError('Your documents are being reviewed. You can change them after the decision.', 409);
+  if (status === 'approved') {
+    const left = (await activeDocuments(user._id, doc.role)).filter((d) => String(d._id) !== String(doc._id));
+    const required = cfg.documentRequirements(doc.role, request.subtype).some((g) => g.mandatory !== false && g.anyOf.flat().includes(doc.documentType));
+    const lastOfType = !doc.isAlternate && required && !left.some((d) => d.documentType === doc.documentType && !d.isAlternate);
+    if (lastOfType || !evaluateDocuments(doc.role, request.subtype, left).complete) throw new AppError('Your approved account needs this document. Upload its replacement instead.', 409);
+  }
+  doc.active = false; doc.replacedAt = new Date();
+  await doc.save();
+  return { removed: true };
 }
 
 async function readDocument(documentId, viewer) {
@@ -155,7 +187,8 @@ async function submitForVerification(user, role) {
   if (!evaluation.complete) throw new AppError(`Upload all mandatory documents first: ${evaluation.groups.filter((g) => g.mandatory && !g.satisfied).map((g) => g.label).join('; ')}.`, 422);
   if (status === 'resubmission_required' && request.resubmissionDocuments?.length) {
     const replaced = new Set(docs.filter((d) => d.verificationStatus === 'pending').map((d) => d.documentType));
-    const still = request.resubmissionDocuments.filter((t) => !replaced.has(t));
+    const sentAlternate = (t) => evaluation.groups.some((g) => g.options.flat().some((o) => o.type === t) && g.alternates.some((a) => a.verificationStatus === 'pending'));
+    const still = request.resubmissionDocuments.filter((t) => !replaced.has(t) && !sentAlternate(t));
     if (still.length) throw new AppError(`Re-upload: ${still.map((t) => cfg.DOCUMENT_TYPES[t]).join(', ')}.`, 422);
   }
   const previous = request.status;
@@ -295,4 +328,4 @@ async function decide({ requestId, admin, action, reason = '', documents = [], m
   return request;
 }
 
-module.exports = { uploadDocument, readDocument, submitForVerification, saveProfile, decide, statusFor, evaluateDocuments, evaluateProfile, activeDocuments, sniff, ACTIONS, MAX_IMAGE_BYTES, MAX_PDF_BYTES };
+module.exports = { uploadDocument, removeDocument, readDocument, submitForVerification, saveProfile, decide, statusFor, evaluateDocuments, evaluateProfile, activeDocuments, sniff, ACTIONS, MAX_IMAGE_BYTES, MAX_PDF_BYTES };
