@@ -29,14 +29,17 @@ const year = () => new Date().getFullYear();
 // ---------------------------------------------------------------- the app shell
 let shell = { at: 0, html: '' };
 async function template() {
-  if (shell.html && Date.now() - shell.at < 5 * 60000) return shell.html;
   const file = process.env.SEO_TEMPLATE_PATH || '/var/www/careerz-frontend/site/app.html';
+  // A frontend deploy replaces the file and deletes the old scripts, so a changed file is read at once.
+  let mtime = 0;
+  try { mtime = fs.statSync(file).mtimeMs; } catch { /* the file is not on this machine */ }
+  if (shell.html && (mtime ? shell.mtime === mtime : Date.now() - shell.at < 5 * 60000)) return shell.html;
   let html = '';
   try { html = fs.readFileSync(file, 'utf8'); } catch {
     try { const r = await fetch(`${SITE()}/app.html`, { signal: AbortSignal.timeout(5000) }); if (r.ok) html = await r.text(); } catch { /* no shell available */ }
   }
   if (!html.includes('<!--seo:head-->')) html = '';
-  shell = { at: Date.now(), html };
+  shell = { at: Date.now(), mtime, html };
   return html;
 }
 
