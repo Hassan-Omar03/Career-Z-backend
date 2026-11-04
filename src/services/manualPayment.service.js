@@ -176,7 +176,7 @@ const RESOLVERS = {
 
 // The amounts and both accounts the buyer must pay to.
 async function quote(user, kind, id, body = {}) {
-  const resolve = RESOLVERS[kind];
+  const resolve = Object.hasOwn(RESOLVERS, kind) ? RESOLVERS[kind] : null;
   if (!resolve) throw fail('Unknown payment type.', 404);
   const item = await resolve(user, id, body);
   const { amount: price, currency } = await toPkr(item.price, item.currency);

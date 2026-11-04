@@ -12,21 +12,38 @@ const VerificationHistory = require('../models/VerificationHistory');
 const verificationConfig = require('../config/accountVerification');
 
 // POST /api/auth/register
+// What a client sends is never trusted to be text: an object or array here used to crash the
+// request with a 500 that showed the internal error, or reach a database query as an operator.
+const textOf = (v) => (typeof v === 'string' ? v.trim() : '');
+const secretOf = (v) => (typeof v === 'string' ? v : '');
+const codeOf = (v) => (typeof v === 'string' || typeof v === 'number' ? String(v).trim() : '');
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const emailOf = (v) => {
+  const email = textOf(v).toLowerCase();
+  if (email.length > 254) throw new AppError('Enter a valid email address.', 422);
+  return email;
+};
+
 const register = asyncHandler(async (req, res) => {
-  const { fullName, email, password, phone, country, city, language, acceptedTerms } = req.body;
+  const { language, acceptedTerms } = req.body;
+  const fullName = textOf(req.body.fullName), email = emailOf(req.body.email), password = secretOf(req.body.password);
+  const phone = textOf(req.body.phone), country = textOf(req.body.country), city = textOf(req.body.city);
 
   if (!fullName || !email || !password) {
     throw new AppError('Full name, email and password are required.', 422);
   }
+  if (fullName.length > 100) throw new AppError('Keep your full name under 100 characters.', 422);
+  if (!EMAIL.test(email)) throw new AppError('Enter a valid email address.', 422);
+  if (phone.length > 30) throw new AppError('Enter a valid phone number.', 422);
   assertStrongPassword(password);
-  if (!String(country || '').trim() || !String(city || '').trim()) {
+  if (!country || !city) {
     throw new AppError('Select your country and city.', 422);
   }
   if (acceptedTerms !== true) {
     throw new AppError('Please accept the Terms & Conditions and the Privacy Policy to continue.', 422);
   }
 
-  const existing = await User.findOne({ email: email.toLowerCase() });
+  const existing = await User.findOne({ email });
   if (existing) throw new AppError('An account with this email already exists.', 409);
 
   // Every new account picks exactly one account type; it stays locked until its documents are
@@ -71,7 +88,7 @@ const register = asyncHandler(async (req, res) => {
 
 // POST /api/auth/verify-email
 const verifyEmail = asyncHandler(async (req, res) => {
-  const { code } = req.body;
+  const code = codeOf(req.body.code);
   if (!code) throw new AppError('Verification code is required.', 422);
 
   const valid = await otpService.verifyOtp(req.user, 'email_verify', code);
@@ -102,7 +119,7 @@ async function recordLoginAttempt({ email, ip, userAgent, success, reason }) {
 
 // POST /api/auth/login
 const login = asyncHandler(async (req, res) => {
-  const { email, password } = req.body;
+  const email = emailOf(req.body.email), password = secretOf(req.body.password);
   const ip = req.ip;
   const userAgent = req.headers['user-agent'];
 
@@ -157,7 +174,7 @@ const login = asyncHandler(async (req, res) => {
 
 // POST /api/auth/login/verify-2fa — completes login for accounts with 2FA enabled.
 const verifyLogin2FA = asyncHandler(async (req, res) => {
-  const { email, code } = req.body;
+  const email = emailOf(req.body.email), code = codeOf(req.body.code);
   const ip = req.ip;
   const userAgent = req.headers['user-agent'];
   if (!email || !code) throw new AppError('Email and code are required.', 422);
@@ -186,7 +203,7 @@ const verifyLogin2FA = asyncHandler(async (req, res) => {
 
 // POST /api/auth/refresh
 const refresh = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = textOf(req.body.refreshToken);
   if (!refreshToken) throw new AppError('Refresh token is required.', 422);
 
   const RefreshTokenModel = require('../models/RefreshToken');
@@ -217,14 +234,14 @@ const refresh = asyncHandler(async (req, res) => {
 
 // POST /api/auth/logout
 const logout = asyncHandler(async (req, res) => {
-  const { refreshToken } = req.body;
+  const refreshToken = textOf(req.body.refreshToken);
   if (refreshToken) await tokenService.revokeRefreshToken(refreshToken);
   return ok(res, null, 'Logged out.');
 });
 
 // POST /api/auth/forgot-password
 const forgotPassword = asyncHandler(async (req, res) => {
-  const { email } = req.body;
+  const email = emailOf(req.body.email);
   if (!email) throw new AppError('Email is required.', 422);
 
   const user = await User.findOne({ email: email.toLowerCase() });
@@ -236,7 +253,7 @@ const forgotPassword = asyncHandler(async (req, res) => {
 
 // POST /api/auth/reset-password
 const resetPassword = asyncHandler(async (req, res) => {
-  const { email, code, newPassword } = req.body;
+  const email = emailOf(req.body.email), code = codeOf(req.body.code), newPassword = secretOf(req.body.newPassword);
   if (!email || !code || !newPassword) {
     throw new AppError('Email, code and new password are required.', 422);
   }

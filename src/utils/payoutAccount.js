@@ -9,7 +9,7 @@ const WALLETS = ['JazzCash', 'Easypaisa', 'SadaPay', 'NayaPay', 'Upaisa'];
 function normalize(input = {}) {
   const fail = (m) => { throw new AppError(m, 422); };
   const method = String(input.method || input.payoutMethod || '');
-  const accountTitle = String(input.accountTitle || '').trim().replace(/\s+/g, ' ');
+  const accountTitle = (typeof input.accountTitle === 'string' ? input.accountTitle : '').trim().replace(/\s+/g, ' ');
   if (accountTitle.length < 3 || accountTitle.length > 80) fail("Enter the account holder's name exactly as it appears on the account.");
   if (method === 'bank_transfer') {
     const bankName = String(input.bankName || '').trim();

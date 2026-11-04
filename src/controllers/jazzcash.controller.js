@@ -6,7 +6,7 @@ const JazzCashPayment = require('../models/JazzCashPayment');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
+const { validateEntered, normalizeCurrency } = require('../utils/walletInput');
 const { computeReceiptAmounts } = require('../utils/receiptCalc');
 const { settle } = require('../services/settlement.service');
 const jazzCash = require('../services/jazzcash.service');
@@ -137,7 +137,7 @@ const createWalletTopup = asyncHandler(async (req, res) => {
   const gateway = gatewayOf(req);
   assertConfigured(gateway);
   const { amount, currency } = req.body;
-  validateAmount(amount);
+  validateEntered(amount);
   const cur = normalizeCurrency(currency);
   const amountPaisa = await toPaisa(amount, cur);
   const txnRefNo = jazzCash.newTxnRefNo();

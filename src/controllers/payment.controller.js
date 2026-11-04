@@ -7,7 +7,7 @@ const { ok } = require('../utils/apiResponse');
 const nowPaymentsService = require('../services/nowpayments.service');
 const WalletTransaction = require('../models/WalletTransaction');
 const env = require('../config/env');
-const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
+const { validateEntered, normalizeCurrency } = require('../utils/walletInput');
 const crypto = require('crypto');
 
 // Online payments: JazzCash (jazzcash.controller.js) for every checkout, plus NOWPayments crypto
@@ -51,7 +51,7 @@ const createCryptoWalletTopup = asyncHandler(async (req, res) => {
     throw new AppError('Crypto payments are not set up yet — ask the Super Admin to configure NOWPAYMENTS_API_KEY and NOWPAYMENTS_IPN_SECRET.', 503);
   }
   const { amount, currency, payCurrency } = req.body;
-  validateAmount(amount);
+  validateEntered(amount);
   const cur = normalizeCurrency(currency);
   if (!nowPaymentsService.SUPPORTED_CURRENCIES[payCurrency]) {
     throw new AppError(`payCurrency must be one of: ${Object.keys(nowPaymentsService.SUPPORTED_CURRENCIES).join(', ')}.`, 422);

@@ -5,7 +5,7 @@ const User = require('../models/User');
 const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok } = require('../utils/apiResponse');
-const { validateAmount, normalizeCurrency } = require('../utils/walletInput');
+const { validateAmount, validateEntered, normalizeCurrency } = require('../utils/walletInput');
 const { notify, notifyAdmins } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
 const payoutAccount = require('../utils/payoutAccount');
@@ -65,7 +65,7 @@ const getMyWallet = asyncHandler(async (req, res) => {
 // shown back to Admin on the review screen, rather than silently trusting a bare account number.
 const requestWithdrawal = asyncHandler(async (req, res) => {
   const { amount, currency } = req.body;
-  validateAmount(amount);
+  validateEntered(amount);
   const cur = normalizeCurrency(currency);
   // The account sent with the request (saved as the default), else the saved one.
   let account;
@@ -153,8 +153,11 @@ const reviewWithdrawal = asyncHandler(async (req, res) => {
 //    anything fails partway through (recipient wallet write, ledger write, anything), the entire
 //    transaction is rolled back atomically and the sender's balance is exactly as it was before.
 const transfer = asyncHandler(async (req, res) => {
-  const { recipientEmail, amount, currency, note } = req.body;
-  validateAmount(amount);
+  const { recipientEmail, amount, currency } = req.body;
+  validateEntered(amount);
+  if (req.body.note != null && typeof req.body.note !== 'string') throw new AppError('The note must be text.', 422);
+  const note = String(req.body.note || '').trim();
+  if (note.length > 300) throw new AppError('Keep the note under 300 characters.', 422);
   const cur = normalizeCurrency(currency);
   if (typeof recipientEmail !== 'string' || !recipientEmail.trim()) throw new AppError('recipientEmail is required.', 422);
   const recipient = await User.findOne({ email: recipientEmail.toLowerCase().trim() });
