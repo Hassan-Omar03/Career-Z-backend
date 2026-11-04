@@ -167,6 +167,10 @@ const qrCheckIn = asyncHandler(async (req, res) => {
     sheet.records.push({ student: req.user._id, status: 'present', method: 'qr', checkedInAt: new Date(), session: session._id });
     await sheet.save();
     await recalculateEnrollmentProgressForCourse(session.course).catch(() => {});
+  } else if (already.status === 'absent') {
+    Object.assign(already, { status: 'present', method: 'qr', checkedInAt: new Date(), session: session._id });
+    await sheet.save();
+    await recalculateEnrollmentProgressForCourse(session.course).catch(() => {});
   }
 
   return ok(res, { alreadyMarked: false }, 'Attendance marked via QR check-in.');
@@ -204,9 +208,11 @@ const gpsCheckIn = asyncHandler(async (req, res) => {
     sheet = await Attendance.create({ institution: courseDoc.institution, course: courseId, classSection: courseDoc.classSection, date, markedBy: courseDoc.teacher, records: [] });
   }
   const already = sheet.records.find((r) => r.student.toString() === req.user._id.toString());
-  if (already) return ok(res, { alreadyMarked: true, distanceMeters: Math.round(distance) }, 'You were already marked present today.');
+  if (already && already.status !== 'absent') return ok(res, { alreadyMarked: true, distanceMeters: Math.round(distance) }, 'You were already marked present today.');
 
-  sheet.records.push({ student: req.user._id, status: 'present', method: 'gps', checkedInAt: new Date(), location: { lat, lng, distanceMeters: Math.round(distance) } });
+  const gpsRecord = { status: 'present', method: 'gps', checkedInAt: new Date(), location: { lat, lng, distanceMeters: Math.round(distance) } };
+  if (already) Object.assign(already, gpsRecord);
+  else sheet.records.push({ student: req.user._id, ...gpsRecord });
   await sheet.save();
   await recalculateEnrollmentProgressForCourse(courseId).catch(() => {});
 

@@ -165,10 +165,17 @@ const end = asyncHandler(async (req, res) => {
   if (!claimed && wasLive) throw new AppError('Class already ended.',409);
 
   const enrollments = await Enrollment.find({ course: session.course, status: { $ne: 'dropped' } }).select('student');
+  const classDay = new Date(session.startedAt || session.scheduledStart);
+  const dayStart = new Date(classDay); dayStart.setHours(0, 0, 0, 0);
+  const dayEnd = new Date(classDay); dayEnd.setHours(23, 59, 59, 999);
+  const checkIns = await Attendance.find({ course: session.course, date: { $gte: dayStart, $lte: dayEnd } }).select('records').lean();
+  const checkedIn = new Map(checkIns.flatMap((sheet) => sheet.records).filter((r) => ['qr', 'face', 'face_remote', 'gps', 'webauthn'].includes(r.method) && r.status === 'present').map((r) => [String(r.student), r]));
   const records = enrollments.map((row) => {
     const physical = session.physicalAttendance?.find(r=>String(r.student)===String(row.student));
-    if (physical && (!['absent'].includes(physical.status) || !session.participants.some(p=>String(p.student)===String(row.student)))) return {student:row.student,status:physical.status,method:'manual',checkedInAt:endedAt,reason:'Physical attendance marked by assigned teacher.'};
+    if (physical && (session.mode !== 'hybrid' || !['absent'].includes(physical.status) || !session.participants.some(p=>String(p.student)===String(row.student)))) return {student:row.student,status:physical.status,method:'manual',checkedInAt:endedAt,reason:'Marked by the assigned teacher.'};
     const participant = session.participants.find((item) => String(item.student) === String(row.student));
+    const selfCheckIn = checkedIn.get(String(row.student));
+    if (!participant && selfCheckIn) return { student: row.student, status: 'present', method: selfCheckIn.method, checkedInAt: selfCheckIn.checkedInAt || endedAt, reason: 'Checked in during the class.' };
     return {
       student: row.student,
       status: participant?.attendanceStatus || 'absent',
@@ -185,7 +192,7 @@ const end = asyncHandler(async (req, res) => {
 });
 
 
-const physicalAttendance=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s)throw new AppError('Session not found.',404);if(String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);if(!['physical','hybrid'].includes(s.mode)||s.status!=='live')throw new AppError('Physical/hybrid live session required.',409);if(!Array.isArray(req.body.records)||req.body.records.length>500)throw new AppError('Attendance records required.',422);const ids=await Enrollment.find({course:s.course,status:{$ne:'dropped'}}).distinct('student');const allowed=new Set(ids.map(String));if(req.body.records.some(r=>!allowed.has(String(r.student))||!['present','late','absent','excused'].includes(r.status))||new Set(req.body.records.map(r=>String(r.student))).size!==req.body.records.length)throw new AppError('Valid, unique enrolled students required.',422);s.physicalAttendance=req.body.records;await s.save();return ok(res,s);});
+const physicalAttendance=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s)throw new AppError('Session not found.',404);if(String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);if(s.status!=='live')throw new AppError('This class is not live.',409);if(!Array.isArray(req.body.records)||req.body.records.length>500)throw new AppError('Attendance records required.',422);const ids=await Enrollment.find({course:s.course,status:{$ne:'dropped'}}).distinct('student');const allowed=new Set(ids.map(String));if(req.body.records.some(r=>!allowed.has(String(r.student))||!['present','late','absent','excused'].includes(r.status))||new Set(req.body.records.map(r=>String(r.student))).size!==req.body.records.length)throw new AppError('Valid, unique enrolled students required.',422);s.physicalAttendance=req.body.records;await s.save();return ok(res,s);});
 const roster=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s||String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);const rows=await Enrollment.find({course:s.course,status:{$ne:'dropped'}}).populate('student','fullName');return ok(res,{students:rows.map(e=>e.student),records:s.physicalAttendance,mode:s.mode,status:s.status});});
 const recording=asyncHandler(async(req,res)=>{const s=await LiveClassSession.findById(req.params.id);if(!s||String(s.teacher)!==String(req.user._id))throw new AppError('Assigned teacher required.',403);if(((await require('./institutionSettings.controller').settingsFor(s.institution)).classroom||{}).recordingPolicy==='disabled')throw new AppError('Your institution has disabled class recording.',403);if(!/^https:\/\//.test(req.body.url||''))throw new AppError('Upload recording to HTTPS storage first.',422);s.recordingUrl=req.body.url;await s.save();const Lesson=require('../models/Lesson');if(!await Lesson.exists({course:s.course,videoUrl:s.recordingUrl})){const staged=(await Course.findById(s.course)).approvalWorkflow==='staged';await Lesson.create({course:s.course,title:s.title+' — recording',videoUrl:s.recordingUrl,published:!staged,approvalStatus:staged?'draft':'approved'});await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(s.course);}return ok(res,s);});
 module.exports = { physicalAttendance,roster,recording,schedule, institutionList, teacherList, studentList, start, join, leave, end };

@@ -256,11 +256,12 @@ const markAttendanceByFace = asyncHandler(async (req, res) => {
   }
 
   const already = sheet.records.find((r) => r.student.toString() === studentId);
-  if (already) {
+  if (already && already.status !== 'absent') {
     return ok(res, { studentName: student.fullName, alreadyMarked: true }, `${student.fullName} was already marked present today.`);
   }
 
-  sheet.records.push({ student: studentId, status: 'present', method: 'face', checkedInAt: new Date() });
+  if (already) Object.assign(already, { status: 'present', method: 'face', checkedInAt: new Date() });
+  else sheet.records.push({ student: studentId, status: 'present', method: 'face', checkedInAt: new Date() });
   await sheet.save();
   await recalculateEnrollmentProgressForCourse(course).catch(() => {});
   return ok(res, { studentName: student.fullName, alreadyMarked: false }, `${student.fullName} marked present.`);
@@ -311,8 +312,10 @@ const reviewFaceCheckInRequest = asyncHandler(async (req, res) => {
     if (!sheet) {
       sheet = await Attendance.create({ institution: courseDoc.institution, course: request.course, classSection: courseDoc.classSection, date: request.date, markedBy: req.user._id, records: [] });
     }
-    if (!sheet.records.some((r) => r.student.toString() === request.student._id.toString())) {
-      sheet.records.push({ student: request.student._id, status: 'present', method: 'face_remote', checkedInAt: new Date() });
+    const marked = sheet.records.find((r) => r.student.toString() === request.student._id.toString());
+    if (!marked || marked.status === 'absent') {
+      if (marked) Object.assign(marked, { status: 'present', method: 'face_remote', checkedInAt: new Date() });
+      else sheet.records.push({ student: request.student._id, status: 'present', method: 'face_remote', checkedInAt: new Date() });
       await sheet.save();
       await recalculateEnrollmentProgressForCourse(request.course).catch(() => {});
     }
