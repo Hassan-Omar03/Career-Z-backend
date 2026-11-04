@@ -23,6 +23,7 @@ async function changedPaths(since) {
     take('Scholarship', {}, '_id', (d) => `/scholarships/${d._id}`),
     take('Institution', { verificationStatus: 'approved' }, '_id', (d) => `/institutes/${d._id}`),
     take('Course', { published: true }, '_id', (d) => `/courses/${d._id}`),
+    take('FreelanceService', { status: 'active' }, '_id', (d) => `/freelance/${d._id}`),
     take('BlogPost', {}, 'slug', (d) => `/blog/${d.slug}`),
     take('Page', {}, 'slug', (d) => `/${d.slug}`),
     take('DonorPublicProfile', {}, 'user', (d) => d.user && `/donors/${d.user}`),

@@ -98,3 +98,18 @@ test('an institute buys ad-free dashboards; its owner and students then see no d
   assert.ok((await api('Kid', 'GET', '/ads/slot?placement=home')).body.data, 'public pages still have ads');
   assert.equal((await api('Boss', 'GET', '/ads/admin/ad-free')).body.data[0].name, 'Ad School');
 });
+
+test('the Super Admin chooses AdSense or banners; AdSense stays off dashboards and the never list', async () => {
+  expect(await api('Owner', 'PUT', '/ads/admin/config', { network: 'adsense' }), 403);
+  expect(await api('Boss', 'PUT', '/ads/admin/config', { enabled: true, network: 'nope' }), 422);
+  expect(await api('Boss', 'PUT', '/ads/admin/config', { adsenseSlot: 'abc' }), 422);
+  expect(await api('Boss', 'PUT', '/ads/admin/config', { enabled: true, network: 'adsense', adsenseSlot: '' }), 200);
+  assert.equal((await api(null, 'GET', '/ads/slot?placement=home')).body.data, null, 'no unit ID yet');
+  expect(await api('Boss', 'PUT', '/ads/admin/config', { adsenseSlot: '1234567890' }), 200);
+  const unit = (await api(null, 'GET', '/ads/slot?placement=home')).body.data;
+  assert.equal(unit.network, 'adsense');
+  assert.equal(unit.slot, '1234567890');
+  assert.equal((await api(null, 'GET', '/ads/slot?placement=dashboard')).body.data, null);
+  assert.equal((await api(null, 'GET', '/ads/slot?placement=payment')).body.data, null);
+  expect(await api('Boss', 'PUT', '/ads/admin/config', { network: 'banner' }), 200);
+});

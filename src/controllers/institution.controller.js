@@ -676,7 +676,7 @@ const listFees = asyncHandler(async (req, res) => {
   await require('../services/notification.service').notifyAdmins({ title: `Counter payment to verify: ${fee.title}`, body: `${fee.currency} ${fee.outstandingAmount ?? fee.amount} by ${paidVia}, receipt ${String(reference).trim()} (${institution.name}).` }).catch(() => {});
   return ok(res, recorded, 'Recorded. CareerZ will verify the receipt; then the fee is marked paid.');
   // eslint-disable-next-line no-unreachable
-  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY);
+  const receipt = await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY, { institution: fee.institution });
   fee.status = 'paid';
   fee.paidAt = new Date();
   fee.paidVia = paidVia || '';

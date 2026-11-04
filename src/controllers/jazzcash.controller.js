@@ -202,6 +202,7 @@ async function applyOutcome(txnRefNo, { code, message = '', rrn = '', outcome: g
     payment.status = 'paid';
     payment.paidAt = new Date();
     await payment.save({ session });
+    await require('../services/receipt.service').issueForGatewayPayment(payment, session);
     const receiptId = rrn || txnRefNo;
     if (payment.kind === 'fee') return settleFee(payment, receiptId, session);
     if (payment.kind === 'course') return settleCourse(payment, receiptId, session);

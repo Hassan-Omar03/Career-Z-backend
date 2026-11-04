@@ -64,13 +64,13 @@ const RESOLVERS = {
     if (!fee) throw fail('Fee not found.', 404);
     await require('../controllers/payment.controller').assertCanPayFee(fee, user);
     const owed = require('./feeSettlement.service').assertPayableOnline(fee);
-    const school = await require('../models/Institution').findById(fee.institution).select('owner name');
-    return { title: `${fee.title} (${school?.name || 'Institute'})`, price: owed, currency: fee.currency || 'PKR', recipient: school?.owner, rateKey: 'fee_commission_percent', refs: { fee: fee._id, institution: fee.institution } };
+    const school = await require('../models/Institution').findById(fee.institution).select('owner name country');
+    return { title: `${fee.title} (${school?.name || 'Institute'})`, price: owed, currency: fee.currency || 'PKR', recipient: school?.owner, rateKey: 'fee_commission_percent', rateContext: { institution: fee.institution, country: school?.country }, refs: { fee: fee._id, institution: fee.institution } };
   },
   async course(user, id) {
     const { course, amountMinor, currency } = await require('../controllers/payment.controller').loadPayableCourse(id, user._id);
     const school = course.institution ? await require('../models/Institution').findById(course.institution).select('owner') : null;
-    return { title: `Course: ${course.title}`, price: amountMinor / 100, currency, recipient: school?.owner || course.teacher, rateKey: 'course_commission_percent', refs: { course: course._id } };
+    return { title: `Course: ${course.title}`, price: amountMinor / 100, currency, recipient: school?.owner || course.teacher, rateKey: 'course_commission_percent', rateContext: { institution: course.institution, product: course._id, category: course.subject }, refs: { course: course._id } };
   },
   async tutoring(user, id) {
     const link = await require('../models/TeacherStudentLink').findById(id).populate('course', 'title');
@@ -90,9 +90,16 @@ const RESOLVERS = {
     const rateKey = category && await Setting.exists({ key: `marketplace_commission_percent:${category}` }) ? `marketplace_commission_percent:${category}` : 'marketplace_commission_percent';
     // Escrow (master 16B.7): the buyer pays the whole amount to CareerZ, which releases it to the
     // seller after delivery. The CareerZ fee is included in that one transfer.
-    const rate = await commissionRate(rateKey);
+    const rate = await commissionRate(rateKey, null, { amount: order.totalPrice, category, product: order.product?._id });
     const fee = round2((order.totalPrice * rate) / 100);
     return { title: `Order: ${order.product?.title || 'item'} (held by CareerZ until delivery)`, price: round2(order.totalPrice + fee), currency: order.currency || 'PKR', recipient: null, refs: { order: order._id } };
+  },
+  async freelance_milestone(user, id) {
+    const { order, milestone } = await require('./freelance.service').payableMilestone(user, id);
+    // Like an escrow order: the whole amount goes to CareerZ, with its fee on top of the milestone.
+    const rate = await commissionRate('freelance_commission_percent', null, { amount: milestone.amount, category: order.category, product: order.service, country: user.country });
+    const fee = round2((milestone.amount * rate) / 100);
+    return { title: `${order.title}: ${milestone.title} (held by CareerZ until you approve)`, price: round2(milestone.amount + fee), currency: order.currency, recipient: null, refs: { freelanceOrder: order._id, freelanceMilestone: milestone._id } };
   },
   async donation(user, id, body) {
     const request = await require('../models/FundingRequest').findById(id).populate('requestedBy', '_id');
@@ -181,7 +188,7 @@ async function quote(user, kind, id, body = {}) {
   let recipient = null;
   if (item.recipient) {
     // A fee already fixed (an agreement invoice) is used as it is; otherwise the service rate on top.
-    rate = item.fixedCommission != null ? (price > 0 ? round2((item.fixedCommission / price) * 100) : 0) : await commissionRate(item.rateKey);
+    rate = item.fixedCommission != null ? (price > 0 ? round2((item.fixedCommission / price) * 100) : 0) : await commissionRate(item.rateKey, null, { amount: price, country: user.country, ...item.rateContext });
     commission = item.fixedCommission != null ? round2(item.fixedCommission) : round2((price * rate) / 100);
     sellerAmount = price;
     recipient = await User.findById(item.recipient).select('fullName email phone status +payoutAccount');
@@ -328,6 +335,8 @@ async function grant(mp, session) {
     await link.save({ session });
   } else if (mp.kind === 'marketplace_order') {
     mp._escrowOrder = await require('./marketplaceEscrow.service').hold(mp.order, mp.price, session);
+  } else if (mp.kind === 'freelance_milestone') {
+    await require('./freelance.service').hold(mp, session);
   } else if (mp.kind === 'donation') {
     const FundingRequest = require('../models/FundingRequest');
     const request = await FundingRequest.findById(mp.fundingRequest).session(session);
@@ -405,10 +414,12 @@ async function decide(admin, id, { decision, note }) {
     if (decision === 'approve') {
       await grant(claimed, session);
       await claimed.save({ session });
+      await require('./receipt.service').issueForManualPayment(claimed, session);
     }
   });
   const fresh = await ManualPayment.findById(mp._id);
   const total = round2(fresh.commission + fresh.sellerAmount);
+  if (decision === 'approve' && fresh.kind === 'freelance_milestone') await require('./freelance.service').tellFunded(fresh).catch(() => {});
   if (decision === 'approve') require('./plugins.service').emit('payment.approved', { paymentId: fresh._id, number: fresh.number, kind: fresh.kind, title: fresh.title, amount: total, currency: fresh.currency });
   // Escrow orders: the buyer gets the delivery code, the seller is told the money is held.
   if (decision === 'approve' && fresh.kind === 'marketplace_order') {

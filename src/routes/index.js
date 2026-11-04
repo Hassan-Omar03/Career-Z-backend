@@ -20,6 +20,8 @@ router.use('/jobs', require('./job.routes'));
 router.use('/recruitment', require('./recruitment.routes'));
 router.use('/job-alerts', require('./jobAlert.routes'));
 router.use('/commissions', require('./commission.routes'));
+router.use('/commission-rules', require('./commissionRule.routes'));
+router.use('/receipts', require('./receipt.routes'));
 router.use('/inquiries', require('./inquiry.routes'));
 router.use('/institution-applications', require('./institutionApplication.routes'));
 router.use('/institution-ops', require('./institutionOps.routes'));
@@ -33,6 +35,7 @@ router.use('/virtual-fairs', moduleGate('virtual_fairs'), require('./virtualFair
 router.use('/resumes', require('./resume.routes'));
 router.use('/certificates', require('./certificate.routes'));
 router.use('/marketplace', moduleGate('marketplace'), require('./marketplace.routes'));
+router.use('/freelance', moduleGate('freelance'), require('./freelance.routes'));
 router.use('/scholarships', require('./scholarship.routes'));
 router.use('/study-groups', moduleGate('study_groups'), require('./studyGroup.routes'));
 router.use('/group-conversations', require('./groupConversation.routes'));

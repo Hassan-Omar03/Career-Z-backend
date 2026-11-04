@@ -20,7 +20,7 @@ async function creditInstitution(fee, { amount, reference, payerId }, session) {
   if (existing) return existing;
   const school = await Institution.findById(fee.institution).select('owner name').session(session);
   if (!school?.owner) return null;
-  const rate = await commissionRate('fee_commission_percent', session);
+  const rate = await commissionRate('fee_commission_percent', session, { amount: value, institution: fee.institution });
   const commission = round2((value * rate) / 100);
   const net = round2(value - commission);
   if (net > 0) {
@@ -52,7 +52,7 @@ async function creditEarner({ recipient, amount, currency, reference, payerId, n
   const value = round2(Number(amount) || 0);
   if (value <= 0 || !recipient || !reference) return null;
   if (await WalletTransaction.exists({ reference: `${reference}-IN` }).session(session)) return null;
-  const rate = await commissionRate(commissionKey, session);
+  const rate = await commissionRate(commissionKey, session, { amount: value });
   const commission = round2((value * rate) / 100);
   const net = round2(value - commission);
   if (net > 0) {

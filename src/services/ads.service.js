@@ -12,6 +12,7 @@ const AppError = require('../utils/AppError');
 
 const fail = (message, status = 422) => new AppError(message, status);
 const KEY = 'ads_config';
+const ADSENSE_CLIENT = 'ca-pub-2364552447227705';
 const PLACEMENTS = ['home', 'blog', 'courses', 'institutes', 'jobs', 'marketplace', 'dashboard'];
 const NEVER = ['live_class', 'exam', 'chat', 'wallet', 'payment'];
 const DEFAULTS = { enabled: false, placements: Object.fromEntries(PLACEMENTS.map((p) => [p, true])), adFree: { monthly: 2000, yearly: 20000, currency: 'PKR' } };
@@ -20,7 +21,7 @@ const IMG = /^data:image\/(png|jpe?g|webp|gif);base64,[A-Za-z0-9+/=]+$/;
 async function config() {
   const s = await Setting.findOne({ key: KEY }).lean();
   const v = s?.value || {};
-  return { enabled: v.enabled ?? DEFAULTS.enabled, placements: { ...DEFAULTS.placements, ...(v.placements || {}) }, adFree: { ...DEFAULTS.adFree, ...(v.adFree || {}) }, never: NEVER };
+  return { network: v.network === 'adsense' ? 'adsense' : 'banner', adsenseClient: v.adsenseClient || ADSENSE_CLIENT, adsenseSlot: v.adsenseSlot || '', enabled: v.enabled ?? DEFAULTS.enabled, placements: { ...DEFAULTS.placements, ...(v.placements || {}) }, adFree: { ...DEFAULTS.adFree, ...(v.adFree || {}) }, never: NEVER };
 }
 async function setConfig(admin, body = {}) {
   if (!admin.roles?.includes('super_admin')) throw fail('Only the Super Admin controls ads.', 403);
@@ -28,7 +29,12 @@ async function setConfig(admin, body = {}) {
   const placements = { ...cur.placements };
   for (const p of PLACEMENTS) if (body.placements?.[p] !== undefined) placements[p] = Boolean(body.placements[p]);
   const num = (v, d) => { const n = Number(v); if (v === undefined) return d; if (!Number.isFinite(n) || n < 0) throw fail('Prices cannot be negative.'); return Math.round(n); };
-  const value = { enabled: body.enabled === undefined ? cur.enabled : Boolean(body.enabled), placements, adFree: { monthly: num(body.adFree?.monthly, cur.adFree.monthly), yearly: num(body.adFree?.yearly, cur.adFree.yearly), currency: 'PKR' } };
+  if (body.network !== undefined && !['banner', 'adsense'].includes(body.network)) throw fail('Choose AdSense or banners.');
+  const adsenseClient = body.adsenseClient === undefined ? cur.adsenseClient : String(body.adsenseClient).trim();
+  if (!/^ca-pub-\d{8,20}$/.test(adsenseClient)) throw fail('Enter the AdSense publisher ID, for example ca-pub-1234567890.');
+  const adsenseSlot = body.adsenseSlot === undefined ? cur.adsenseSlot : String(body.adsenseSlot).trim();
+  if (adsenseSlot && !/^\d{6,20}$/.test(adsenseSlot)) throw fail('The AdSense ad unit ID is a number.');
+  const value = { network: body.network ?? cur.network, adsenseClient, adsenseSlot, enabled: body.enabled === undefined ? cur.enabled : Boolean(body.enabled), placements, adFree: { monthly: num(body.adFree?.monthly, cur.adFree.monthly), yearly: num(body.adFree?.yearly, cur.adFree.yearly), currency: 'PKR' } };
   await Setting.findOneAndUpdate({ key: KEY }, { $set: { value, updatedBy: admin._id } }, { upsert: true });
   return config();
 }
@@ -83,6 +89,8 @@ async function slot(placement, user) {
   if (NEVER.includes(placement) || !PLACEMENTS.includes(placement)) return null;
   const cfg = await config();
   if (!cfg.enabled || !cfg.placements[placement]) return null;
+  // AdSense runs on public pages only; banners keep their own dashboard placement.
+  if (cfg.network === 'adsense') return placement !== 'dashboard' && cfg.adsenseSlot ? { network: 'adsense', client: cfg.adsenseClient, slot: cfg.adsenseSlot } : null;
   if (placement === 'dashboard' && await adFreeFor(user)) return null;
   const now = new Date();
   const rows = await Ad.find({ active: true, placements: placement, $and: [{ $or: [{ startsAt: null }, { startsAt: { $lte: now } }] }, { $or: [{ endsAt: null }, { endsAt: { $gte: now } }] }] }).select('_id').lean();

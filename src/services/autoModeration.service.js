@@ -62,4 +62,17 @@ function checkScholarship(s) {
   return decide(out);
 }
 
-module.exports = { HOLD_AT, checkProduct, checkScholarship };
+// A freelance service: the same words and prices are suspicious as in a marketplace listing.
+async function checkFreelanceService(service) {
+  const { out, add } = flagger();
+  const text = `${service.title || ''}\n${service.description || ''}`;
+  if (BANNED.test(text)) add('banned_item', 'Looks like a service that cannot be sold on CareerZ', 100, true);
+  if (MONEY_ASK.test(text)) add('money_ask', 'Asks clients for an advance or a fee outside the order', 60, true);
+  if (OFF_PLATFORM.test(text)) add('off_platform', 'Pushes clients to a phone, WhatsApp or wallet number', 30);
+  if (LINKS.test(service.description || '')) add('external_link', 'Has a link to another website', 15);
+  if ((service.packages || []).some((p) => Number(p.price) > 2000000)) add('price_extreme', 'Price above PKR 2,000,000', 60, true);
+  if (String(service.description || '').trim().length < 10) add('thin', 'Very short description', 10);
+  return decide(out);
+}
+
+module.exports = { HOLD_AT, checkProduct, checkScholarship, checkFreelanceService };

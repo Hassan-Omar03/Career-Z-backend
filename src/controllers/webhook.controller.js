@@ -74,7 +74,7 @@ async function settleOnlineFee(fee, { amount, method, paidVia, transactionId, pa
     await require('../services/feeWalletSettlement.service').creditInstitution(fee, { amount: Math.min(result.amount, owedBefore), reference: `GW-${transactionId}`, payerId }, session);
   }
   if (!result.duplicate && fee.status === 'paid') {
-    Object.assign(fee, await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY), { escrowStatus: 'released', escrowReleasedAt: new Date() });
+    Object.assign(fee, await computeReceiptAmounts(fee.amount, FEE_COMMISSION_KEY, { institution: fee.institution }), { escrowStatus: 'released', escrowReleasedAt: new Date() });
     fee.receiptNumber = fee.receiptNumber || `RCPT-${Date.now().toString(36).toUpperCase()}-${String(transactionId).slice(-6).toUpperCase()}`;
   }
   await fee.save({ session });

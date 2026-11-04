@@ -8,6 +8,7 @@ const SERVICES = [
   { id: 'recruitment', key: 'recruitment_platform_fee_percent', label: 'Agent recruitment fees', about: 'Taken from each fee an institute pays an agent under an agreement.' },
   { id: 'donation', key: 'donation_commission_percent', label: 'Donations', about: 'Taken from each donation.' },
   { id: 'scholarship', key: 'scholarship_commission_percent', label: 'Scholarship processing', about: 'Taken from each sponsorship payment a donor makes to a student.' },
+  { id: 'freelance', key: 'freelance_commission_percent', label: 'Freelance services', about: 'Taken from each freelance milestone when the client approves it.' },
   { id: 'agentHire', key: 'commission_rate_percent', label: "Agent's own hiring commission", about: "The agent's earning on a hire for the agent's own job (% of the salary). This is the agent's, not CareerZ's." }
 ];
 

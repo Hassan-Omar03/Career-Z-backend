@@ -16,7 +16,7 @@ const legSchema = new mongoose.Schema({
 
 const manualPaymentSchema = new mongoose.Schema({
   number: { type: String, required: true, unique: true },
-  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment', 'employer_package', 'ad_free'], required: true, index: true },
+  kind: { type: String, enum: ['fee', 'course', 'tutoring', 'marketplace_order', 'donation', 'featured_job', 'subscription', 'wallet_topup', 'agent_commission', 'recruitment_invoice', 'sponsorship_payment', 'employer_package', 'ad_free', 'freelance_milestone'], required: true, index: true },
   title: { type: String, required: true },
   // Who pays and who receives, with the phone numbers the admin calls to check.
   payer: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
@@ -29,6 +29,8 @@ const manualPaymentSchema = new mongoose.Schema({
   course: { type: mongoose.Schema.Types.ObjectId, ref: 'Course', default: null },
   tutoringLink: { type: mongoose.Schema.Types.ObjectId, ref: 'TeacherStudentLink', default: null },
   order: { type: mongoose.Schema.Types.ObjectId, ref: 'Order', default: null },
+  freelanceOrder: { type: mongoose.Schema.Types.ObjectId, ref: 'FreelanceOrder', default: null },
+  freelanceMilestone: { type: mongoose.Schema.Types.ObjectId, default: null },
   fundingRequest: { type: mongoose.Schema.Types.ObjectId, ref: 'FundingRequest', default: null },
   donation: { type: mongoose.Schema.Types.ObjectId, ref: 'Donation', default: null },
   job: { type: mongoose.Schema.Types.ObjectId, ref: 'Job', default: null },

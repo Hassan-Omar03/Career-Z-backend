@@ -17,6 +17,7 @@ const AppError = require('../utils/AppError');
 const fail = (message, status = 422) => new AppError(message, status);
 const KEY = 'plugin_modules';
 const MODULES = {
+  freelance: { label: 'Freelancer Hub', description: 'Services, proposals, milestone payments held by CareerZ, disputes and reviews.', path: '/freelance' },
   marketplace: { label: 'Marketplace', description: 'Buy and sell books, notes, uniforms and digital products with escrow.', path: '/marketplace' },
   academy: { label: 'Academy batches', description: 'Academies run courses in batches with rosters, fees and waitlists.', path: '/academy' },
   visa: { label: 'Visa Center', description: 'Country rules, verified visa consultants, visa case tracking.', path: '/visa' },

@@ -94,6 +94,8 @@ function urdu(m) {
     case 'course': return { title: `${m.name} کورس${m.free ? ' – مفت' : ''}${m.cert ? ' سرٹیفکیٹ کے ساتھ' : ''}`, description: `${m.name} کورس، ${m.org} کی طرف سے۔ ${m.free ? 'بالکل مفت' : `فیس ${m.price}`}${m.cert ? '، مکمل کرنے پر سرٹیفکیٹ' : ''}۔ پاکستان میں آن لائن کورسز CareerZ پر۔`, keywords: [`${m.name} کورس`, 'آن لائن کورسز', 'مفت آن لائن کورسز سرٹیفکیٹ کے ساتھ', 'آن لائن کلاسز'] };
     case 'scholarship': return { title: `${m.name} اسکالرشپ ${year()}`, description: `${m.name}${m.amount ? `، رقم ${m.amount}` : ''}۔ اہلیت، آخری تاریخ اور اپلائی کرنے کا طریقہ۔ پاکستانی طلبہ کے لیے اسکالرشپس ${year()} CareerZ پر۔`, keywords: [`اسکالرشپ ${year()}`, 'پاکستانی طلبہ کے لیے اسکالرشپ', 'فلی فنڈڈ اسکالرشپ', 'نیڈ بیسڈ اسکالرشپ'] };
     case 'product': return { title: `${m.name} – ${m.price}${m.city ? `، ${m.city}` : ''}`, description: `${m.name} خریدیں، قیمت ${m.price}۔ CareerZ مارکیٹ پلیس پر محفوظ ادائیگی، ڈیلیوری کے بعد ہی بیچنے والے کو رقم ملتی ہے۔`, keywords: ['پرانی کتابیں خریدیں', 'نوٹس برائے فروخت', 'اسکول یونیفارم', 'اسٹوڈنٹ مارکیٹ پلیس'] };
+    case 'freelance': return { title: `${m.name} – ${m.price} سے شروع`, description: `${m.name}${m.org ? `، ${m.org} کی طرف سے` : ''}۔ قیمت ${m.price} سے شروع۔ CareerZ کام کی منظوری تک آپ کی ادائیگی محفوظ رکھتا ہے۔`, keywords: ['فری لانس سروسز', 'پاکستان میں فری لانسر', 'آن لائن ٹیوٹر'] };
+    case 'freelancer': return { title: `${m.name} – فری لانسر${m.city ? `، ${m.city}` : ''}`, description: `${m.name}${m.city ? `، ${m.city}` : ''}، CareerZ پر تصدیق شدہ فری لانسر۔ سروسز، ریٹنگ اور ریویوز دیکھیں۔`, keywords: ['فری لانسر', 'فری لانس سروسز پاکستان'] };
     case 'donor': return { title: `${m.name} – تعلیمی ڈونر اور اسکالرشپس`, description: `${m.name}${at} تعلیم کے لیے فنڈنگ کرنے والا تصدیق شدہ ڈونر۔ ان کی کھلی اسکالرشپس دیکھیں۔`, keywords: ['تعلیمی ڈونر', 'طالب علم کی کفالت', 'تعلیم کے لیے عطیہ'] };
     case 'blog': return { title: m.name, description: `CareerZ بلاگ: ${m.name}۔ اسکالرشپس، داخلوں، نوکریوں اور کیریئر سے متعلق رہنمائی۔`, keywords: ['تعلیمی بلاگ', 'اسکالرشپ گائیڈ', 'کیریئر مشورے'] };
     case 'teacher': return { title: `${m.name} – ${m.subject ? `${m.subject} ٹیچر` : 'ٹیچر'}${m.city ? `، ${m.city}` : ''}`, description: `${m.name}${at} تصدیق شدہ ٹیچر: تجربہ، کورسز اور ریویوز۔ ہوم ٹیوٹر اور آن لائن ٹیوٹر CareerZ پر۔`, keywords: ['ہوم ٹیوٹر', 'آن لائن ٹیوٹر', `${m.city || 'پاکستان'} میں ٹیوٹر`] };
@@ -240,6 +242,49 @@ async function productPage(id) {
   };
 }
 
+const FREELANCE_CATEGORY = { home_tuition: 'Home tuition', online_tuition: 'Online tuition', admission_consultancy: 'Admission consultancy', career_counselling: 'Career counselling', visa_consultancy: 'Visa consultancy', research_assistance: 'Research assistance', translation: 'Translation', certification_support: 'Certification support', training: 'Training', mentoring: 'Mentoring', design: 'Design', development: 'Development', writing: 'Writing', other: 'Freelance service' };
+const ratingNode = (rep) => (rep?.reviewCount ? { aggregateRating: { '@type': 'AggregateRating', ratingValue: rep.rating, reviewCount: rep.reviewCount } } : {});
+
+async function freelanceServicePage(id) {
+  const s = isId(id) && await require('./freelance.service').publicService(id).catch(() => null);
+  if (!s) return null;
+  const path = `/freelance/${s._id}`;
+  const category = FREELANCE_CATEGORY[s.category] || 'Freelance service';
+  const prices = s.packages.map((p) => p.price);
+  const from = money(s.currency, Math.min(...prices));
+  const title = `${s.title} from ${from}${s.seller?.city ? ` in ${s.seller.city}` : ''}`;
+  const description = plain(`${s.title} by ${s.seller?.name}. ${category} from ${from}. Payment held by CareerZ until you approve the work. ${plain(s.description)}`, 158);
+  const node = {
+    '@type': 'Service', name: s.title, description: plain(s.description, 500) || s.title, serviceType: category, url: SITE() + path, ...(s.image ? { image: s.image } : {}),
+    provider: { '@type': 'Person', name: s.seller?.name, url: `${SITE()}/freelancer/${s.seller?._id}` }, areaServed: 'PK',
+    offers: { '@type': 'AggregateOffer', priceCurrency: s.currency || 'PKR', lowPrice: Math.min(...prices), highPrice: Math.max(...prices), offerCount: prices.length, availability: 'https://schema.org/InStock', url: SITE() + path },
+    ...ratingNode(s.reputation)
+  };
+  const c = [['Home', '/'], ['Freelance services', '/freelance'], [s.title, path]];
+  const tier = (p) => `${p.tier[0].toUpperCase()}${p.tier.slice(1)}${p.name ? ` (${p.name})` : ''}: ${money(s.currency, p.price)}, ${p.deliveryDays} days, ${p.revisions} revisions${p.includes ? `. ${p.includes}` : ''}`;
+  return {
+    meta: { kind: 'freelance', name: s.title, org: s.seller?.name, city: s.seller?.city, price: from, sub: `${category} · from ${from}`, image: s.image },
+    head: { title, description, path, image: s.image, keywords: [s.title, `${category} Pakistan`, s.seller?.city && `${category} in ${s.seller.city}`, 'freelance services Pakistan', 'hire freelancer Pakistan', ...(s.profile?.skills || []).slice(0, 5)].filter(Boolean), schema: graph(node, crumbs(c)) },
+    body: { crumbs: c, h1: s.title, sub: `${category} by ${s.seller?.name}`, facts: [['Starting at', from], ['Rating', s.reputation?.rating ? `${s.reputation.rating} of 5` : ''], ['City', s.seller?.city]], paragraphs: [plain(s.description), ...s.packages.map(tier), plain(s.profile?.about)].filter(Boolean) }
+  };
+}
+
+async function freelancerPage(id) {
+  const d = isId(id) && await require('./freelance.service').publicFreelancer(id).catch(() => null);
+  if (!d) return null;
+  const path = `/freelancer/${d._id}`;
+  const role = d.profile?.type || 'Freelancer';
+  const title = `${d.name} – ${role}${d.city ? ` in ${d.city}` : ''}`;
+  const description = plain(`${d.name}, ${role}${d.city ? ` in ${d.city}` : ''} on CareerZ. ${d.profile?.headline || ''} ${plain(d.profile?.about)}`, 158);
+  const c = [['Home', '/'], ['Freelance services', '/freelance'], [d.name, path]];
+  const node = { '@type': 'Person', name: d.name, jobTitle: d.profile?.headline || role, description: plain(d.profile?.about, 500) || undefined, url: SITE() + path, knowsAbout: d.profile?.skills?.length ? d.profile.skills : undefined, ...(d.city ? { address: { '@type': 'PostalAddress', addressLocality: d.city } } : {}) };
+  return {
+    meta: { kind: 'freelancer', name: d.name, city: d.city, sub: role },
+    head: { title, description, path, keywords: [d.name, `${role} Pakistan`, d.city && `${role} in ${d.city}`, 'hire freelancer Pakistan', ...(d.profile?.skills || []).slice(0, 5)].filter(Boolean), schema: graph(node, crumbs(c)) },
+    body: { crumbs: c, h1: d.name, sub: [role, d.city].filter(Boolean).join(' · '), facts: [['Rating', d.reputation?.rating ? `${d.reputation.rating} of 5` : ''], ['Completed orders', d.reputation?.completedOrders || '']], paragraphs: [d.profile?.headline, plain(d.profile?.about), ...d.services.map((s) => `${s.title}: from ${money(s.currency, s.startingAt)}`)].filter(Boolean) }
+  };
+}
+
 async function donorPage(id) {
   const d = isId(id) && await listings.donorDetail(id);
   if (!d) return null;
@@ -345,6 +390,8 @@ const ROUTES = [
   [/^\/scholarships\/([^/]+)$/, (m) => scholarshipPage(m[1])],
   [/^\/marketplace\/([^/]+)$/, (m) => productPage(m[1])],
   [/^\/donors\/([^/]+)$/, (m) => donorPage(m[1])],
+  [/^\/freelance\/([^/]+)$/, (m) => freelanceServicePage(m[1])],
+  [/^\/freelancer\/([^/]+)$/, (m) => freelancerPage(m[1])],
   [/^\/blog\/([^/]+)$/, (m) => blogPage(m[1])],
   [/^\/teacher\/([^/]+)$/, (m) => teacherPage(m[1])],
   [/^\/i\/([^/]+)(?:\/([^/]+))?$/, (m) => instituteSitePage(m[1], m[2])]
@@ -382,7 +429,7 @@ async function render(rawPath, query = {}) {
 }
 
 // ---------------------------------------------------------------- sitemap and RSS
-const STATIC_PATHS = [['/', 'daily', 1.0], ['/jobs', 'hourly', 0.9], ['/scholarships', 'daily', 0.9], ['/institutes', 'daily', 0.9], ['/courses', 'daily', 0.9], ['/marketplace', 'daily', 0.8], ['/donors', 'weekly', 0.6], ['/visa', 'weekly', 0.7], ['/blog', 'daily', 0.8],
+const STATIC_PATHS = [['/', 'daily', 1.0], ['/jobs', 'hourly', 0.9], ['/scholarships', 'daily', 0.9], ['/institutes', 'daily', 0.9], ['/courses', 'daily', 0.9], ['/marketplace', 'daily', 0.8], ['/freelance', 'daily', 0.8], ['/donors', 'weekly', 0.6], ['/visa', 'weekly', 0.7], ['/blog', 'daily', 0.8],
   ...['about', 'contact', 'faq', 'help', 'careers', 'partnership', 'advertise', 'press', 'agent-program', 'donor-program', 'become-a-seller', 'news'].map((s) => [`/${s}`, 'monthly', 0.5]),
   ...['privacy', 'terms', 'cookies', 'refund', 'cancellation', 'community-guidelines', 'code-of-conduct', 'accessibility', 'sitemap'].map((s) => [`/${s}`, 'yearly', 0.3])];
 async function sitemap() {
@@ -408,6 +455,10 @@ async function sitemap() {
   courses.forEach((c) => rows.push(url(`/courses/${c._id}`, c.postedAt, 'weekly', 0.7, c.image)));
   prod.forEach((p) => rows.push(url(`/marketplace/${p._id}`, p.postedAt, 'weekly', 0.6, httpsImg(p.image))));
   donors.forEach((d) => rows.push(url(`/donors/${d._id}`, null, 'monthly', 0.5)));
+  const FreelanceService = require('../models/FreelanceService');
+  const freelance = await take(async () => { const live = await require('../models/User').find({ status: 'active', _id: { $in: await FreelanceService.distinct('seller', { status: 'active' }) } }).distinct('_id'); return FreelanceService.find({ status: 'active', seller: { $in: live } }).select('seller updatedAt image').sort({ createdAt: -1 }).limit(5000).lean(); });
+  freelance.forEach((s) => rows.push(url(`/freelance/${s._id}`, s.updatedAt, 'weekly', 0.7, httpsImg(s.image))));
+  [...new Set(freelance.map((s) => String(s.seller)))].forEach((u) => rows.push(url(`/freelancer/${u}`, null, 'weekly', 0.5)));
   const posts = await take(() => require('../models/BlogPost').find({ status: 'published' }).select('slug updatedAt coverImage').sort({ publishedAt: -1 }).limit(5000).lean());
   posts.forEach((p) => rows.push(url(`/blog/${p.slug}`, p.updatedAt, 'monthly', 0.7, httpsImg(p.coverImage))));
   const teachers = await take(() => require('../models/TeacherProfile').find({ publicPortfolio: true, status: 'active' }).select('user updatedAt').limit(5000).lean());

@@ -2,14 +2,19 @@ const Setting = require('../models/Setting');
 
 // Real receipt math (spec 3A.2: gross amount, platform commission, gateway charges, tax, net
 // amount) — computed from a configurable Setting so Super Admin can change the rate without
-// code (3A.1), not hardcoded. Honesty note: gatewayCharges and taxAmount stay 0 until this app
-// is wired to a real payment gateway/tax engine (no gateway or tax provider is connected yet
-// anywhere in this codebase) — the fields exist and are wired into every receipt now so that
-// connecting one later only means changing this function, not every call site.
+// code (3A.1), not hardcoded.
 // The fee commission the Super Admin sets (Financial Management) is stored as
 // 'institution_fee_commission_percent'; older code reads 'fee_commission_percent', kept as a fallback.
 const KEY_ALIASES = { fee_commission_percent: ['institution_fee_commission_percent', 'fee_commission_percent'] };
-async function commissionRate(commissionSettingKey, session = null) {
+// context: what is being paid for ({ amount, country, category, institution, product }). A matching
+// Commission Rule beats the service's plain rate; a rule's fixed fee is turned into the same percent.
+async function commissionRate(commissionSettingKey, session = null, context = {}) {
+  const rules = require('../services/commissionRules.service');
+  const rule = await rules.bestRule(rules.serviceOf(commissionSettingKey), context, session);
+  if (rule) {
+    const extra = rule.fixedFee > 0 && context.amount > 0 ? (rule.fixedFee / context.amount) * 100 : 0;
+    return Math.min(100, Math.round((rule.percentage + extra) * 10000) / 10000);
+  }
   for (const key of KEY_ALIASES[commissionSettingKey] || [commissionSettingKey]) {
     const query = Setting.findOne({ key });
     if (session) query.session(session);
@@ -22,13 +27,15 @@ async function commissionRate(commissionSettingKey, session = null) {
   return 0;
 }
 
-async function computeReceiptAmounts(grossAmount, commissionSettingKey) {
-  const commissionRate_ = await commissionRate(commissionSettingKey);
+async function computeReceiptAmounts(grossAmount, commissionSettingKey, context = {}) {
+  const commissionRate_ = await commissionRate(commissionSettingKey, null, { amount: grossAmount, ...context });
 
   const platformCommission = Math.round((grossAmount * commissionRate_) / 100 * 100) / 100;
-  const gatewayCharges = 0;
-  const taxAmount = 0;
-  const netAmount = Math.round((grossAmount - platformCommission - gatewayCharges - taxAmount) * 100) / 100;
+  // Set by the Super Admin (Receipts). Both come out of CareerZ's commission, so the seller's net is unchanged.
+  const { taxPercent, gatewayFeePercent } = await require('../services/receipt.service').chargesConfig();
+  const gatewayCharges = Math.round((grossAmount * gatewayFeePercent) / 100 * 100) / 100;
+  const taxAmount = Math.round((platformCommission * taxPercent) / 100 * 100) / 100;
+  const netAmount = Math.round((grossAmount - platformCommission) * 100) / 100;
 
   return { grossAmount, platformCommission, gatewayCharges, taxAmount, netAmount };
 }

@@ -94,6 +94,10 @@ async function workContacts(userId) {
   sponsored.forEach((s) => { add(s.donor, 'sponsor', 'Scholarship sponsorship'); add(s.student, 'sponsored student', 'Scholarship sponsorship'); });
   const visas = await M('VisaCase').find({ consultant: { $ne: null }, $or: [{ consultant: userId }, { candidate: userId }, { hiringSide: userId }] }).populate('consultant', PEOPLE).populate('candidate', PEOPLE).populate('hiringSide', PEOPLE).lean();
   visas.forEach((v) => { add(v.consultant, 'visa consultant', 'Visa case'); add(v.candidate, 'candidate', 'Visa case'); add(v.hiringSide, 'employer', 'Visa case'); });
+  const freelance = await M('FreelanceOrder').find({ $or: [{ buyer: userId }, { seller: userId }], status: { $ne: 'cancelled' } }).populate('buyer', PEOPLE).populate('seller', PEOPLE).select('title buyer seller').limit(200).lean();
+  freelance.forEach((o) => { add(o.buyer, 'client', o.title); add(o.seller, 'freelancer', o.title); });
+  const proposals = await M('FreelanceProposal').find({ status: { $in: ['submitted', 'accepted'] }, $or: [{ client: userId }, { freelancer: userId }] }).populate('client', PEOPLE).populate('freelancer', PEOPLE).populate('job', 'title').limit(200).lean();
+  proposals.forEach((o) => { add(o.client, 'client', o.job?.title || 'Proposal'); add(o.freelancer, 'freelancer', o.job?.title || 'Proposal'); });
   return out;
 }
 async function workLinked(fromId, toId) {
