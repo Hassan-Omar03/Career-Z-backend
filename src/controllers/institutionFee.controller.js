@@ -575,7 +575,8 @@ const listInvoicesFiltered = asyncHandler(async (req, res) => {
 
 // GET /api/institution-fees/receipts/verify/:code — never exposes platform commission internals.
 const verifyReceipt = asyncHandler(async (req, res) => {
-  const fee = await Fee.findOne({ verifyCode: req.params.code }).populate('student', 'fullName').populate('institution', 'name');
+  // The QR code carries verifyCode; a person typing it in has the number printed on the receipt.
+  const fee = await Fee.findOne({ $or: [{ verifyCode: req.params.code }, { receiptNumber: req.params.code }] }).populate('student', 'fullName').populate('institution', 'name');
   if (!fee) throw new AppError('Receipt not found.', 404);
   const verifiedPayment = [...(fee.paymentHistory || [])].reverse().find((p) => p.verificationStatus === 'verified' || p.verifiedAt);
   return ok(res, {
