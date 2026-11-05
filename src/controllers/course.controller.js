@@ -78,32 +78,25 @@ const createCourse = asyncHandler(async (req, res) => {
     throw new AppError('Your Teacher account is pending Super Admin verification. You can browse the dashboard but cannot create a course until it is approved.', 403);
   }
 
-  const { title, description, institution, classSection, subject, level, language, price, currency, isFree } = req.body;
+  const { title, description, subject, level, language, price, currency, isFree } = req.body;
+  // An institute creates its own courses and assigns the teacher (POST /institutions/:id/courses).
+  // Here a teacher only creates their own independent course.
+  if (req.body.institution || req.body.classSection) throw new AppError('Your institute creates and assigns its courses. You can create your own independent course here.', 403);
   if (!title) throw new AppError('Title is required.', 422);
 
   const course = await Course.create({
     title,
     description,
     teacher: req.user._id,
-    institution: institution || null,
-    classSection: classSection || null,
+    institution: null,
+    classSection: null,
     subject,
     level,
     language,
     price: price || 0,
     currency: currency || 'USD',
-    // Institution subjects are assigned through the degree plan; they are never a public
-    // zero-price self-enrolment product. Independent teachers may still publish free courses.
-    isFree: institution ? false : (isFree !== undefined ? isFree : true)
+    isFree: isFree !== undefined ? isFree : true
   });
-
-  if (institution) {
-    await TeacherProfile.findOneAndUpdate(
-      { user: req.user._id },
-      { $addToSet: { institutions: institution } },
-      { upsert: true }
-    );
-  }
 
   return created(res, course);
 });

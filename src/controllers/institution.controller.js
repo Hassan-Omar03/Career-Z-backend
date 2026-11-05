@@ -858,6 +858,64 @@ const listInstitutionCourses = asyncHandler(async (req, res) => {
   return ok(res, courses);
 });
 
+// The institute creates a course and allots it to one of its teachers and a class. Institute
+// subjects are never a public zero-price product, so isFree stays false.
+const createInstitutionCourse = asyncHandler(async (req, res) => {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const text = (v) => (typeof v === 'string' ? v.trim() : '');
+  const title = text(req.body.title), subject = text(req.body.subject);
+  const { classSection, teacher } = req.body;
+  if (!title || !subject || !classSection || !teacher) throw new AppError('Course title, subject, class section and teacher are required.', 422);
+  if (title.length > 150 || subject.length > 150) throw new AppError('Keep the course title and subject under 150 characters.', 422);
+  const section = await ClassSection.findOne({ _id: classSection, institution: institution._id });
+  if (!section) throw new AppError('Select a class section from this institution.', 422);
+  const teacherLinked = await TeacherProfile.exists({ user: teacher, institutions: institution._id });
+  if (!teacherLinked) throw new AppError('Select a teacher linked to this institution.', 422);
+  if (await Course.exists({ institution: institution._id, classSection: section._id, title })) throw new AppError('This class already has a course with that title.', 409);
+  const course = await Course.create({
+    title, subject, description: text(req.body.description), teacher, institution: institution._id, classSection: section._id,
+    creditHours: Number(req.body.creditHours) || 3, academicTerm: text(req.body.academicTerm), price: 0, currency: 'PKR', isFree: false, published: true
+  });
+  await require('../utils/sectionEnrollment').enrollSectionStudents(course);
+  await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
+  await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);
+  return created(res, course, 'Course created and assigned to the teacher.');
+});
+
+// Who the institute has allotted to a course. Saving sets the whole list: new students are
+// enrolled, removed ones are dropped, and a completed enrollment is left as it is.
+async function instituteCourse(req) {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  assertOwnerOrStaff(institution, req.user._id);
+  const course = await Course.findOne({ _id: req.params.courseId, institution: institution._id });
+  if (!course) throw new AppError('Course not found for this institution.', 404);
+  return { institution, course };
+}
+const listCourseStudents = asyncHandler(async (req, res) => {
+  const { course } = await instituteCourse(req);
+  return ok(res, await Enrollment.find({ course: course._id, status: { $ne: 'dropped' } }).distinct('student'));
+});
+const allotCourseStudents = asyncHandler(async (req, res) => {
+  const { institution, course } = await instituteCourse(req);
+  if (!course.teacher) throw new AppError('Assign a teacher to this course first.', 422);
+  const list = req.body.students;
+  if (!Array.isArray(list) || list.length > 2000 || list.some((id) => !mongoose.isValidObjectId(id))) throw new AppError('Select the students for this course.', 422);
+  const wanted = [...new Set(list.map(String))];
+  const members = new Set((await family.students(institution._id)).map(String));
+  if (wanted.some((id) => !members.has(id))) throw new AppError('Select students from this institution.', 422);
+  const current = await Enrollment.find({ course: course._id }).select('student status').lean();
+  const active = new Set(current.filter((e) => e.status !== 'dropped').map((e) => String(e.student)));
+  const added = wanted.filter((id) => !active.has(id));
+  const removed = current.filter((e) => e.status === 'active' && !wanted.includes(String(e.student))).map((e) => e.student);
+  if (added.length) await Enrollment.bulkWrite(added.map((id) => ({ updateOne: { filter: { student: id, course: course._id }, update: { $set: { status: 'active' } }, upsert: true, setDefaultsOnInsert: true } })));
+  if (removed.length) await Enrollment.updateMany({ course: course._id, student: { $in: removed }, status: 'active' }, { $set: { status: 'dropped' } });
+  await Promise.all(added.map((id) => notify(id, { title: `Course assigned: ${course.title}`, body: 'Your institute added you to this course.', sentBy: req.user._id }).catch(() => {})));
+  return ok(res, { added: added.length, removed: removed.length, total: wanted.length }, 'Students saved for this course.');
+});
+
 const assignCourseAcademics = asyncHandler(async (req, res) => {
   const institution = await Institution.findById(req.params.id);
   if (!institution) throw new AppError('Institution not found.', 404);
@@ -1664,6 +1722,9 @@ module.exports = {
   updateTimetableEntry,
   deleteTimetableEntry,
   listInstitutionCourses,
+  createInstitutionCourse,
+  listCourseStudents,
+  allotCourseStudents,
   assignCourseAcademics,
   listInstitutionTeachers,
   listInstitutionStudents,

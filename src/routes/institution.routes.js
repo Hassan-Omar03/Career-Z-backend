@@ -71,6 +71,9 @@ router.post('/:id/class-sections', ctrl.createClassSection);
 router.patch('/:id/class-sections/:sectionId', ctrl.updateClassSection);
 router.post('/:id/programs', ctrl.createProgram);
 router.get('/:id/courses', ctrl.listInstitutionCourses);
+router.post('/:id/courses', ctrl.createInstitutionCourse);
+router.get('/:id/courses/:courseId/students', ctrl.listCourseStudents);
+router.put('/:id/courses/:courseId/students', ctrl.allotCourseStudents);
 router.patch('/:id/courses/:courseId/academic-assignment', ctrl.assignCourseAcademics);
 
 router.post('/:id/fees', ctrl.createFee);

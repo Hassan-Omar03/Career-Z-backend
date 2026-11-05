@@ -23,7 +23,13 @@ if (env.smtp.host) {
 // In development, or until the client configures SMTP credentials, emails are logged
 // to the console instead of failing the request. This keeps auth workflows testable
 // without a paid email provider (see Scope of Work: client provides email/SMS services).
+// Test runs and addresses that can never exist send nothing: real mail to them comes back as
+// bounces to the CareerZ inbox and harms the sender reputation of careerz.pk.
+const NOT_DELIVERABLE = /@(?:[^\s,>]+\.)?(?:test|local|localhost|invalid|example)>?$/i;
+const undeliverable = (to) => [].concat(to || []).join(",").split(",").every((a) => NOT_DELIVERABLE.test(a.trim()));
+
 async function sendEmail({ to, subject, html, text }) {
+  if (process.env.NODE_ENV === "test" || undeliverable(to)) return { simulated: true };
   if (!transporter) {
     console.log('\n[EMAIL:DEV-MODE] ---------------------------------');
     console.log(`To: ${to}`);
@@ -84,4 +90,5 @@ function noticeEmailTemplate({ heading, body, footer, ctaUrl, ctaLabel }) {
   </div>`;
 }
 
-module.exports = { sendEmail, otpEmailTemplate, noticeEmailTemplate };
+module.exports = {
+  undeliverable, sendEmail, otpEmailTemplate, noticeEmailTemplate };
