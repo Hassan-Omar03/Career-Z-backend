@@ -8,6 +8,8 @@ const svc = require('../services/institutionInvite.service');
 // Institute email invitations (teachers, staff, students).
 // The person invited: open the link, create the account or accept.
 const tokenLimit = rateLimit({ windowMs: 15 * 60 * 1000, max: 60, standardHeaders: true, legacyHeaders: false });
+router.get('/my-invitations', protect, wrap(async (req, res) => ok(res, await svc.mine(req.user))));
+router.post('/my-invitations/:id/:decision', protect, wrap(async (req, res) => ok(res, await svc.respondMine(req.user, req.params.id, req.params.decision))));
 router.get('/invites/:token', tokenLimit, wrap(async (req, res) => ok(res, await svc.preview(req.params.token))));
 router.post('/invites/:token/signup', tokenLimit, wrap(async (req, res) => created(res, await svc.signup(req.params.token, req.body || {}, { deviceInfo: req.headers['user-agent'], ip: req.ip }), 'Welcome to CareerZ.')));
 router.post('/invites/:token/accept', protect, wrap(async (req, res) => ok(res, await svc.accept(req.user, req.params.token), 'You joined the institute.')));

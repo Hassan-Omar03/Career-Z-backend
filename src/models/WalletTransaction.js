@@ -12,6 +12,8 @@ const walletTransactionSchema = new mongoose.Schema(
     // gateway id (nowPaymentsId, or the JazzCash txnRefNo), so every internal wallet-to-wallet move
     // (transfers, salary payouts) is independently searchable even though no gateway is involved.
     reference: { type: String, default: null, index: true },
+    // The id the app sends with a transfer or withdrawal; the same id again returns the first result.
+    requestKey: { type: String, default: null },
     status: { type: String, enum: ['pending', 'completed', 'rejected'], default: 'completed' },
     counterparty: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null }, // for transfers
     note: { type: String, default: '' },
@@ -33,6 +35,7 @@ const walletTransactionSchema = new mongoose.Schema(
 );
 
 // Null values on transfers/withdrawals are excluded; a gateway transaction can credit once.
+walletTransactionSchema.index({ user: 1, type: 1, requestKey: 1 }, { unique: true, partialFilterExpression: { requestKey: { $type: 'string' } } });
 walletTransactionSchema.index({ paddleTransactionId: 1 }, {
   unique: true,
   partialFilterExpression: { paddleTransactionId: { $type: 'string' } }

@@ -1,9 +1,21 @@
 require('dotenv').config();
 
+const CLIENT_ORIGINS = String(process.env.CLIENT_URL || 'http://localhost:5500').split(',').map((v) => v.trim().replace(/\/+$/, '')).filter(Boolean);
+if (!CLIENT_ORIGINS.length) CLIENT_ORIGINS.push('http://localhost:5500');
+
+// Production must never sign logins with the development fallback secrets.
+if (process.env.NODE_ENV === 'production') {
+  const missing = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'].filter((k) => !String(process.env[k] || '').trim());
+  if (missing.length) throw new Error(`Missing required production settings: ${missing.join(', ')}. The server will not start without them.`);
+}
+
 module.exports = {
   port: process.env.PORT || 5000,
   nodeEnv: process.env.NODE_ENV || 'development',
-  clientUrl: process.env.CLIENT_URL || 'http://localhost:5500',
+  // CLIENT_URL may list several allowed origins separated by commas (CORS needs all of them);
+  // links in emails, QR codes and receipts use only the first one.
+  clientUrl: CLIENT_ORIGINS[0],
+  clientOrigins: CLIENT_ORIGINS,
   // This backend's own public URL — needed to tell NOWPayments where to send its IPN webhook.
   // Left blank in local dev (NOWPayments can't reach localhost anyway); set it in production, or
   // configure a default IPN URL directly in the NOWPayments dashboard instead.

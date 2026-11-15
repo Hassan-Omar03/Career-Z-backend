@@ -15,6 +15,8 @@ const enrollmentSchema = new mongoose.Schema(
     // course's own completionRules.weights — this is "real" course completion, not just content
     // consumption. Recomputed by utils/courseProgress.js on every contributing event.
     overallScore: { type: Number, default: 0 },
+    // How overallScore was made: each part's percentage, count and weight (the same numbers the student sees).
+    scoreParts: { type: mongoose.Schema.Types.Mixed, default: null },
     completionStatus: { type: String, enum: ['in_progress', 'pending_approval', 'completed'], default: 'in_progress' },
     enrolledAt: { type: Date, default: Date.now },
     completedAt: { type: Date, default: null }

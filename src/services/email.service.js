@@ -39,13 +39,14 @@ async function sendEmail({ to, subject, html, text }) {
     return { simulated: true };
   }
 
-  return transporter.sendMail({
-    from: env.smtp.from,
-    to,
-    subject,
-    html,
-    text
-  });
+  try {
+    return await transporter.sendMail({ from: env.smtp.from, to, subject, html, text });
+  } catch (err) {
+    // The person sees a plain message; the mail server's own error stays in the server log.
+    console.error('[EMAIL] send failed:', err?.responseCode || '', String(err?.message || err).slice(0, 300));
+    const AppError = require('../utils/AppError');
+    throw new AppError('We could not send the email right now. Please try again in a few minutes.', 503);
+  }
 }
 
 // Branded HTML wrapper used for all transactional emails (OTP codes, etc.)

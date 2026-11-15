@@ -52,10 +52,10 @@ async function computeComponents(studentId, courseId) {
   const attendancePct = totalSessions > 0 ? (attendedSessions / totalSessions) * 100 : 0;
 
   return {
-    lessons: { pct: lessonsPct, applicable: totalLessons > 0 },
-    assignments: { pct: assignmentsPct, applicable: totalAssignments > 0 },
-    tests: { pct: testsPct, applicable: totalExams > 0 },
-    attendance: { pct: attendancePct, applicable: totalSessions > 0 },
+    lessons: { pct: lessonsPct, applicable: totalLessons > 0, done: completedLessonsCount, total: totalLessons },
+    assignments: { pct: assignmentsPct, applicable: totalAssignments > 0, done: gradedAssignments, total: totalAssignments },
+    tests: { pct: testsPct, applicable: totalExams > 0, done: gradedExams, total: totalExams },
+    attendance: { pct: attendancePct, applicable: totalSessions > 0, done: attendedSessions, total: totalSessions },
     lessonsPctRaw: lessonsPct
   };
 }
@@ -99,6 +99,8 @@ async function recalculateEnrollmentProgress(studentId, courseId) {
 
   enrollment.progressPercent = Math.round(components.lessonsPctRaw);
   enrollment.overallScore = overallScore;
+  enrollment.scoreParts = Object.fromEntries(['lessons', 'assignments', 'tests', 'attendance'].map((k) => [k, { pct: Math.round(components[k].pct), done: components[k].done, total: components[k].total, weight: components[k].applicable ? Number(weights[k]) || 0 : 0 }]));
+  enrollment.markModified('scoreParts');
 
   if (meetsAllRequirements && enrollment.completionStatus !== 'completed') {
     if (course.completionRules?.requireTeacherApproval) {

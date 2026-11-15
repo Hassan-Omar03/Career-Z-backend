@@ -36,6 +36,9 @@ async function verifiedInstitutions(row){
 async function requireSchoolVerification(parent,student,institution){
  const row=await link(parent,student),ids=await institutions(student),verified=await verifiedInstitutions(row);
  const required=institution?[String(institution)]:ids;
+  // Fail closed once the child has left every school: the old school's records stay private. A child who
+  // never belonged to a school (independent tutoring only) has no school records, so the guardian is not blocked.
+  if(!required.length&&await require('../models/StudentInstitutionMembership').exists({student}))throw new AppError('School guardian verification is pending. Open My Children to verify with the school.',403);
  if(required.some(id=>!ids.includes(id)||!verified.includes(id)))throw new AppError('School guardian verification is pending. Open My Children, submit guardian documents and ask the school to approve them before viewing private records.',403);
  return row;
 }

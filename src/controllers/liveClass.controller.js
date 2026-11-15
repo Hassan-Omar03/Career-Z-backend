@@ -77,16 +77,19 @@ const schedule = asyncHandler(async (req, res) => {
 });
 
 const institutionList = asyncHandler(async (req, res) => {
+  await endOverdue({ institution: req.params.institutionId });
   const institution = await Institution.findById(req.params.institutionId);
   assertInstitutionManager(institution, req.user._id);
   return ok(res, await populated(LiveClassSession.find({ institution: institution._id }).sort({ scheduledStart: -1 })));
 });
 
 const teacherList = asyncHandler(async (req, res) => {
+  await endOverdue({ teacher: req.user._id });
   return ok(res, await populated(LiveClassSession.find({ teacher: req.user._id }).sort({ scheduledStart: -1 })));
 });
 
 const studentList = asyncHandler(async (req, res) => {
+  await endOverdue({ course: { $in: await Enrollment.find({ student: req.user._id, status: { $ne: 'dropped' } }).distinct('course') } });
   const enrollments = await Enrollment.find({ student: req.user._id, status: { $ne: 'dropped' } }).select('course');
   const courseIds = enrollments.map((row) => row.course);
   return ok(res, await populated(LiveClassSession.find({ course: { $in: courseIds }, status: { $ne: 'cancelled' } }).sort({ scheduledStart: -1 })));
@@ -113,6 +116,7 @@ const start = asyncHandler(async (req, res) => {
 
 const join = asyncHandler(async (req, res) => {
   const session = await LiveClassSession.findById(req.params.id);
+  if (session?.status === 'live' && session.scheduledEnd && session.scheduledEnd < new Date(Date.now() - AUTO_END_AFTER_MS)) { await endOverdue({ _id: session._id }); throw new AppError('This live class has ended.', 409); }
   if (!session || session.status !== 'live') throw new AppError('This live class has not started or has ended.', 409);
   if (session.mode === 'physical') throw new AppError('Physical classes use on-campus attendance.', 409);
   const enrollment = await Enrollment.findOne({ student: req.user._id, course: session.course, status: { $ne: 'dropped' } });
@@ -145,12 +149,8 @@ const leave = asyncHandler(async (req, res) => {
   return ok(res, null, 'Left live class.');
 });
 
-const end = asyncHandler(async (req, res) => {
-  const session = await LiveClassSession.findById(req.params.id);
-  if (!session) throw new AppError('Live class not found.', 404);
-  if (String(session.teacher) !== String(req.user._id)) throw new AppError('Only the assigned teacher can end this class.', 403);
-  if (session.status === 'ended' && await Attendance.exists({liveClassSession:session._id})) return ok(res,session,'Attendance already recorded.');
-  if (!['live','ended'].includes(session.status)) throw new AppError('This class is not live.',409);
+// Ends a class and records attendance; used by the teacher's End button and by the automatic end.
+async function finishSession(session, actorId) {
   const wasLive = session.status === 'live';
   const endedAt = session.endedAt || new Date();
   session.participants.forEach((participant) => {
@@ -184,10 +184,31 @@ const end = asyncHandler(async (req, res) => {
       reason: participant ? `Joined live class for ${participant.durationMinutes} minute(s).` : 'Did not join the live class.'
     };
   });
-  await Attendance.findOneAndUpdate({liveClassSession:session._id},{$setOnInsert:{liveClassSession:session._id,institution:session.institution,course:session.course,classSection:session.classSection,date:session.startedAt||session.scheduledStart,markedBy:req.user._id,records}},{upsert:true,new:true,runValidators:true});
+  await Attendance.findOneAndUpdate({liveClassSession:session._id},{$setOnInsert:{liveClassSession:session._id,institution:session.institution,course:session.course,classSection:session.classSection,date:session.startedAt||session.scheduledStart,markedBy:actorId,records}},{upsert:true,new:true,runValidators:true});
   await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(session.course);
   emitToLiveVideoRoom(session._id, 'live-video:ended', { sessionId: String(session._id), endedAt });
-  await notifyCourseStudents(session.course, { title: `Live class ended: ${session.title}`, body: 'Your attendance has been recorded.' }, req.user._id);
+  await notifyCourseStudents(session.course, { title: `Live class ended: ${session.title}`, body: 'Your attendance has been recorded.' }, actorId);
+  return session;
+}
+
+// A class still marked live well after its scheduled end is closed with attendance recorded, so old
+// classes never stay "Live Now" when the teacher forgot to press End.
+const AUTO_END_AFTER_MS = 30 * 60000;
+async function endOverdue(filter = {}) {
+  const overdue = await LiveClassSession.find({ ...filter, status: 'live', scheduledEnd: { $lt: new Date(Date.now() - AUTO_END_AFTER_MS) } }).limit(50);
+  for (const session of overdue) {
+    session.endedAt = session.scheduledEnd;
+    await finishSession(session, session.teacher).catch(() => {});
+  }
+}
+
+const end = asyncHandler(async (req, res) => {
+  const session = await LiveClassSession.findById(req.params.id);
+  if (!session) throw new AppError('Live class not found.', 404);
+  if (String(session.teacher) !== String(req.user._id)) throw new AppError('Only the assigned teacher can end this class.', 403);
+  if (session.status === 'ended' && await Attendance.exists({liveClassSession:session._id})) return ok(res,session,'Attendance already recorded.');
+  if (!['live','ended'].includes(session.status)) throw new AppError('This class is not live.',409);
+  await finishSession(session, req.user._id);
   return ok(res, session, 'Live class ended and attendance recorded.');
 });
 

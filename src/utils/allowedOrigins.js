@@ -5,7 +5,7 @@ const env = require('../config/env');
 const allowedOrigins = new Set([
   'https://career-z-zeta.vercel.app',
   ...(env.nodeEnv !== 'production' ? ['http://localhost:5173', 'http://localhost:5500'] : []),
-  ...env.clientUrl.split(',').map((value) => value.trim().replace(/\/+$/, '')).filter(Boolean)
+  ...env.clientOrigins
 ]);
 
 // Vite's dev server picks the next free port (5174, 5175, ...) whenever 5173 is

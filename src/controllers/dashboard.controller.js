@@ -56,7 +56,12 @@ const summary = asyncHandler(async (req, res) => {
     { ok: !!user.profilePhoto, label: 'Add profile photo' },
     { ok: !!user.phone, label: 'Add phone number' }
   ];
-  const profilePercent = Math.round((profileChecks.filter((c) => c.ok).length / profileChecks.length) * 100);
+  // The same measure the account gate uses (the role profile), so a completed profile reads 100%,
+  // not 25%; the checks above stay as tips. Only when no role profile exists do the tips decide.
+  const roleProfiles = await require('../models/UserProfile').find({ user: user._id }).select('completed percent').lean();
+  const profilePercent = roleProfiles.length
+    ? Math.max(...roleProfiles.map((p) => (p.completed ? 100 : Number(p.percent) || 0)))
+    : Math.round((profileChecks.filter((c) => c.ok).length / profileChecks.length) * 100);
 
   return ok(res, {
     stats,

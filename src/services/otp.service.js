@@ -49,9 +49,9 @@ async function verifyOtp(user, purpose, code) {
   const match = await bcrypt.compare(code, record.codeHash);
   if (!match) return false;
 
-  record.consumed = true;
-  await record.save();
-  return true;
+  // Two requests with the same code: only the one that flips consumed from false wins.
+  const claimed = await VerificationCode.findOneAndUpdate({ _id: record._id, consumed: false }, { $set: { consumed: true } }, { new: true });
+  return Boolean(claimed);
 }
 
 module.exports = { issueOtp, verifyOtp };

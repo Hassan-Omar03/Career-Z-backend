@@ -7,12 +7,12 @@ const NEXT = { requested: ['processing', 'paid', 'rejected'], processing: ['paid
 
 // Moves `Model` document `id` to `status` in one conditional write; a parallel or repeated
 // decision finds the status already changed and gets a 409.
-async function advancePayout(Model, id, status, extra = {}) {
+async function advancePayout(Model, id, status, extra = {}, session = null) {
   if (!Object.prototype.hasOwnProperty.call(NEXT, status) || status === 'requested') throw new AppError('Invalid status.', 422);
   const from = Object.keys(NEXT).filter((s) => NEXT[s].includes(status));
-  const updated = await Model.findOneAndUpdate({ _id: id, status: { $in: from } }, { $set: { status, ...extra } }, { new: true });
+  const updated = await Model.findOneAndUpdate({ _id: id, status: { $in: from } }, { $set: { status, ...extra } }, { new: true, session });
   if (updated) return updated;
-  const current = await Model.findById(id).select('status');
+  const current = await Model.findById(id).select('status').session(session);
   if (!current) throw new AppError('Withdrawal not found.', 404);
   throw new AppError(`This withdrawal is already ${current.status}; it cannot be moved to ${status}.`, 409);
 }

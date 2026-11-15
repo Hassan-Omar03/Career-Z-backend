@@ -166,7 +166,8 @@ test('analytics: views, applied, qualified, hiring time, cost per hire, AI match
   assert.equal(d.body.data.applications, 2);
   assert.equal(d.body.data.shortlisted, 1);
   assert.equal(d.body.data.verification, 'approved');
-  assert.ok(d.body.data.trustScore > 0);
+  // No hires, salary records or reviews yet: shown as New (audit N-08), not a number made from verification alone.
+  assert.equal(d.body.data.trustScore, null);
   expect(await api('Pay', 'GET', `/jobs/mine/analytics?employer=${u.Employer._id}`), 200, 'finance staff see reports');
   expect(await api('Cand', 'GET', '/jobs/mine/analytics'), 403);
 });

@@ -37,7 +37,8 @@ const createBackup = asyncHandler(async (req, res) => {
 
     for (const name of modelNames) {
       const Model = mongoose.model(name);
-      const docs = await Model.find().lean();
+      // The raw collection, so fields hidden from normal queries (payout account, shipping profile…) are kept.
+      const docs = await Model.collection.find({}).toArray();
       const json = JSON.stringify(docs, null, 2);
       const filePath = path.join(folderPath, `${name}.json`);
       fs.writeFileSync(filePath, json, 'utf8');
@@ -127,7 +128,9 @@ const restoreBackupUploads = asyncHandler(async (req, res) => {
       for (const ref of entry.usedBy) {
         if (!mongoose.modelNames().includes(ref.collection)) continue;
         const Model = mongoose.model(ref.collection);
-        const doc = await Model.findById(ref.id).lean();
+        if (!mongoose.isValidObjectId(ref.id)) continue;
+        // Read every field, including hidden ones, so replacing the document loses nothing.
+        const doc = await Model.collection.findOne({ _id: new mongoose.Types.ObjectId(String(ref.id)) });
         if (!doc) continue;
         const { _id, ...rest } = backupFilesService.replaceDeep(doc, entry.url, newUrl);
         await Model.collection.replaceOne({ _id: doc._id }, { _id: doc._id, ...rest });

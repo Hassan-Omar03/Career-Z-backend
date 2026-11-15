@@ -259,6 +259,17 @@ async function saveProfile(user, role, input = {}, { complete = false } = {}) {
     await require('../models/StudentProfile').updateOne({user:user._id},{$set:academic},{runValidators:true});
     if(fields.fullName)user.fullName=fields.fullName;if(fields.contactNumber!==undefined)user.phone=fields.contactNumber;if(fields.profilePhoto!==undefined)user.profilePhoto=fields.profilePhoto;await user.save();
   }
+  if(role!=='student'){
+    // The business name, phone and city given at the gate are the same ones the profile, settings and
+    // store card read from the account, so they are copied there instead of being asked for again.
+    const fields=profile.fields||{};const set={};
+    const business=fields.companyName||fields.agencyName||fields.businessName||fields.organizationName;
+    if(business)set.companyName=String(business).slice(0,200);
+    const phone=fields.contactNumber||fields.officialContactNumber;if(phone)set.phone=String(phone).slice(0,40);
+    if(fields.city)set.city=String(fields.city).slice(0,120);
+    if(fields.country)set.country=String(fields.country).slice(0,120);
+    if(Object.keys(set).length)await User.updateOne({_id:user._id},{$set:set});
+  }
   if (profile.completed && !wasComplete) await notifyUser(user._id, 'Your profile is complete.', 'Your profile is complete. You can now access your dashboard.');
   // Changing verified identity details after approval sends the account back to the admin.
   if (sensitiveChanged.length) {

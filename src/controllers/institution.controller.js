@@ -277,7 +277,8 @@ const addStaff = asyncHandler(async (req, res) => {
   assertInstitutionVerified(institution);
 
   const { userId, role, permissions, department, designation } = req.body;
-  if (!userId || !role) throw new AppError('userId and role are required.', 422);
+  if (!userId) throw new AppError('Choose the staff member: search their name or email and pick them from the list.', 422);
+  if (!role) throw new AppError('Choose a role for the staff member.', 422);
   const staffRoles = require('../utils/staffRoles');
   staffRoles.roleOrThrow(role, AppError);
   const granted = staffRoles.permissionsFor(role, permissions, AppError);
@@ -876,7 +877,8 @@ const createInstitutionCourse = asyncHandler(async (req, res) => {
   if (await Course.exists({ institution: institution._id, classSection: section._id, title })) throw new AppError('This class already has a course with that title.', 409);
   const course = await Course.create({
     title, subject, description: text(req.body.description), teacher, institution: institution._id, classSection: section._id,
-    creditHours: Number(req.body.creditHours) || 3, academicTerm: text(req.body.academicTerm), price: 0, currency: 'PKR', isFree: false, published: true
+    creditHours: Number(req.body.creditHours) || 3, academicTerm: text(req.body.academicTerm), price: 0, currency: 'PKR', isFree: false, published: true,
+    certificateEnabled: req.body.certificateEnabled === true
   });
   await require('../utils/sectionEnrollment').enrollSectionStudents(course);
   await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
@@ -933,7 +935,11 @@ const assignCourseAcademics = asyncHandler(async (req, res) => {
   course.teacher = teacher;
   course.creditHours = Number(creditHours) || 3;
   course.academicTerm = String(academicTerm || '').trim();
+  const certificateTurnedOn = req.body.certificateEnabled === true && !course.certificateEnabled;
+  if (typeof req.body.certificateEnabled === 'boolean') course.certificateEnabled = req.body.certificateEnabled;
   await course.save();
+  // Students who already finished get their certificate as soon as certificates are switched on.
+  if (certificateTurnedOn) await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   await require('../utils/sectionEnrollment').enrollSectionStudents(course);
   await notify(teacher, { title: `Course assigned: ${course.title}`, body: `${course.subject} · ${section.name} · ${section.academicYear || 'Academic session not set'}`, sentBy: req.user._id }).catch(() => {});
   await course.populate([{ path: 'teacher', select: 'fullName email' }, { path: 'classSection', select: 'name academicYear' }]);

@@ -200,6 +200,26 @@ async function accept(user, token) {
   return join(inv, user._id);
 }
 
+// The signed-in person's own open invitations (matched by their account email), shown in the app
+// so a missed email never leaves an invitation unseen.
+async function mine(user) {
+  const now = new Date();
+  await Invite.updateMany({ email: String(user.email).toLowerCase(), status: 'sent', expiresAt: { $lt: now } }, { $set: { status: 'expired' } });
+  const rows = await Invite.find({ email: String(user.email).toLowerCase(), status: 'sent', expiresAt: { $gte: now } }).populate('institution', 'name city type').populate('classSection', 'name').sort({ createdAt: -1 }).lean();
+  return rows.map((i) => ({ _id: i._id, institution: i.institution, kind: i.kind, role: i.kind === 'staff' ? staffRoles.STAFF_ROLES[i.role]?.label || i.role : i.kind, designation: i.designation, department: i.department, classSection: i.classSection?.name || '', message: i.message, expiresAt: i.expiresAt }));
+}
+async function respondMine(user, inviteId, decision) {
+  if (!mongoose.isValidObjectId(inviteId)) throw fail('Invitation not found.', 404);
+  const inv = await Invite.findOne({ _id: inviteId, email: String(user.email).toLowerCase() }).populate('institution', 'name');
+  if (!inv) throw fail('Invitation not found.', 404);
+  if (inv.status === 'sent' && inv.expiresAt < new Date()) { inv.status = 'expired'; await inv.save(); }
+  usable(inv);
+  if (decision === 'accept') return join(inv, user._id);
+  if (decision !== 'decline') throw fail('Choose accept or decline.');
+  inv.status = 'declined'; await inv.save();
+  await notify(inv.invitedBy, { title: `${user.fullName} declined the invitation from ${inv.institution?.name || 'your institute'}`, link: '/dashboard' }).catch(() => {});
+  return { declined: true };
+}
 // New person: creates the account from the invitation and joins in one step.
 async function signup(token, body = {}, meta = {}) {
   const inv = await byToken(token);
@@ -224,4 +244,4 @@ async function signup(token, body = {}, meta = {}) {
   return { ...result, user: fresh.toSafeJSON(), permissions: fresh.permissions(), ...tokens };
 }
 
-module.exports = { send, list, resend, cancel, preview, accept, signup };
+module.exports = { send, list, resend, cancel, preview, accept, signup, mine, respondMine };

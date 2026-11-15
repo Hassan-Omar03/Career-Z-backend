@@ -154,6 +154,7 @@ const updateCourse = asyncHandler(async (req, res) => {
   if (!course) throw new AppError('Course not found.', 404);
   assertTeacherOwnsCourse(course, req.user._id);
 
+  const certificateTurnedOn = req.body.certificateEnabled === true && !course.certificateEnabled;
   const allowed = ['title', 'description', 'subject', 'level', 'language', 'price', 'currency', 'isFree', 'thumbnail', 'published', 'certificateEnabled'];
   allowed.forEach((f) => {
     if (req.body[f] !== undefined) course[f] = req.body[f];
@@ -174,6 +175,7 @@ const updateCourse = asyncHandler(async (req, res) => {
 
   if (course.approvalWorkflow === 'staged') { course.published = false; course.approvalStatus = 'draft'; }
   await course.save();
+  if (certificateTurnedOn) await require('../utils/courseProgress').recalculateEnrollmentProgressForCourse(course._id).catch(() => {});
   await require('../utils/sectionEnrollment').enrollSectionStudents(course);
   // Changing the rules can move students in either direction (stricter rules reopen someone who
   // was done under the old ones; looser rules complete someone who was blocked under the old ones).
@@ -762,7 +764,9 @@ const startExam = asyncHandler(async (req, res) => {
   if (attempt && attempt.status !== 'in_progress') throw new AppError('You already submitted this exam.', 409);
   const examControls = require('../services/examControls.service');
   if (!attempt) {
-    const expiresAt = exam.durationMinutes > 0 ? new Date(now.getTime() + exam.durationMinutes * 60000) : exam.closesAt;
+    const byDuration = exam.durationMinutes > 0 ? new Date(now.getTime() + exam.durationMinutes * 60000) : null;
+    // The attempt ends at its duration or at the exam's closing time, whichever comes first.
+    const expiresAt = byDuration && exam.closesAt ? new Date(Math.min(byDuration.getTime(), exam.closesAt.getTime())) : (byDuration || exam.closesAt);
     // Each student gets their own paper (random subset / question order / option order).
     const paper = examControls.buildAttemptPaper(exam);
     attempt = await ExamSubmission.create({ exam: exam._id, student: req.user._id, status: 'in_progress', startedAt: now, expiresAt: expiresAt || null, answers: [], ...paper, startIp: examControls.clientIp(req), startUserAgent: String(req.headers?.['user-agent'] || '').slice(0, 300) });
@@ -825,6 +829,7 @@ const submitExam = asyncHandler(async (req, res) => {
   if (!existing) throw new AppError('Start the exam before submitting it.', 409);
   if (existing.status !== 'in_progress') throw new AppError('You already submitted this exam.', 409);
   if (existing.expiresAt && Date.now() > existing.expiresAt.getTime() + 30000) throw new AppError('Your exam time has expired.', 409);
+  if (exam.closesAt && Date.now() > exam.closesAt.getTime() + 30000) throw new AppError('This exam has closed.', 409);
 
   const { answers } = req.body;
   if (!Array.isArray(answers)) throw new AppError('answers array is required.', 422);

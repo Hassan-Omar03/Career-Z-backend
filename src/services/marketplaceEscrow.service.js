@@ -208,8 +208,12 @@ async function markRefunded(admin, id, { reference }) {
 async function adminEscrow() {
   await autoRelease();
   const rows = await Order.find({ 'escrow.status': { $in: ['held', 'disputed', 'refund_due'] } }).populate('product', 'title').populate('buyer', 'fullName email phone').populate('seller', 'fullName email phone').sort({ updatedAt: -1 }).limit(200).lean();
-  const totals = rows.reduce((t, o) => { t[o.escrow.status] = (t[o.escrow.status] || 0) + o.totalPrice; return t; }, {});
-  return { rows, totals };
+  // Totals come from every open order and are kept apart by currency (PKR and USD never added together).
+  const sums = await Order.aggregate([{ $match: { 'escrow.status': { $in: ['held', 'disputed', 'refund_due'] } } }, { $group: { _id: { status: '$escrow.status', currency: { $ifNull: ['$currency', 'PKR'] } }, amount: { $sum: '$totalPrice' }, orders: { $sum: 1 } } }]);
+  const totals = {};
+  const counts = {};
+  for (const s of sums) { (totals[s._id.status] = totals[s._id.status] || {})[s._id.currency] = s.amount; counts[s._id.status] = (counts[s._id.status] || 0) + s.orders; }
+  return { rows, totals, counts };
 }
 
 // ---------------------------------------------------------------- digital products (SDRPS)

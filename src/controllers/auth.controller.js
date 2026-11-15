@@ -72,7 +72,9 @@ const register = asyncHandler(async (req, res) => {
   require('../services/plugins.service').emit('user.registered', { userId: user._id, fullName: user.fullName, role, subtype: subtype || '', country: user.country, city: user.city });
   await VerificationHistory.create({ user: user._id, role, request: request._id, previousStatus: '', newStatus: 'awaiting_documents', remarks: 'Account registered.' });
 
-  await otpService.issueOtp(user, 'email_verify');
+  // The account is already created; a mail problem must not turn that into an error. The person can
+  // ask for the code again from the onboarding page.
+  const verificationSent = await otpService.issueOtp(user, 'email_verify').then(() => true).catch(() => false);
 
   const tokens = await tokenService.issueTokenPair(user, {
     deviceInfo: req.headers['user-agent'],

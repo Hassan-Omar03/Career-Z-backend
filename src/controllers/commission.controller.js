@@ -140,13 +140,17 @@ const updateWithdrawalStatus = asyncHandler(async (req, res) => {
   await require('../utils/platformFinance').assertPlatformFinance(req.user);
   const { status } = req.body;
   // The receipt was generated at request time (shown to the agent then) and is kept as is.
-  const withdrawal = await require('../utils/payoutStatus').advancePayout(Withdrawal, req.params.id, status,
-    status === 'paid' || status === 'rejected' ? { processedAt: new Date() } : {});
-  if (status === 'paid') {
-    await Commission.updateMany({ _id: { $in: withdrawal.commissions }, withdrawal: withdrawal._id }, { $set: { status: 'paid' } });
-  } else if (status === 'rejected') {
-    await Commission.updateMany({ _id: { $in: withdrawal.commissions }, withdrawal: withdrawal._id }, { $set: { withdrawal: null } });
-  }
+  // One transaction: if the commission update fails, the withdrawal keeps its old status and can be retried.
+  const withdrawal = await require('mongoose').connection.transaction(async (session) => {
+    const w = await require('../utils/payoutStatus').advancePayout(Withdrawal, req.params.id, status,
+      status === 'paid' || status === 'rejected' ? { processedAt: new Date() } : {}, session);
+    if (status === 'paid') {
+      await Commission.updateMany({ _id: { $in: w.commissions }, withdrawal: w._id }, { $set: { status: 'paid' } }, { session });
+    } else if (status === 'rejected') {
+      await Commission.updateMany({ _id: { $in: w.commissions }, withdrawal: w._id }, { $set: { withdrawal: null } }, { session });
+    }
+    return w;
+  });
 
   const WITHDRAWAL_NOTIFY_TITLE = {
     requested: `Withdrawal requested: ${withdrawal.currency} ${withdrawal.amount}`,

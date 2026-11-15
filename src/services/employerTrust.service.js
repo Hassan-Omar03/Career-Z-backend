@@ -216,9 +216,13 @@ async function trustScore(employerId) {
   ];
   // Factors without data yet are left out, so a new employer is not marked down for being new.
   const counted = factors.filter((f) => f.hasData);
+  // Verification and a clean record alone do not make a score: until hiring, salary or reviews give
+  // real data, the employer is shown as New instead of a misleading 100/100.
+  const activity = counted.filter((f) => !['verified', 'complaints', 'scamFree'].includes(f.key));
   const max = counted.reduce((s, f) => s + f.max, 0);
-  const score = max ? Math.round(100 * counted.reduce((s, f) => s + f.points, 0) / max) : 0;
-  return { score, level: score >= 80 ? 'High' : score >= 55 ? 'Good' : score >= 35 ? 'Fair' : 'Low', factors, reviewCount: reviews.length, averageRating: avgRating === null ? null : Number(avgRating.toFixed(1)), sanction };
+  const score = activity.length && max ? Math.round(100 * counted.reduce((s, f) => s + f.points, 0) / max) : null;
+  const level = score === null ? 'New' : score >= 80 ? 'High' : score >= 55 ? 'Good' : score >= 35 ? 'Fair' : 'Low';
+  return { score, level, insufficientData: score === null, factors, reviewCount: reviews.length, averageRating: avgRating === null ? null : Number(avgRating.toFixed(1)), sanction };
 }
 
 // Public: the company's trust score and published reviews (shown to job seekers).

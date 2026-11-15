@@ -10,6 +10,16 @@ const { notify, notifyAdmins } = require('../services/notification.service');
 const { generateTransactionId } = require('../utils/transactionId');
 const payoutAccount = require('../utils/payoutAccount');
 
+// A transfer or withdrawal may be sent twice (double click, a retry after a dropped connection).
+// The app sends one id per action; the same id again gets the first result instead of a second move.
+const requestKeyOf = (req) => {
+  const v = req.body?.requestId ?? req.headers['idempotency-key'];
+  if (v == null || v === '') return null;
+  if (typeof v !== 'string' || !/^[A-Za-z0-9_-]{8,80}$/.test(v)) throw new AppError('Invalid request id.', 422);
+  return v;
+};
+const isDuplicateKey = (err) => err?.code === 11000 || /E11000/.test(String(err?.message || ''));
+
 // GET/PUT /api/wallet/payout-account — the bank account or mobile wallet withdrawals go to.
 const getPayoutAccount = asyncHandler(async (req, res) => {
   const user = await User.findById(req.user._id).select('+payoutAccount roles');
@@ -79,8 +89,12 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
   }
   const payoutMethod = account.method;
   const accountTitle = account.accountTitle;
+  const requestKey = requestKeyOf(req);
+  const repeat = requestKey && await WalletTransaction.findOne({ user: req.user._id, type: 'withdrawal', requestKey });
+  if (repeat) return ok(res, { ...repeat.toObject(), id: repeat.id, reference: repeat.reference, accountTitle, repeated: true }, `Withdrawal already requested. Receipt ${repeat.reference}.`);
   const reference = generateTransactionId();
-  const tx = await mongoose.connection.transaction(async (session) => {
+  let tx;
+  try { tx = await mongoose.connection.transaction(async (session) => {
     const wallet = await Wallet.findOneAndUpdate(
       { user: req.user._id, currency: cur, available: { $gte: amount } },
       { $inc: { available: -amount, pending: amount } },
@@ -89,10 +103,14 @@ const requestWithdrawal = asyncHandler(async (req, res) => {
     if (!wallet) throw new AppError('Insufficient available balance.', 422);
     const [entry] = await WalletTransaction.create([{
       user: req.user._id, type: 'withdrawal', amount, currency: cur, status: 'pending', payoutMethod,
-      payoutDetails: payoutAccount.describe(account), reference
+      payoutDetails: payoutAccount.describe(account), reference, requestKey
     }], { session });
     return entry;
-  });
+  }); } catch (err) {
+    if (!requestKey || !isDuplicateKey(err)) throw err;
+    const first = await WalletTransaction.findOne({ user: req.user._id, type: 'withdrawal', requestKey });
+    return ok(res, { ...first.toObject(), id: first.id, reference: first.reference, accountTitle, repeated: true }, `Withdrawal already requested. Receipt ${first.reference}.`);
+  }
   await notifyAdmins({
     title: `New wallet withdrawal request: ${cur} ${amount}`,
     body: `${req.user.fullName} (${req.user.email}) requested a withdrawal to ${payoutAccount.describe(account)}. Receipt ${reference}.`
@@ -163,8 +181,16 @@ const transfer = asyncHandler(async (req, res) => {
   const recipient = await User.findOne({ email: recipientEmail.toLowerCase().trim() });
   if (!recipient) throw new AppError('No user found with that email — nothing was sent.', 404);
   if (recipient._id.equals(req.user._id)) throw new AppError('You cannot transfer to yourself.', 422);
+  const requestKey = requestKeyOf(req);
+  const sentBefore = async () => {
+    const first = await WalletTransaction.findOne({ user: req.user._id, type: 'transfer_out', requestKey });
+    const wallet = await Wallet.findOne({ user: req.user._id, currency: first.currency }).select('available');
+    return ok(res, { senderAvailable: wallet?.available ?? 0, reference: first.reference, recipient: { fullName: recipient.fullName, email: recipient.email }, repeated: true }, `Transfer already sent — receipt ${first.reference}.`);
+  };
+  if (requestKey && await WalletTransaction.exists({ user: req.user._id, type: 'transfer_out', requestKey })) return sentBefore();
   const reference = generateTransactionId();
-  const balances = await mongoose.connection.transaction(async (session) => {
+  let balances;
+  try { balances = await mongoose.connection.transaction(async (session) => {
     const senderWallet = await Wallet.findOneAndUpdate(
       { user: req.user._id, currency: cur, available: { $gte: amount } },
       { $inc: { available: -amount } },
@@ -178,13 +204,18 @@ const transfer = asyncHandler(async (req, res) => {
     );
     // Operations sharing a transaction session must run sequentially.
     await WalletTransaction.create([{
-      user: req.user._id, type: 'transfer_out', amount, currency: cur, counterparty: recipient._id, note: note || '', reference
+      user: req.user._id, type: 'transfer_out', amount, currency: cur, counterparty: recipient._id, note: note || '', reference, requestKey
     }], { session });
     await WalletTransaction.create([{
       user: recipient._id, type: 'transfer_in', amount, currency: cur, counterparty: req.user._id, note: note || '', reference
     }], { session });
-    return { senderAvailable: senderWallet.available, recipientAvailable: recipientWallet.available };
-  });
+    // Only the sender's own balance goes back to the sender; the recipient's is private.
+    return { senderAvailable: senderWallet.available, credited: Boolean(recipientWallet) };
+  }); } catch (err) {
+    if (!requestKey || !isDuplicateKey(err)) throw err;
+    return sentBefore();
+  }
+  delete balances.credited;
   await notify(recipient._id, {
     title: `You received ${cur} ${amount} from ${req.user.fullName}`, body: `Receipt ${reference}${note ? ` — ${note}` : ''}`, sentBy: req.user._id
   }).catch(() => {});

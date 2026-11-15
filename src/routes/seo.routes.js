@@ -7,6 +7,9 @@ router.get('/render', wrap(async (req, res) => {
   const { status, html } = await seo.render(String(req.query.path || '/'), (({ path, ...rest }) => rest)(req.query));
   if (!html) return res.status(503).send('');
   res.set('Cache-Control', 'public, max-age=300');
+  // This is a full web page, not an API reply: the API's strict security header would block the
+  // Cloudinary images and Google Analytics that the same page loads when served as a static file.
+  res.removeHeader('Content-Security-Policy');
   return res.status(status).type('html').send(html);
 }));
 // Share card for a page (WhatsApp/Facebook/LinkedIn preview). Rate-limited by the cache in seo.service.

@@ -93,7 +93,7 @@ function safeColor(value, fallback) {
 
 function initSocket(httpServer) {
   io = new Server(httpServer, {
-    cors: { origin: env.clientUrl.split(',').map((origin) => origin.trim().replace(/\/+$/, '')), credentials: true }
+    cors: { origin: env.clientOrigins.map((origin) => origin), credentials: true }
   });
 
   io.use(async (socket, next) => {
