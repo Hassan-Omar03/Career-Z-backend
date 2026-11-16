@@ -86,17 +86,16 @@ test('assignment submission policy is enforced and owner deletion removes submis
   assert.equal(await Submission.countDocuments({ assignment: assignment._id }), 0);
 });
 
-test('exam cannot start early; MCQ submission waits for teacher grading and result is idempotent', async () => {
+test('exam cannot start early; an all-MCQ submission is checked at once (audit N-01), the teacher can still change it, and the result is idempotent', async () => {
   const future = await Exam.create({ course: course._id, teacher: teacher._id, title: 'Future quiz', published: true, scheduledDate: new Date(Date.now() + 60000), durationMinutes: 10, questions: [{ text: '2+2?', type: 'mcq', options: ['3', '4'], correctOption: 1, marks: 5 }] });
-  await assert.rejects(() => invoke(ctrl.startExam, { user: student, params: { examId: future._id } }), /opens at/);
+  await assert.rejects(() => invoke(ctrl.startExam, { user: student, params: { examId: future._id } }), /has not opened yet/);
   future.scheduledDate = new Date(Date.now() - 1000); await future.save();
   const started = await invoke(ctrl.startExam, { user: student, params: { examId: future._id } });
   assert.equal(started.body.data.attempt.status, 'in_progress');
   await assert.rejects(() => invoke(ctrl.listExams, { user: outsider, params: { id: course._id } }), /not enrolled/);
   const submitted = await invoke(ctrl.submitExam, { user: student, params: { examId: future._id }, body: { answers: [{ questionIndex: 0, selectedOption: 1 }] } });
-  assert.equal(submitted.body.data.score, 0);
-  assert.equal(submitted.body.data.status, 'submitted');
-  assert.equal(await Result.countDocuments({ student: student._id, exam: future._id }), 0);
+  assert.equal(submitted.body.data.status, 'graded');
+  assert.equal(await Result.countDocuments({ student: student._id, exam: future._id }), 1);
   await invoke(ctrl.gradeExamSubmission, { user: teacher, params: { submissionId: submitted.body.data._id }, body: { manualMarks: [{ questionIndex: 0, marks: 4 }], grade: 'B' } });
   assert.equal((await Result.findOne({ student: student._id, exam: future._id })).marksObtained, 4);
   await assert.rejects(() => invoke(ctrl.submitExam, { user: student, params: { examId: future._id }, body: { answers: [{ questionIndex: 0, selectedOption: 1 }] } }), /already submitted/);

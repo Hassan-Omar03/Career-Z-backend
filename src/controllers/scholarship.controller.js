@@ -118,7 +118,7 @@ const applyToScholarship = asyncHandler(async (req, res) => {
   }
   // The donor must still be allowed to list it (approved and active).
   if (!(await require('../services/publicListings.service').scholarshipDetail(scholarship._id))) throw new AppError('This scholarship is no longer accepting applications.', 400);
-  if (!req.user.emailVerified) throw new AppError('Verify your email before applying to a scholarship (Profile tab).', 403);
+  if (!req.user.emailVerified) throw new AppError('Verify your email before applying: open Complete your account (/onboarding) and enter the 6-digit code we emailed you.', 403);
 
   const existing = await ScholarshipApplication.findOne({ scholarship: scholarship._id, applicant: req.user._id });
   if (existing) throw new AppError('You already applied to this scholarship.', 409);
@@ -170,6 +170,8 @@ const applyToScholarship = asyncHandler(async (req, res) => {
 const applyForm = asyncHandler(async (req, res) => {
   const scholarship = await Scholarship.findById(req.params.id).select('title requiredDocuments otherDocuments status');
   if (!scholarship) throw new AppError('Scholarship not found.', 404);
+  // Said before the form opens, so nobody fills in the whole form only to be stopped at the end.
+  if (!req.user.emailVerified) throw new AppError('Verify your email before applying: open Complete your account (/onboarding) and enter the 6-digit code we emailed you.', 403);
   const profile = await require('../models/UserProfile').findOne({ user: req.user._id, role: { $in: ['student', 'teacher'] } }).select('fields').lean();
   const p = profile?.fields || {};
   const prefill = {

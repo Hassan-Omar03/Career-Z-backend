@@ -1,3 +1,5 @@
+// Pakistan time before anything reads the clock (see config/env.js).
+process.env.TZ = process.env.APP_TIME_ZONE || 'Asia/Karachi';
 const http = require('http');
 const app = require('./app');
 const connectDB = require('./config/db');

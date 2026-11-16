@@ -758,7 +758,8 @@ const startExam = asyncHandler(async (req, res) => {
   const course = await Course.findById(exam.course);
   await assertFeeAccessForCapability(req.user._id, course?.institution, 'exams');
   const now = new Date();
-  if (exam.scheduledDate && now < exam.scheduledDate) throw new AppError(`This exam opens at ${exam.scheduledDate.toISOString()}.`, 409);
+  // The opening time is shown on the exam card in the student's own time zone; a raw UTC timestamp here read as hours off.
+  if (exam.scheduledDate && now < exam.scheduledDate) throw new AppError('This exam has not opened yet. See the opening time on the exam card.', 409, { opensAt: exam.scheduledDate });
   if (exam.closesAt && now > exam.closesAt) throw new AppError('This exam has closed.', 409);
   let attempt = await ExamSubmission.findOne({ exam: exam._id, student: req.user._id });
   if (attempt && attempt.status !== 'in_progress') throw new AppError('You already submitted this exam.', 409);
@@ -780,7 +781,7 @@ const startExam = asyncHandler(async (req, res) => {
 });
 
 const listMyExamAttempts = asyncHandler(async (req, res) => {
-  const attempts = await ExamSubmission.find({ student: req.user._id }).select('exam score status startedAt expiresAt submittedAt');
+  const attempts = await ExamSubmission.find({ student: req.user._id }).select('exam score finalGrade status startedAt expiresAt submittedAt');
   return ok(res, attempts);
 });
 
@@ -843,19 +844,32 @@ const submitExam = asyncHandler(async (req, res) => {
   const agent = String(req.headers?.['user-agent'] || '').slice(0, 300);
   if (existing.startUserAgent && agent && agent !== existing.startUserAgent) examControls.recordEvent(exam, existing, 'device_changed');
 
-  existing.answers = gradedAnswers;
-  existing.score = 0;
+  existing.answers = markMcqAnswers(exam, gradedAnswers);
+  existing.score = existing.answers.reduce((sum, a) => sum + (a.marksAwarded || 0), 0);
   existing.status = 'submitted';
   existing.submittedAt = new Date();
   const submission = await existing.save();
+  const total = examControls.attemptTotalMarks(exam, submission);
+  const allMcq = submission.answers.every((a) => exam.questions[a.questionIndex]?.type === 'mcq');
+
+  if (allMcq) {
+    const course = await Course.findById(exam.course).select('institution');
+    const grading = require('../services/grading.service');
+    const policy = await grading.policyFor(course?.institution);
+    const { grade } = grading.gradeFor(policy, total ? (submission.score / total) * 100 : 0);
+    submission.exam = exam;
+    await publishExamResult(submission, grade, exam.teacher);
+    await notify(exam.teacher, { title: `${req.user.fullName} submitted "${exam.title}"`, body: `Checked automatically: ${submission.score}/${total} (${grade}).`, sentBy: req.user._id }).catch(() => {});
+    return created(res, submission, `Exam submitted and checked: ${submission.score}/${total} (${grade}).`);
+  }
 
   await notify(exam.teacher, {
     title: `${req.user.fullName} submitted "${exam.title}"`,
-    body: 'All MCQ and written answers are ready for your review and grading.',
+    body: 'MCQs were checked automatically. Written answers are ready for your marks.',
     sentBy: req.user._id
   }).catch(() => {});
 
-  return created(res, submission, 'Exam submitted. Your teacher will review every answer before publishing marks.');
+  return created(res, submission, 'Exam submitted. MCQs were checked automatically; your teacher will mark the written answers.');
 });
 
 // POST /api/courses/exam-attempts/:attemptId/events — the exam screen reports integrity events
@@ -881,32 +895,13 @@ const listExamSubmissions = asyncHandler(async (req, res) => {
 });
 
 // PATCH /api/exam-submissions/:submissionId/grade (teacher — grades the short-answer questions)
-const gradeExamSubmission = asyncHandler(async (req, res) => {
-  const submission = await ExamSubmission.findById(req.params.submissionId).populate('exam');
-  if (!submission) throw new AppError('Exam submission not found.', 404);
-  if (submission.exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
-
-  const { manualMarks, grade } = req.body; // [{ questionIndex, marks }], teacher-selected grade
-  if (!Array.isArray(manualMarks)) throw new AppError('manualMarks array is required.', 422);
-  // Every question THIS student was given (a random subset may be fewer than the whole paper).
-  if (manualMarks.length !== submission.answers.length) throw new AppError('Enter marks for every question before completing the review.', 422);
-  if (!String(grade || '').trim() || String(grade).trim().length > 20) throw new AppError('Select a valid final grade before publishing the result.', 422);
-
-  const seen = new Set();
-  manualMarks.forEach(({ questionIndex, marks }) => {
-    if (!Number.isInteger(questionIndex) || seen.has(questionIndex)) throw new AppError('Each manually graded question must appear once.', 422);
-    seen.add(questionIndex);
-    const answer = submission.answers.find((a) => a.questionIndex === questionIndex);
-    const question = submission.exam.questions[questionIndex];
-    const numericMarks = Number(marks);
-    if (!answer || !question || !Number.isFinite(numericMarks) || numericMarks < 0 || numericMarks > question.marks) throw new AppError(`Invalid marks for question ${questionIndex + 1}.`, 422);
-    answer.marksAwarded = numericMarks;
-  });
-
+// Saves the final marks and grade, records the result, tells the parents and updates course progress.
+// Used by the teacher's review and by the automatic check of an all-MCQ paper (actor = the exam's teacher).
+async function publishExamResult(submission, grade, actorId) {
   submission.score = submission.answers.reduce((sum, a) => sum + (a.marksAwarded || 0), 0);
   submission.status = 'graded';
   submission.finalGrade = String(grade).trim();
-  submission.gradedBy = req.user._id;
+  submission.gradedBy = actorId;
   submission.gradedAt = new Date();
   await submission.save();
 
@@ -924,17 +919,52 @@ const gradeExamSubmission = asyncHandler(async (req, res) => {
     marksObtained: submission.score,
     totalMarks: require('../services/examControls.service').attemptTotalMarks(submission.exam, submission),
     grade: String(grade).trim(),
-    recordedBy: req.user._id
+    recordedBy: actorId
   }, { upsert: true, new: true, runValidators: true });
 
   const gradedStudent = await User.findById(submission.student).select('fullName');
   await notifyParentsOfStudent(submission.student, {
     title: `New result posted for ${gradedStudent?.fullName || 'your child'}`,
     body: `${submission.exam.title}: ${submission.score}/${submission.exam.toObject().totalMarks}`,
-    sentBy: req.user._id
+    sentBy: actorId
   }).catch(() => {});
 
   await recalculateEnrollmentProgress(submission.student, submission.exam.course).catch(() => {});
+}
+
+// MCQ answers are checked against the correct option as soon as the student submits.
+function markMcqAnswers(exam, answers) {
+  for (const a of answers) {
+    const q = exam.questions[a.questionIndex];
+    if (q?.type === 'mcq') a.marksAwarded = Number.isInteger(a.selectedOption) && a.selectedOption === q.correctOption ? Number(q.marks) || 0 : 0;
+  }
+  return answers;
+}
+
+const gradeExamSubmission = asyncHandler(async (req, res) => {
+  const submission = await ExamSubmission.findById(req.params.submissionId).populate('exam');
+  if (!submission) throw new AppError('Exam submission not found.', 404);
+  if (submission.exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+
+  const { manualMarks, grade } = req.body; // [{ questionIndex, marks }], teacher-selected grade
+  if (!Array.isArray(manualMarks)) throw new AppError('manualMarks array is required.', 422);
+  // Every question THIS student was given (a random subset may be fewer than the whole paper).
+  const marked = new Set(manualMarks.map((m) => m?.questionIndex));
+  if (submission.answers.some((a) => submission.exam.questions[a.questionIndex]?.type !== 'mcq' && !marked.has(a.questionIndex))) throw new AppError('Enter marks for every written answer before completing the review.', 422);
+  if (!String(grade || '').trim() || String(grade).trim().length > 20) throw new AppError('Select a valid final grade before publishing the result.', 422);
+
+  const seen = new Set();
+  manualMarks.forEach(({ questionIndex, marks }) => {
+    if (!Number.isInteger(questionIndex) || seen.has(questionIndex)) throw new AppError('Each manually graded question must appear once.', 422);
+    seen.add(questionIndex);
+    const answer = submission.answers.find((a) => a.questionIndex === questionIndex);
+    const question = submission.exam.questions[questionIndex];
+    const numericMarks = Number(marks);
+    if (!answer || !question || !Number.isFinite(numericMarks) || numericMarks < 0 || numericMarks > question.marks) throw new AppError(`Invalid marks for question ${questionIndex + 1}.`, 422);
+    answer.marksAwarded = numericMarks;
+  });
+
+  await publishExamResult(submission, grade, req.user._id);
   return ok(res, submission, 'Exam graded.');
 });
 

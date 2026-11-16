@@ -1,4 +1,7 @@
 require('dotenv').config();
+// CareerZ runs on Pakistan time: timetable times such as '09:00', the teacher's late mark, PTM schedules
+// and 'today' are read in this zone, whatever zone the server machine is set to (the VPS is UTC).
+process.env.TZ = process.env.APP_TIME_ZONE || 'Asia/Karachi';
 
 const CLIENT_ORIGINS = String(process.env.CLIENT_URL || 'http://localhost:5500').split(',').map((v) => v.trim().replace(/\/+$/, '')).filter(Boolean);
 if (!CLIENT_ORIGINS.length) CLIENT_ORIGINS.push('http://localhost:5500');

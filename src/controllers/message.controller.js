@@ -16,6 +16,8 @@ const sendMessage = asyncHandler(async (req, res) => {
   const recipient = await User.findById(to);
   if (!recipient) throw new AppError('Recipient not found.', 404);
   if (!(await canCommunicate(req.user._id, to))) throw new AppError('You can only message an approved student, teacher, parent or institution contact.', 403);
+  // No phone numbers or links until the conversation has started (audit N-02).
+  if (text?.trim() && !(await Message.exists({ $or: [{ from: req.user._id, to }, { from: to, to: req.user._id }] }))) require('../services/chatSafety.service').assertFirstMessageSafe(text);
   const safeAttachments = Array.isArray(attachments) ? attachments.slice(0, 5).map((item) => ({ name: String(item?.name || 'Attachment').slice(0, 150), url: String(item?.url || ''), type: String(item?.type || '').slice(0, 100) })).filter((item) => /^https:\/\//i.test(item.url)) : [];
   if(!text?.trim()&&!safeAttachments.length)throw new AppError('A message or valid attachment is required.',422);
   const message = await Message.create({ from: req.user._id, to, text: text?.trim()||'[Attachment]', attachments: safeAttachments, deliveredAt: isUserOnline(to) ? new Date() : null });
