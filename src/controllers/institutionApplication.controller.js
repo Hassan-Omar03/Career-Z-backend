@@ -24,9 +24,9 @@ function withProgress(app) {
 
 // Master 15A.8: an admitted student is linked to the program, its first term, the class section and
 // that class's subjects, and gets a student ID (15D.3). A student who already has an ID keeps it.
-async function linkAdmittedStudent(membership, programPlan, profile) {
+async function linkAdmittedStudent(membership, programPlan, profile, application = {}) {
   if (!membership.studentId) membership.studentId = await require('../utils/studentId').nextStudentId(programPlan.institution);
-  await require('../utils/academicLink').linkToSection(membership, programPlan.classSection, programPlan._id);
+  await require('../utils/academicLink').linkToSection(membership, programPlan.classSection, programPlan._id, { term: application.term, session: application.session, subjects: application.subjects?.length ? application.subjects : null });
   if (membership.isPrimary && profile && !profile.rollNumber) { profile.rollNumber = membership.studentId; await profile.save(); }
 }
 
@@ -50,6 +50,8 @@ const createApplication = asyncHandler(async (req, res) => {
   if (!inst) throw new AppError('Institution not found.', 404);
   const programPlan = await InstitutionProgram.findOne({ institution, name: program, active: true });
   if (!programPlan) throw new AppError('Select an active program published by this institution.', 422);
+  // Level, intake, subject group and electives, when the institute has set them up for this program.
+  const choice = await require('../services/admissionOptions.service').checkChoice(inst._id, programPlan, req.body);
   const duplicate = await InstitutionApplication.exists({ institution, applicant: req.user._id, program, status: { $nin: ['rejected'] } });
   if (duplicate) throw new AppError('You already have an active application for this program.', 409);
 
@@ -62,7 +64,7 @@ const createApplication = asyncHandler(async (req, res) => {
   if (additionalFees.hostel) additionalFees.hostel = { ...additionalFees.hostel, enabled: selectedServices.hostel, messEnabled: selectedServices.mess, recurrence: 'every_cycle' };
   if (additionalFees.transport) additionalFees.transport = { ...additionalFees.transport, enabled: selectedServices.transport };
   const application = await InstitutionApplication.create({
-    institution, applicant: req.user._id, program,
+    institution, applicant: req.user._id, program, ...choice,
     requestedServices: selectedServices,
     feePlanSnapshot: { department: programPlan.department, durationTerms: programPlan.durationTerms, admissionFee: programPlan.admissionFee, totalTuitionFee: programPlan.totalTuitionFee, installments: programPlan.installments, currency: programPlan.currency, additionalFees, capturedAt: new Date() },
     status: submit ? 'submitted' : 'draft',
@@ -425,7 +427,7 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   }
   application.generatedStudentProfile = profile._id;
   await application.save();
-  await linkAdmittedStudent(membership, programPlan, profile);
+  await linkAdmittedStudent(membership, programPlan, profile, application);
 
   const programCourses = await Course.find({ institution: application.institution._id, classSection: programPlan.classSection, published: true });
   await Promise.all(programCourses.map((course) => Enrollment.updateOne({ student: application.applicant, course: course._id }, { $setOnInsert: { student: application.applicant, course: course._id, status: 'active' } }, { upsert: true })));

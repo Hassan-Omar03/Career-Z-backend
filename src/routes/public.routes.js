@@ -28,6 +28,14 @@ router.get('/scholarships', asyncHandler(async (req, res) => ok(res, await listi
 router.get('/scholarships/:id', detail(listings.scholarshipDetail, 'Scholarship'));
 router.get('/institutes', asyncHandler(async (req, res) => ok(res, await listings.listInstitutes(req.query))));
 router.get('/institutes/:id', detail(listings.instituteDetail, 'Institute'));
+// Programs, levels open for admission, intakes, deadlines and subject groups (Point 22).
+router.get('/institutes/:id/admission-options', asyncHandler(async (req, res) => {
+  if (!require('mongoose').isValidObjectId(req.params.id)) return ok(res, []);
+  const filter = await listings.instituteFilter({});
+  const inst = await require('../models/Institution').findOne({ ...filter, _id: req.params.id }).select('name logo city country').lean();
+  if (!inst) return ok(res, null);
+  return ok(res, { institution: { _id: inst._id, name: inst.name, logo: /^https:\/\//.test(inst.logo || '') ? inst.logo : null, city: inst.city || '', country: inst.country || '' }, programs: await require('../services/admissionOptions.service').optionsFor(inst._id) });
+}));
 router.get('/marketplace', asyncHandler(async (req, res) => ok(res, await listings.listProducts(req.query))));
 router.get('/marketplace/:id', detail(listings.productDetail, 'Listing'));
 router.get('/donors', asyncHandler(async (req, res) => ok(res, await listings.listDonors(req.query))));

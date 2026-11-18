@@ -24,6 +24,7 @@ router.get('/:id/programs', ctrl.listPrograms);
 router.use(protect);
 // Academic structure (master 15A.5): faculties, departments, terms and subjects.
 const academic = require('../controllers/academicStructure.controller');
+router.post('/:id/academic/student-ids', academic.backfillStudentIds);
 router.get('/:id/academic/:kind', academic.list);
 router.post('/:id/academic/:kind', academic.create);
 router.patch('/:id/academic/:kind/:unitId', academic.update);

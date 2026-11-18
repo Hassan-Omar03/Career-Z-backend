@@ -9,6 +9,9 @@ function dueCutoff() {
 
 async function getBlockingInstitutionFee(studentId, institutionId) {
   if (!institutionId) return null;
+  // Fee clearance (Point 22): until the admission fee is paid the enrolment is not active, whatever its due date.
+  const admission = await Fee.findOne({ student: studentId, institution: institutionId, feeType: 'admission', status: { $nin: ['paid', 'refunded', 'waived', 'cancelled'] } });
+  if (admission) return admission;
   return Fee.findOne({
     student: studentId,
     institution: institutionId,
@@ -40,12 +43,14 @@ async function assertFeeAccessForCapability(studentId, institutionId, capability
   if (!fee) return;
   const Fee = require('../models/Fee');
   const populated = fee.schedule ? await Fee.findById(fee._id).populate('schedule') : null;
-  const policy = populated?.schedule?.accessRestrictionPolicy ?? 'block_all'; // no schedule = legacy = always block, as before
+  // The admission fee always blocks everything: the enrolment starts once it is paid.
+  const policy = fee.feeType === 'admission' ? 'block_all' : (populated?.schedule?.accessRestrictionPolicy ?? 'block_all'); // no schedule = legacy = always block, as before
 
   if (policy === 'none' || policy === 'warning') return; // warning is surfaced elsewhere, never enforced here
   if (policy !== 'block_all' && policy !== CAPABILITY_POLICY[capability]) return; // this policy doesn't touch this capability
 
   const state = fee.status === 'processing' ? 'awaiting institution confirmation' : 'unpaid';
+  if (fee.feeType === 'admission') throw new AppError(`Your admission becomes active once ${fee.title} is paid (it is ${state}).`, 402);
   throw new AppError(`Access is locked because ${fee.title} is ${state}. Complete the due payment first.`, 402);
 }
 

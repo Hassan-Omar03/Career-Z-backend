@@ -64,14 +64,18 @@ const previewPromotion = asyncHandler(async (req, res) => {
   const profiles = await StudentProfile.find({ classSection: from._id, status: { $nin: ['graduated', 'transferred'] } }).populate('user', 'fullName email').lean();
   const courses = await Course.find({ institution: institution._id, classSection: from._id }).select('_id').lean();
   const summary = await academicSummary(profiles.map((p) => p.user?._id).filter(Boolean), courses.map((c) => c._id));
+  // Fail / repeat: a student whose average is under the pass mark is suggested to stay in the class.
+  const passPercent = Math.max(0, Math.min(100, Number(req.query.passPercent) || 40));
   return ok(res, {
+    passPercent,
     section: { _id: from._id, name: from.name, academicYear: from.academicYear },
     students: profiles.filter((p) => p.user).map((p) => {
       const s = summary.get(String(p.user._id));
       return {
         studentId: p.user._id, name: p.user.fullName, rollNumber: p.rollNumber || '', status: p.status || 'active',
         averagePercent: s.pct.length ? round1(s.pct.reduce((a, b) => a + b, 0) / s.pct.length) : null,
-        attendancePercent: s.counted ? round1((s.present / s.counted) * 100) : null
+        attendancePercent: s.counted ? round1((s.present / s.counted) * 100) : null,
+        suggestRepeat: s.pct.length > 0 && (s.pct.reduce((a, b) => a + b, 0) / s.pct.length) < passPercent
       };
     }).sort((a, b) => a.name.localeCompare(b.name))
   });

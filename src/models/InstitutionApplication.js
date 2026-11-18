@@ -8,6 +8,12 @@ const institutionApplicationSchema = new mongoose.Schema(
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', required: true, index: true },
     applicant: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     program: { type: String, required: true },
+    // Program-based admission: the level applied for, its intake, the subject group and chosen electives.
+    term: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicTerm', default: null },
+    session: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicSession', default: null },
+    subjectGroup: { type: mongoose.Schema.Types.ObjectId, ref: 'SubjectGroup', default: null },
+    electives: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }],
+    subjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }],
     requestedServices: {
       hostel: { type: Boolean, default: false },
       mess: { type: Boolean, default: false },

@@ -31,7 +31,12 @@ const AcademicTerm = mongoose.model('AcademicTerm', new Schema({
   session: ref('AcademicSession'),
   order: { type: Number, default: 1, min: 1, max: 40 },
   startDate: { type: Date, default: null },
-  endDate: { type: Date, default: null }
+  endDate: { type: Date, default: null },
+  // A level (grade, class or semester) can be open for admission for an intake until a deadline.
+  admissionStatus: { type: String, enum: ['open', 'upcoming', 'closed'], default: 'closed' },
+  intake: ref('AcademicSession'),
+  admissionDeadline: { type: Date, default: null },
+  seats: { type: Number, default: null, min: 1, max: 100000 }
 }, { timestamps: true }));
 const Subject = mongoose.model('Subject', new Schema({
   ...common,
@@ -43,4 +48,17 @@ const Subject = mongoose.model('Subject', new Schema({
   creditHours: { type: Number, default: 0, min: 0, max: 30 }
 }, { timestamps: true }));
 
-module.exports = { AcademicSession, Faculty, Department, AcademicTerm, Subject };
+// Subject combinations for a level, e.g. Science or Arts: subjects every student in the group takes
+// (compulsory) and the electives a student picks, between min and max.
+const SubjectGroup = mongoose.model('SubjectGroup', new Schema({
+  ...common,
+  program: ref('InstitutionProgram'),
+  term: ref('AcademicTerm'),
+  guidance: { type: String, default: '', maxlength: 2000 },
+  compulsory: [{ type: Schema.Types.ObjectId, ref: 'Subject' }],
+  electives: [{ type: Schema.Types.ObjectId, ref: 'Subject' }],
+  minElectives: { type: Number, default: 0, min: 0, max: 30 },
+  maxElectives: { type: Number, default: null, min: 0, max: 30 }
+}, { timestamps: true }));
+
+module.exports = { AcademicSession, Faculty, Department, AcademicTerm, Subject, SubjectGroup };
