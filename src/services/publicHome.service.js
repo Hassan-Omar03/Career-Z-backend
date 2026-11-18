@@ -44,7 +44,7 @@ async function courseFilter(query = {}, { catalogue = true } = {}) {
   and.push(catalogue ? { institution: null } : { $or: [{ institution: null }, { institution: { $in: verifiedInstitutions } }] });
   if (query.country || query.city) {
     const place = { status: 'active', verificationStatus: 'approved' };
-    if (query.country) place.country = new RegExp(`^${escape(query.country)}$`, 'i');
+    if (query.country) place.country = await require('../utils/countryMatch').countryMatch(String(query.country));
     if (query.city) place.city = new RegExp(escape(query.city), 'i');
     const ids = await Institution.distinct('_id', place);
     const teacherPlace = { status: 'active', roles: 'teacher' };

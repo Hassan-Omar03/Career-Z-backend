@@ -61,7 +61,7 @@ const { JOB_CATEGORIES } = require('../models/Job');
 async function jobFilter(query = {}) {
   const base = { status: 'active', ...openDeadline() };
   const and = [base];
-  if (exact(query.country)) and.push({ country: exact(query.country) });
+  { const c = await require('../utils/countryMatch').countryMatch(query.country); if (c) and.push({ country: c }); }
   if (contains(query.city)) and.push({ city: contains(query.city) });
   if (JOB_TYPES.includes(query.type)) and.push({ type: query.type });
   if (['onsite', 'remote', 'hybrid'].includes(query.workMode)) and.push({ workMode: query.workMode });
@@ -118,7 +118,7 @@ async function jobDetail(id) {
 // ---------------------------------------------------------------- scholarships (posted by donors)
 async function scholarshipFilter(query = {}) {
   const and = [{ status: 'open', seatsAvailable: { $gt: 0 } }, openDeadline()];
-  if (exact(query.country)) and.push({ country: exact(query.country) });
+  { const c = await require('../utils/countryMatch').countryMatch(query.country); if (c) and.push({ country: c }); }
   if (num(query.minAmount) !== null) and.push({ amount: { $gte: num(query.minAmount) } });
   if (query.deadlineBefore && !Number.isNaN(Date.parse(query.deadlineBefore))) and.push({ applicationDeadline: { $lte: new Date(query.deadlineBefore) } });
   if (query.q) and.push(textMatch(query.q, ['title', 'description', 'eligibilityCriteria', 'country']));
@@ -167,7 +167,7 @@ async function scholarshipDetail(id) {
 const INSTITUTE_TYPES = ['school', 'college', 'university', 'academy', 'madrasa', 'tuition_center', 'training_institute', 'online_institute'];
 async function instituteFilter(query = {}) {
   const and = [{ status: 'active', verificationStatus: 'approved' }];
-  if (exact(query.country)) and.push({ country: exact(query.country) });
+  { const c = await require('../utils/countryMatch').countryMatch(query.country); if (c) and.push({ country: c }); }
   if (contains(query.city)) and.push({ city: contains(query.city) });
   if (INSTITUTE_TYPES.includes(query.type)) and.push({ type: query.type });
   if (query.q) and.push(textMatch(query.q, ['name', 'description', 'city']));
