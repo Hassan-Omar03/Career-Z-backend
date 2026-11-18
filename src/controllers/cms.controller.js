@@ -93,7 +93,7 @@ const freshHome = () => { try { require('../services/publicHome.service').resetC
 
 const listPublishedPosts = asyncHandler(async (req, res) => {
   const filter = { status: 'published' };
-  if (req.query.category) filter.category = req.query.category;
+  if (req.query.category) filter.category = new RegExp('^' + String(req.query.category).trim().replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '$', 'i');
   const posts = await BlogPost.find(filter).populate('author', 'fullName').sort({ publishedAt: -1 }).limit(50);
   return ok(res, posts.map((p) => publicPost(p, false)));
 });

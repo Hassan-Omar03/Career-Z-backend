@@ -280,22 +280,159 @@ const addStaff = asyncHandler(async (req, res) => {
   if (!userId) throw new AppError('Choose the staff member: search their name or email and pick them from the list.', 422);
   if (!role) throw new AppError('Choose a role for the staff member.', 422);
   const staffRoles = require('../utils/staffRoles');
-  staffRoles.roleOrThrow(role, AppError);
-  const granted = staffRoles.permissionsFor(role, permissions, AppError);
+  staffRoles.roleOrThrow(role, AppError, institution);
+  const granted = staffRoles.permissionsFor(role, permissions, AppError, institution);
   if (!require('mongoose').isValidObjectId(userId) || !(await User.exists({ _id: userId }))) throw new AppError('No CareerZ account found for that user.', 404);
 
   const alreadyStaff = institution.staff.some((s) => s.user.toString() === userId);
   if (alreadyStaff) throw new AppError('User is already staff at this institution.', 409);
+  if ((institution.suspendedStaff || []).some((s) => String(s.user) === userId)) throw new AppError('This person is suspended at your institution. Reinstate them instead of adding them again.', 409);
   await assertStaffCapAllows(institution, institution.staff.length);
 
   await onboardStaff(institution, userId, { role, department, designation, permissions: granted });
+  await logStaff(institution, userId, 'added', req.user._id, { to: role });
+  staffChanged(userId);
   return ok(res, institution, 'Staff member added.');
 });
 
-// GET /api/institutions/staff-roles — the roles an owner can give and what each permission allows.
+// GET /api/institutions/staff-roles[?institution=] — the roles an owner can give and what each permission
+// allows; with ?institution= (owner or staff there) that institution's own roles are added.
 const listStaffRoles = asyncHandler(async (req, res) => {
   const { STAFF_ROLES, PERMISSIONS } = require('../utils/staffRoles');
-  return ok(res, { roles: Object.entries(STAFF_ROLES).map(([key, r]) => ({ key, label: r.label, permissions: r.permissions })), permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })) });
+  let custom = [];
+  if (req.user && req.query.institution && require('mongoose').isValidObjectId(req.query.institution)) {
+    const inst = await Institution.findById(req.query.institution).select('owner staff customRoles').lean();
+    if (inst && (String(inst.owner) === String(req.user._id) || inst.staff.some((s) => String(s.user) === String(req.user._id)))) custom = inst.customRoles || [];
+  }
+  return ok(res, { roles: [...Object.entries(STAFF_ROLES).map(([key, r]) => ({ key, label: r.label, permissions: r.permissions })), ...custom.map((r) => ({ key: r.key, label: r.label, permissions: r.permissions, custom: true }))], permissions: Object.entries(PERMISSIONS).map(([key, label]) => ({ key, label })) });
+});
+
+// Tells a staff member's open dashboards that their institute access changed, so the menu updates
+// without a refresh (the browser reloads its staff roles on this event).
+function staffChanged(...userIds) {
+  const { emitToUser } = require('../realtime/socket');
+  for (const id of userIds) { try { emitToUser(String(id), 'dashboard:update', { reason: 'staff' }); } catch { /* socket server not running (tests) */ } }
+}
+
+// One line in "Recent staff changes". Role names are kept as shown then, so a role deleted later still
+// reads correctly. A failed log never blocks the change itself.
+function logStaff(institution, userId, action, by, { from = '', to = '', note = '' } = {}) {
+  const label = (k) => (k ? require('../utils/staffRoles').labelOf(k, institution) : '');
+  return require('../models/StaffChangeLog').create({ institution: institution._id, user: userId, action, fromRole: label(from), toRole: label(to), note: String(note).slice(0, 300), by }).catch(() => null);
+}
+
+async function ownedInstitution(req) {
+  const institution = await Institution.findById(req.params.id);
+  if (!institution) throw new AppError('Institution not found.', 404);
+  if (String(institution.owner) !== String(req.user._id)) throw new AppError('Only the owner can manage staff.', 403);
+  return institution;
+}
+
+// POST /api/institutions/:id/staff-roles { label, permissions } — the owner makes a role of their own.
+const createCustomRole = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const staffRoles = require('../utils/staffRoles');
+  const label = String(req.body?.label || '').trim().replace(/\s+/g, ' ').slice(0, 60);
+  if (label.length < 2) throw new AppError('Give the role a name.', 422);
+  const all = [...Object.values(staffRoles.STAFF_ROLES), ...(institution.customRoles || [])];
+  if (all.some((r) => r.label.toLowerCase() === label.toLowerCase())) throw new AppError('A role with this name already exists.', 409);
+  if ((institution.customRoles || []).length >= 50) throw new AppError('You can make up to 50 roles.', 422);
+  const permissions = staffRoles.permissionsFor('staff', req.body?.permissions || [], AppError);
+  let key = 'custom_' + (label.toLowerCase().replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '').slice(0, 40) || 'role');
+  while (institution.customRoles.some((r) => r.key === key)) key += '_2';
+  institution.customRoles.push({ key, label, permissions });
+  await institution.save();
+  return created(res, { key, label, permissions, custom: true }, 'Role created.');
+});
+
+// PATCH /api/institutions/:id/staff-roles/:key { label?, permissions? } — staff who hold the role and
+// still have its old permissions get the new ones; anyone the owner set by hand keeps theirs.
+const updateCustomRole = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const staffRoles = require('../utils/staffRoles');
+  const role = institution.customRoles.find((r) => r.key === req.params.key);
+  if (!role) throw new AppError('Role not found.', 404);
+  if (req.body?.label !== undefined) {
+    const label = String(req.body.label).trim().replace(/\s+/g, ' ').slice(0, 60);
+    if (label.length < 2) throw new AppError('Give the role a name.', 422);
+    if ([...Object.values(staffRoles.STAFF_ROLES), ...institution.customRoles.filter((r) => r.key !== role.key)].some((r) => r.label.toLowerCase() === label.toLowerCase())) throw new AppError('A role with this name already exists.', 409);
+    role.label = label;
+  }
+  let updated = 0;
+  const changedPeople = [];
+  if (req.body?.permissions !== undefined) {
+    const next = staffRoles.permissionsFor('staff', req.body.permissions, AppError);
+    const same = (a, b) => a.length === b.length && a.every((p) => b.includes(p));
+    const old = [...role.permissions];
+    for (const list of [institution.staff, institution.suspendedStaff]) for (const s of list) if (s.role === role.key && same(s.permissions || [], old)) { s.permissions = [...next]; updated += 1; changedPeople.push(s.user); }
+    role.permissions = next;
+  }
+  institution.markModified('customRoles');
+  await institution.save();
+  for (const u of changedPeople) await logStaff(institution, u, 'permissions_changed', req.user._id, { to: role.key, note: `Role "${role.label}" changed` });
+  staffChanged(...changedPeople);
+  return ok(res, { key: role.key, label: role.label, permissions: role.permissions, custom: true, updatedStaff: updated }, 'Role updated.');
+});
+
+// DELETE /api/institutions/:id/staff-roles/:key — only when nobody holds it.
+const deleteCustomRole = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  if (!institution.customRoles.some((r) => r.key === req.params.key)) throw new AppError('Role not found.', 404);
+  if ([...institution.staff, ...institution.suspendedStaff].some((s) => s.role === req.params.key)) throw new AppError('Some staff still have this role. Give them another role first.', 409);
+  institution.customRoles = institution.customRoles.filter((r) => r.key !== req.params.key);
+  await institution.save();
+  return ok(res, null, 'Role deleted.');
+});
+
+// POST /api/institutions/:id/staff/:userId/suspend { reason } and /reinstate — the owner stops a staff
+// member's access for a while without removing them. Teachers leave through their employment instead.
+const suspendStaff = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const entry = institution.staff.find((s) => String(s.user) === req.params.userId);
+  if (!entry) throw new AppError('Staff member not found.', 404);
+  if (entry.role === 'teacher') throw new AppError('Teachers are managed through their employment (Teacher Management), not suspended here.', 422);
+  const reason = String(req.body?.reason || '').trim().slice(0, 300);
+  institution.suspendedStaff.push({ user: entry.user, role: entry.role, designation: entry.designation, department: entry.department, permissions: entry.permissions, addedAt: entry.addedAt, suspendedAt: new Date(), reason });
+  institution.staff = institution.staff.filter((s) => String(s.user) !== req.params.userId);
+  await institution.save();
+  await notify(entry.user, { title: `Your staff access at ${institution.name} is suspended`, body: reason || 'Contact the institution for details.', sentBy: req.user._id }).catch(() => {});
+  await logStaff(institution, entry.user, 'suspended', req.user._id, { from: entry.role, note: reason });
+  staffChanged(entry.user);
+  return ok(res, institution, 'Staff member suspended.');
+});
+
+// GET /api/institutions/:id/staff-people — names and emails of the staff and of suspended staff, for the
+// owner's Staff Management table (the institution record only holds their account ids).
+const staffPeople = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const ids = [...institution.staff, ...institution.suspendedStaff].map((s) => s.user);
+  const users = new Map((await User.find({ _id: { $in: ids } }).select('fullName email').lean()).map((u) => [String(u._id), { fullName: u.fullName, email: u.email }]));
+  const row = (s) => ({ ...s.toObject(), ...(users.get(String(s.user)) || { fullName: 'Deleted account', email: '' }) });
+  return ok(res, { staff: institution.staff.map(row), suspended: institution.suspendedStaff.map(row) });
+});
+
+// GET /api/institutions/:id/staff-history — the latest staff changes, newest first (owner only).
+const staffHistory = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const rows = await require('../models/StaffChangeLog').find({ institution: institution._id }).sort({ createdAt: -1 }).limit(Math.min(200, Number(req.query.limit) || 50)).populate('user', 'fullName email').populate('by', 'fullName').lean();
+  return ok(res, rows.map((r) => ({ _id: r._id, action: r.action, fromRole: r.fromRole, toRole: r.toRole, note: r.note, at: r.createdAt, user: r.user ? { _id: r.user._id, fullName: r.user.fullName, email: r.user.email } : { fullName: 'Deleted account' }, by: r.by?.fullName || '' })));
+});
+
+const reinstateStaff = asyncHandler(async (req, res) => {
+  const institution = await ownedInstitution(req);
+  const entry = institution.suspendedStaff.find((s) => String(s.user) === req.params.userId);
+  if (!entry) throw new AppError('This person is not suspended.', 404);
+  await assertStaffCapAllows(institution, institution.staff.length);
+  const staffRoles = require('../utils/staffRoles');
+  // A custom role deleted meanwhile cannot come back; such a person returns as "Other staff".
+  const role = staffRoles.roleOf(entry.role, institution) ? entry.role : 'staff';
+  institution.staff.push({ user: entry.user, role, designation: entry.designation, department: entry.department, permissions: entry.permissions, addedAt: entry.addedAt });
+  institution.suspendedStaff = institution.suspendedStaff.filter((s) => String(s.user) !== req.params.userId);
+  await institution.save();
+  await notify(entry.user, { title: `Your staff access at ${institution.name} is back`, body: staffRoles.labelOf(role, institution), sentBy: req.user._id }).catch(() => {});
+  await logStaff(institution, entry.user, 'reinstated', req.user._id, { to: role });
+  staffChanged(entry.user);
+  return ok(res, institution, 'Staff member reinstated.');
 });
 
 // PATCH /api/institutions/:id/staff/:userId — owner changes a staff member's role, title,
@@ -309,17 +446,21 @@ const updateStaff = asyncHandler(async (req, res) => {
   if (!entry) throw new AppError('Staff member not found.', 404);
   const staffRoles = require('../utils/staffRoles');
   const { role, permissions, department, designation } = req.body;
+  const beforeRole = entry.role, beforePermissions = [...(entry.permissions || [])].sort().join();
   if (role !== undefined && role !== entry.role) {
     // Teaching and transport/hostel duties are tied to these role names elsewhere.
     if (entry.role === 'teacher' || role === 'teacher') throw new AppError('Teachers join and leave through employment offers; change other staff roles here.', 422);
-    entry.role = staffRoles.roleOrThrow(role, AppError);
-    if (permissions === undefined) entry.permissions = staffRoles.permissionsFor(role, undefined, AppError);
+    entry.role = staffRoles.roleOrThrow(role, AppError, institution);
+    if (permissions === undefined) entry.permissions = staffRoles.permissionsFor(role, undefined, AppError, institution);
   }
-  if (permissions !== undefined) entry.permissions = staffRoles.permissionsFor(entry.role, permissions, AppError);
+  if (permissions !== undefined) entry.permissions = staffRoles.permissionsFor(entry.role, permissions, AppError, institution);
   if (department !== undefined) entry.department = String(department).trim().slice(0, 120);
   if (designation !== undefined) entry.designation = String(designation).trim().slice(0, 120);
   await institution.save();
-  await notify(entry.user, { title: `Your role at ${institution.name} was updated`, body: `${staffRoles.STAFF_ROLES[entry.role]?.label || entry.role}: ${(entry.permissions || []).map((p) => staffRoles.PERMISSIONS[p]).filter(Boolean).join(', ') || 'no extra permissions'}.`, sentBy: req.user._id }).catch(() => {});
+  await notify(entry.user, { title: `Your role at ${institution.name} was updated`, body: `${staffRoles.labelOf(entry.role, institution)}: ${(entry.permissions || []).map((p) => staffRoles.PERMISSIONS[p]).filter(Boolean).join(', ') || 'no extra permissions'}.`, sentBy: req.user._id }).catch(() => {});
+  if (entry.role !== beforeRole) await logStaff(institution, entry.user, 'role_changed', req.user._id, { from: beforeRole, to: entry.role });
+  else if ([...(entry.permissions || [])].sort().join() !== beforePermissions) await logStaff(institution, entry.user, 'permissions_changed', req.user._id, { to: entry.role });
+  staffChanged(entry.user);
   return ok(res, institution, 'Staff member updated.');
 });
 
@@ -330,7 +471,14 @@ const removeStaff = asyncHandler(async (req, res) => {
   const isOwner = assertOwnerOrStaff(institution, req.user._id);
   if (!isOwner) throw new AppError('Only the owner can manage staff.', 403);
 
+  const removedEntry = institution.staff.find((s) => String(s.user) === String(req.params.userId));
+  const wasStaff = Boolean(removedEntry);
+  if (wasStaff) await logStaff(institution, req.params.userId, 'removed', req.user._id, { from: removedEntry.role });
   await offboardStaff(institution, req.params.userId);
+  if (wasStaff) {
+    await notify(req.params.userId, { title: `You were removed from the staff of ${institution.name}`, body: 'Your access to this institution has ended. Contact the institution if you think this is a mistake.', sentBy: req.user._id }).catch(() => {});
+    staffChanged(req.params.userId);
+  }
   return ok(res, institution, 'Staff member removed.');
 });
 
@@ -356,6 +504,8 @@ const updateStaffAiPermissions = asyncHandler(async (req, res) => {
   if (canManageAi) permissions.add('ai:manage');
   staffEntry.permissions = Array.from(permissions);
   await institution.save();
+  await logStaff(institution, staffEntry.user, 'permissions_changed', req.user._id, { to: staffEntry.role, note: 'AI access' });
+  staffChanged(staffEntry.user);
 
   return ok(res, institution, 'Staff AI permissions updated.');
 });
@@ -444,9 +594,22 @@ const createClassSection = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  const section = await ClassSection.create({ institution: institution._id, ...req.body });
+  const fields = {};
+  for (const f of ['name', 'academicYear', 'classTeacher', 'campus', 'program', 'term', 'session']) if (req.body[f] !== undefined) fields[f] = req.body[f] || null;
+  await assertSectionLinks(institution, fields);
+  const section = await ClassSection.create({ institution: institution._id, ...fields });
   return created(res, section);
 });
+
+// A class may point at this institution's own campus, program, term and session only (master 15A.5).
+async function assertSectionLinks(institution, fields) {
+  const mongoose = require('mongoose');
+  const models = { campus: Campus, program: InstitutionProgram, term: require('../models/AcademicUnit').AcademicTerm, session: require('../models/AcademicUnit').AcademicSession };
+  for (const [field, Model] of Object.entries(models)) {
+    if (!fields[field]) continue;
+    if (!mongoose.isValidObjectId(fields[field]) || !(await Model.exists({ _id: fields[field], institution: institution._id }))) throw new AppError(`That ${field} does not belong to this institution.`, 422);
+  }
+}
 
 const listClassSections = asyncHandler(async (req, res) => {
   const sections = await ClassSection.find({ institution: req.params.id }).populate('classTeacher', 'fullName email');
@@ -460,10 +623,10 @@ const updateClassSection = asyncHandler(async (req, res) => {
   assertOwnerOrStaff(institution, req.user._id);
   assertInstitutionVerified(institution);
 
-  const allowed = ['name', 'academicYear', 'classTeacher', 'campus'];
+  const allowed = ['name', 'academicYear', 'classTeacher', 'campus', 'program', 'term', 'session'];
   const update = {};
   allowed.forEach((f) => { if (req.body[f] !== undefined) update[f] = req.body[f] || null; });
-  if (update.campus && !(await Campus.exists({ _id: update.campus, institution: institution._id }))) throw new AppError('That campus does not belong to this institution.', 422);
+  await assertSectionLinks(institution, update);
 
   const section = await ClassSection.findOneAndUpdate(
     { _id: req.params.sectionId, institution: institution._id },
@@ -967,7 +1130,8 @@ const listInstitutionStudents = asyncHandler(async (req, res) => {
     .populate('user', 'fullName email')
     .populate('classSection', 'name')
     .sort({ createdAt: -1 });
-  return ok(res, students);
+  const ids = new Map((await require('../models/StudentInstitutionMembership').find({ institution: institution._id, student: { $in: memberIds } }).select('student studentId').lean()).map((m) => [String(m.student), m.studentId || '']));
+  return ok(res, students.map((s) => ({ ...s.toObject(), studentId: ids.get(String(s.user?._id)) || '' })));
 });
 
 // GET /api/institutions/:id/parents — a real parent directory (spec: Institution<->Parent
@@ -1691,6 +1855,7 @@ const getRepDashboard = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  createCustomRole, updateCustomRole, deleteCustomRole, suspendStaff, reinstateStaff, staffPeople, staffHistory,
   registerInstitution,
   listInstitutions,
   myInstitutions,

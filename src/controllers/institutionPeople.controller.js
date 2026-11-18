@@ -105,6 +105,7 @@ const promote = asyncHandler(async (req, res) => {
     if (to) {
       profile.classSection = to._id;
       await profile.save();
+      await require('../utils/academicLink').linkStudentToSection(profile.user, institution._id, to._id);
       await Enrollment.bulkWrite(toCourses.map((c) => ({ updateOne: { filter: { student: profile.user, course: c._id }, update: { $setOnInsert: { student: profile.user, course: c._id } }, upsert: true } })));
     } else {
       profile.status = 'graduated';

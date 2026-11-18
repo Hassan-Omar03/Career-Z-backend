@@ -24,7 +24,9 @@ const sendMessage = asyncHandler(async (req, res) => {
   const populated = await Message.findById(message._id).populate('from', 'fullName email roles profilePhoto').populate('to', 'fullName email roles profilePhoto');
   emitToUser(to, 'message:new', populated);
   emitToUser(req.user._id, 'message:new', populated);
-  // Private chat uses message socket events and unread counts; no routine email/push alert.
+  // Private chat uses message socket events and unread counts; no email. Someone who is not online gets an
+  // in-app notification so the message is not missed (audit N-26).
+  if (!isUserOnline(to)) await notify(to, { title: `New message from ${req.user.fullName}`, body: String(message.text).slice(0, 120), link: '/dashboard?tab=messages', category: 'message', sentBy: req.user._id, dedupeKey: `message:${message._id}` }).catch(() => {});
   return created(res, populated, 'Message sent.');
 });
 

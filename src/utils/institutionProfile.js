@@ -66,8 +66,21 @@ function location(input) {
   return { lat: Math.round(lat * 1e6) / 1e6, lng: Math.round(lng * 1e6) / 1e6 };
 }
 
-// Applies whichever of the four groups the request sent.
+function gallery(list) {
+  if (!Array.isArray(list)) throw new AppError('The gallery must be a list.', 422);
+  if (list.length > 40) throw new AppError('Add at most 40 gallery photos.', 422);
+  return list.map((g, i) => ({ url: httpsUrl(g?.url, `Gallery photo ${i + 1}`), caption: text(g?.caption, 160) })).filter((g) => g.url);
+}
+
+function principalMessage(input = {}) {
+  return { name: text(input.name, 120), title: text(input.title, 120), message: text(input.message, 5000), photo: httpsUrl(input.photo, 'Principal photo') };
+}
+
+// Applies whichever of the groups the request sent.
 function applyProfileExtras(institution, body) {
+  for (const [key, max] of [['vision', 3000], ['mission', 3000], ['history', 8000], ['schoolLanguage', 160], ['uniform', 3000]]) if (body[key] !== undefined) institution[key] = text(body[key], max);
+  if (body.principalMessage !== undefined) institution.principalMessage = principalMessage(body.principalMessage || {});
+  if (body.gallery !== undefined) institution.gallery = gallery(body.gallery || []);
   if (body.socialLinks !== undefined) institution.socialLinks = socialLinks(body.socialLinks || {});
   if (body.accreditations !== undefined) institution.accreditations = accreditations(body.accreditations || []);
   if (body.affiliations !== undefined) institution.affiliations = affiliations(body.affiliations || []);
@@ -82,7 +95,11 @@ function publicProfileExtras(i) {
     affiliations: (i.affiliations || []).map((a) => ({ name: a.name, kind: a.kind, since: a.since || null })),
     socialLinks: links,
     location: i.location?.lat != null && i.location?.lng != null ? { lat: i.location.lat, lng: i.location.lng } : null,
-    address: i.address || ''
+    address: i.address || '',
+    vision: i.vision || '', mission: i.mission || '', history: i.history || '',
+    principalMessage: i.principalMessage?.message ? { name: i.principalMessage.name || '', title: i.principalMessage.title || '', message: i.principalMessage.message, photo: /^https:\/\//.test(i.principalMessage.photo || '') ? i.principalMessage.photo : '' } : null,
+    gallery: (i.gallery || []).filter((g) => /^https:\/\//.test(g.url || '')).map((g) => ({ url: g.url, caption: g.caption || '' })),
+    schoolLanguage: i.schoolLanguage || '', uniform: i.uniform || ''
   };
 }
 

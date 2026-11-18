@@ -28,11 +28,13 @@ const PERMISSIONS = {
 };
 
 const STAFF_ROLES = {
+  director: { label: 'Director', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage', 'settings:manage', 'timetable:manage'] },
   principal: { label: 'Principal', permissions: ['application:approve', 'fee:manage', 'students:manage', 'staff:review', 'grading:manage', 'content:review:principal', 'communication:send', 'parents:manage', 'ops:manage', 'timetable:manage', 'recruitment:manage'] },
   vice_principal: { label: 'Vice Principal', permissions: ['students:manage', 'staff:review', 'grading:manage', 'content:review:department', 'communication:send', 'parents:manage', 'timetable:manage'] },
   coordinator: { label: 'Academic Coordinator', permissions: ['students:manage', 'grading:manage', 'content:review:department', 'communication:send'] },
   hod: { label: 'Head of Department', permissions: ['staff:review', 'grading:manage', 'content:review:department', 'questionbank:manage'] },
   teacher: { label: 'Teacher', permissions: [] },
+  trainer: { label: 'Trainer', permissions: [] },
   hr_manager: { label: 'HR Manager', permissions: ['staff:review', 'recruitment:manage'] },
   accountant: { label: 'Accountant', permissions: ['fee:manage'] },
   admissions_officer: { label: 'Admissions Officer', permissions: ['application:approve'] },
@@ -40,6 +42,7 @@ const STAFF_ROLES = {
   exam_controller: { label: 'Exam Controller', permissions: ['grading:manage', 'questionbank:manage'] },
   registrar: { label: 'Registrar', permissions: ['students:manage'] },
   counselor: { label: 'Student Counselor', permissions: ['parents:manage'] },
+  student_affairs: { label: 'Student Affairs / Discipline Officer', permissions: ['students:manage', 'parents:manage', 'communication:send'] },
   receptionist: { label: 'Receptionist', permissions: ['communication:send'] },
   librarian: { label: 'Librarian', permissions: [] },
   warden: { label: 'Hostel Warden', permissions: [] },
@@ -54,15 +57,23 @@ const STAFF_ROLES = {
   staff: { label: 'Other staff', permissions: [] }
 };
 
+// A role of this institution: a built-in one, or one the owner made (custom_<slug>).
+function roleOf(role, institution) {
+  if (STAFF_ROLES[role]) return STAFF_ROLES[role];
+  return (institution?.customRoles || []).find((r) => r.key === role) || null;
+}
+
 // Role from the request, or 422 for one we do not know.
-function roleOrThrow(role, AppError) {
-  if (!STAFF_ROLES[role]) throw new AppError(`Unknown staff role. Choose one of: ${Object.values(STAFF_ROLES).map((r) => r.label).join(', ')}.`, 422);
+function roleOrThrow(role, AppError, institution) {
+  if (!roleOf(role, institution)) throw new AppError(`Unknown staff role. Choose one of: ${[...Object.values(STAFF_ROLES), ...(institution?.customRoles || [])].map((r) => r.label).join(', ')}.`, 422);
   return role;
 }
 
+const labelOf = (role, institution) => roleOf(role, institution)?.label || role;
+
 // Permissions from the request (only known ones), or the role's starting set when none are given.
-function permissionsFor(role, requested, AppError) {
-  if (requested === undefined || requested === null) return [...STAFF_ROLES[role].permissions];
+function permissionsFor(role, requested, AppError, institution) {
+  if (requested === undefined || requested === null) return [...(roleOf(role, institution)?.permissions || [])];
   if (!Array.isArray(requested)) throw new AppError('permissions must be a list.', 422);
   const unknown = requested.filter((p) => !PERMISSIONS[p]);
   if (unknown.length) throw new AppError(`Unknown permission: ${unknown.join(', ')}.`, 422);
@@ -78,4 +89,4 @@ function hasStaffPermission(institution, userId, ...permissions) {
   return Boolean(staff && (staff.permissions || []).some((p) => permissions.includes(p)));
 }
 
-module.exports = { PERMISSIONS, STAFF_ROLES, roleOrThrow, permissionsFor, hasStaffPermission };
+module.exports = { PERMISSIONS, STAFF_ROLES, roleOf, roleOrThrow, labelOf, permissionsFor, hasStaffPermission };

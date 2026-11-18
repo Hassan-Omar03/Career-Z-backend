@@ -45,6 +45,7 @@ async function saveCredential({ provider, apiKey, model }, adminId) {
   if (!PROVIDERS.includes(provider)) throw Object.assign(new Error(`provider must be one of: ${PROVIDERS.join(', ')}.`), { statusCode: 422 });
   if (!apiKey || String(apiKey).trim().length < 8) throw Object.assign(new Error('A valid API key is required.'), { statusCode: 422 });
   const key = String(apiKey).trim();
+  await require('./ai.service').verifyKey(provider, key); // a made-up key is refused, not shown as connected (audit N-28)
   await Setting.findOneAndUpdate({ key: SETTING_KEY }, { key: SETTING_KEY, value: { enabled: true, provider, model: String(model || '').trim(), apiKeyEncrypted: encrypt(key), keyPreview: `${key.slice(0, 4)}...${key.slice(-4)}`, updatedBy: adminId, updatedAt: new Date() } }, { upsert: true });
   return status();
 }
@@ -75,10 +76,13 @@ async function countryMatch(country) {
 }
 
 // What each lookup type counts, so the model never reads "no matches for these words" as "none exist".
+// Jobs, scholarships and institutes are counted with the same rules as the public pages, so the assistant
+// gives the number a visitor actually sees (audit N-30).
+const listings = () => require('./publicListings.service');
 const TOTALS = {
-  jobs: () => [Job, { status: 'active', $or: [{ applicationDeadline: null }, { applicationDeadline: { $gte: new Date() } }] }],
-  scholarships: () => [Scholarship, { status: 'open', seatsAvailable: { $gt: 0 } }],
-  institutions: () => [Institution, { verificationStatus: 'approved' }],
+  jobs: async () => [Job, await listings().jobFilter({})],
+  scholarships: async () => [Scholarship, await listings().scholarshipFilter({})],
+  institutions: async () => [Institution, await listings().instituteFilter({})],
   marketplace: () => [Product, { status: 'active', stock: { $gt: 0 } }],
   courses: () => [Course, { published: true, testOnly: { $ne: true } }],
   teachers: () => [TeacherProfile, { publicPortfolio: true, status: 'active' }]
@@ -87,7 +91,7 @@ const TOTALS = {
 async function lookup(request) {
   const result = await findRecords(request);
   if (result && TOTALS[result.type]) {
-    const [Model, base] = TOTALS[result.type]();
+    const [Model, base] = await TOTALS[result.type]();
     result.totalListedOnCareerZ = await Model.countDocuments(base);
     result.searchedFor = [request.query, request.city, request.country].filter(Boolean).join(', ') || null;
   }
@@ -99,7 +103,7 @@ async function findRecords({ type, query, country, city, limit }) {
   const countryFilter = await countryMatch(country);
   const place = { ...(countryFilter ? { country: countryFilter } : {}), ...(city ? { city: { $regex: escape(city), $options: 'i' } } : {}) };
   if (type === 'jobs') {
-    const rows = await Job.find({ status: 'active', ...place, $and: [{ $or: [{ applicationDeadline: null }, { applicationDeadline: { $gte: new Date() } }] }, textFilter(query, ['title', 'company', 'skills', 'description'])] })
+    const rows = await Job.find({ ...place, $and: [await listings().jobFilter({}), textFilter(query, ['title', 'company', 'skills', 'description'])] })
       .select('title company type workMode city country salaryMin salaryMax currency applicationDeadline visaSponsorship').sort({ featured: -1, createdAt: -1 }).limit(n).lean();
     return { type, link: '/jobs', count: rows.length, rows: rows.map((j) => ({ title: j.title, company: j.company, type: j.type, workMode: j.workMode, location: [j.city, j.country].filter(Boolean).join(', '), salary: j.salaryMin || j.salaryMax ? `${j.currency} ${j.salaryMin || ''}${j.salaryMax ? `-${j.salaryMax}` : ''}` : null, deadline: day(j.applicationDeadline), visaSponsorship: j.visaSponsorship })) };
   }
@@ -117,7 +121,7 @@ async function findRecords({ type, query, country, city, limit }) {
     return { type, link: '/marketplace', count: rows.length, rows: rows.map((p) => ({ title: p.title, category: p.category, price: `${p.currency} ${p.price}` })) };
   }
   if (type === 'courses') {
-    const rows = await Course.find({ published: true, testOnly: { $ne: true }, ...textFilter(query, ['title', 'subject', 'description', 'level']) }).select('title subject level language isFree price currency institution').populate('institution', 'name').limit(n).lean();
+    const rows = await Course.find({ published: true, testOnly: { $ne: true }, institution: null, ...textFilter(query, ['title', 'subject', 'description', 'level']) }).select('title subject level language isFree price currency institution').populate('institution', 'name').limit(n).lean();
     return { type, link: '/courses', count: rows.length, rows: rows.map((c) => ({ title: c.title, subject: c.subject, level: c.level, by: c.institution?.name || 'Independent teacher', price: c.isFree ? 'Free' : `${c.currency || ''} ${c.price || ''}`.trim() })) };
   }
   if (type === 'teachers') {
@@ -126,8 +130,8 @@ async function findRecords({ type, query, country, city, limit }) {
   }
   if (type === 'stats') {
     const [jobs, scholarships, institutions, courses, products, students, teachers] = await Promise.all([
-      Job.countDocuments({ status: 'active' }), Scholarship.countDocuments({ status: 'open' }), Institution.countDocuments({ verificationStatus: 'approved' }),
-      Course.countDocuments({ published: true, testOnly: { $ne: true } }), Product.countDocuments({ status: 'active' }),
+      listings().stats().then((s) => s.activeJobs), listings().stats().then((s) => s.activeScholarships), listings().stats().then((s) => s.approvedInstitutes),
+      Course.countDocuments({ published: true, testOnly: { $ne: true }, institution: null }), listings().stats().then((s) => s.activeMarketplaceListings),
       User.countDocuments({ roles: 'student' }), User.countDocuments({ roles: 'teacher' })
     ]);
     return { type, count: 1, rows: [{ openJobs: jobs, openScholarships: scholarships, verifiedInstitutions: institutions, publishedCourses: courses, marketplaceListings: products, registeredStudents: students, registeredTeachers: teachers, asOf: day(new Date()) }] };

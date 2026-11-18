@@ -55,9 +55,10 @@ test('an institution course is never created as free/public-enrollable', async (
   assert.equal(course.isFree, false);
 
   const res = await invoke(ctrl.listCourses, { user: null, query: { institution: institution._id.toString() } });
-  const found = res.body.data.find((c) => c._id.toString() === course._id.toString());
-  assert.ok(found);
-  assert.equal(found.isFree, false, 'institution course must never be publicly free-enrollable');
+  // Client scope 8.1: a visitor is not shown an institution's courses at all.
+  assert.equal(res.body.data.find((c) => c._id.toString() === course._id.toString()), undefined);
+  const stored = await Course.findById(course._id).lean();
+  assert.equal(stored.isFree, false, 'institution course must never be publicly free-enrollable');
 });
 
 test('sharing a resource notifies a student whose enrollment already flipped to completed', async () => {

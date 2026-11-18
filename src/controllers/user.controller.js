@@ -108,6 +108,7 @@ const setUserStatus = asyncHandler(async (req, res) => {
   const user = await User.findById(req.params.id);
   if (!user) throw new AppError('User not found.', 404);
   if (user.roles.includes('super_admin')) throw new AppError('Cannot change status of a Super Admin.', 403);
+  if (user.status === 'deleted') throw new AppError('This account was deleted by its owner and cannot be reactivated. The person can sign up again.', 409);
 
   user.status = status;
   await user.save();

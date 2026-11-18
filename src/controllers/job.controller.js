@@ -36,6 +36,7 @@ function checkPostingExtras(body) {
     if (body.image && !/^https:\/\/\S+$/.test(body.image)) throw new AppError('The job image must be an uploaded picture.', 422);
     if (body.image.length > 1000) throw new AppError('The job image link is too long.', 422);
   }
+  if (body.imageAlt !== undefined) body.imageAlt = String(body.imageAlt || '').replace(/\s+/g, ' ').trim().slice(0, 200);
   const blankToNull = (k) => { if (body[k] === '' ) body[k] = null; };
   ['ageMin', 'ageMax'].forEach(blankToNull);
   if (body.vacancies !== undefined) {
@@ -61,7 +62,7 @@ const createJob = asyncHandler(async (req, res) => {
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'image', 'contactEmail', 'contactPhone', 'isGovernment', 'status', 'category',
+    'visaSponsorship', 'companyLogo', 'image', 'imageAlt', 'contactEmail', 'contactPhone', 'isGovernment', 'status', 'category',
     'vacancies', 'genderPreference', 'ageMin', 'ageMax', 'interviewQuestions'
   ];
   const body = {};
@@ -242,7 +243,7 @@ const updateJob = asyncHandler(async (req, res) => {
   const allowed = [
     'title', 'company', 'type', 'workMode', 'country', 'city', 'salaryMin', 'salaryMax', 'currency',
     'experienceYears', 'education', 'skills', 'description', 'applicationDeadline',
-    'visaSponsorship', 'companyLogo', 'image', 'contactEmail', 'contactPhone', 'category',
+    'visaSponsorship', 'companyLogo', 'image', 'imageAlt', 'contactEmail', 'contactPhone', 'category',
     'vacancies', 'genderPreference', 'ageMin', 'ageMax', 'interviewQuestions'
   ];
   checkPostingExtras(req.body);

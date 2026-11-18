@@ -75,7 +75,7 @@ const getPublicPortfolio = asyncHandler(async (req, res) => {
   const [standing, reviews, courses] = await Promise.all([
     require('../services/teacherStanding.service').standingFor(req.params.id),
     require('../models/TeacherFeedback').find({ teacher: req.params.id, comment: { $ne: '' } }).select('rating comment fromRole createdAt').sort({ createdAt: -1 }).limit(6).lean(),
-    Course.find({ teacher: req.params.id, published: true, testOnly: { $ne: true } }).select('title subject level language isFree price currency institution').populate('institution', 'name').limit(24).lean()
+    Course.find({ teacher: req.params.id, published: true, testOnly: { $ne: true }, institution: null }).select('title subject level language isFree price currency institution').populate('institution', 'name').limit(24).lean()
   ]);
   return ok(res, {
     teacher: { _id: user._id, fullName: user.fullName, profilePhoto: user.profilePhoto || '', city: user.city || '', country: user.country || '' },

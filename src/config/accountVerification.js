@@ -26,6 +26,7 @@ const DOCUMENT_TYPES = {
   company_registration_certificate: 'Company registration certificate', company_tax_certificate: 'Tax registration (NTN) certificate',
   authorized_person_identity: 'Authorized person identity document (CNIC / passport)', company_logo: 'Company logo',
   recruitment_license: 'Recruitment / overseas employment licence',
+  experience_proof: 'Teaching or professional experience proof (letter, contract or certificate)',
   additional_document: 'Other supporting documents'
 };
 const IMAGE_ONLY = new Set(['profile_picture', 'institute_logo', 'company_logo']);
@@ -45,6 +46,9 @@ function documentRequirements(role, subtype = '') {
     case 'parent': groups.push({ ...identity('other_identity'), mandatory: true }); add(['profile_picture']); break;
     case 'teacher': groups.push({ ...identity('other_identity'), mandatory: true }); add(['profile_picture']); add(['degree_certificate']); add(['academic_transcript']); break;
     case 'institution_owner': case 'academy_owner':
+      // Master 6.2 Category B "New Institution Founder": no building, website or government registration
+      // yet; identity, education and experience are verified instead (audit points 14 and 15).
+      if (subtype === 'founder') { add(['representative_cnic']); add(['degree_certificate']); add(['experience_proof']); add(['institute_logo']); add(['other_legal'], null, false); break; }
       add(['institute_registration_certificate']); add(['registration_proof']); add(['representative_cnic']); add(['institute_logo']); add(['other_legal'], null, false); break;
     case 'education_agent':
       groups.push({ ...identity('other_identity'), mandatory: true }); add(['profile_picture']);
@@ -85,9 +89,10 @@ function profileFields(role, subtype = '') {
     case 'parent': return [...PERSON, F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic' }), F('contactNumber', 'Contact number', { pattern: 'phone' }), ...ADDRESS];
     case 'teacher': return [...PERSON, F('fatherName', "Father's name"), F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic' }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }), ...ADDRESS,
       F('highestQualification', 'Highest qualification'), F('degreeTitle', 'Degree title'), F('specialization', 'Specialization / subject'), F('university', 'University / institute name'), F('graduationYear', 'Graduation year', { pattern: 'year' }), F('teachingExperience', 'Teaching experience (years)', { required: false })];
-    case 'institution_owner': case 'academy_owner': return [F('instituteName', 'Institute name'), F('instituteType', 'Institute type', { type: 'select', options: ['school', 'college', 'university', 'academy', 'training_center', 'other'] }), F('registrationNumber', 'Institute registration number'),
+    case 'institution_owner': case 'academy_owner': return [F('instituteName', 'Institute name'), F('instituteType', 'Institute type', { type: 'select', options: ['school', 'college', 'university', 'academy', 'training_center', 'online_institute', 'other'] }), F('registrationNumber', 'Institute registration number', { required: subtype !== 'founder' }),
       F('instituteEmail', 'Institute email address', { pattern: 'email' }), F('officialContactNumber', 'Official contact number', { pattern: 'phone' }), F('alternateContactNumber', 'Alternate contact number', { required: false, pattern: 'phone' }),
-      F('address', 'Complete institute address', { type: 'textarea' }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'), F('location', 'Institute location (map link or coordinates)'),
+      F('address', 'Complete institute address', { type: 'textarea', required: subtype !== 'founder', optionalWhen: { key: 'instituteType', values: ['online_institute'] } }), F('country', 'Country'), F('province', 'Province'), F('city', 'City'), F('location', 'Institute location (map link or coordinates)', { required: subtype !== 'founder', optionalWhen: { key: 'instituteType', values: ['online_institute'] } }),
+      ...(subtype === 'founder' ? [F('highestQualification', 'Your highest qualification'), F('experienceYears', 'Years of teaching or professional experience', { pattern: 'number' }), F('founderAgreement', 'CareerZ founder agreement: I will run the institute honestly, give true information to students and parents, and register it with the government when required', { type: 'select', options: ['i_accept_the_agreement'] })] : []),
       F('representativeName', 'Authorized representative name'), F('representativeCnic', 'Authorized representative CNIC', { sensitive: true, pattern: 'cnic' }), F('description', 'Institute description', { type: 'textarea' }), F('website', 'Website', { required: false, pattern: 'url' })];
     case 'education_agent': return [F('firstName', 'First name'), F('lastName', 'Last name'), F('fullName', 'Full name'), F('gender', 'Gender', { type: 'select', options: ['male', 'female', 'other'] }), F('dateOfBirth', 'Date of birth', { type: 'date' }),
       F('cnicNumber', 'CNIC number', { sensitive: true, pattern: 'cnic' }), F('contactNumber', 'Contact number', { pattern: 'phone' }), F('email', 'Email address', { pattern: 'email' }), F('agencyName', 'Agency / business name', { required: subtype === 'agency' }),
@@ -116,6 +121,7 @@ function profileFields(role, subtype = '') {
 }
 
 const SUBTYPES = {
+  institution_owner: ['registered', 'founder'],
   donor: ['individual', 'organization'],
   marketplace_seller: ['individual', 'business'],
   education_agent: ['individual', 'agency'],

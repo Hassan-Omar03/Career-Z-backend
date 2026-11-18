@@ -73,7 +73,9 @@ function fieldValue(profile, field) {
 }
 
 function evaluateProfile(role, subtype, profile) {
-  const fields = cfg.profileFields(role, subtype);
+  // A field marked optionalWhen is not required when another answer makes it irrelevant, e.g. the address
+  // of an online institute.
+  const fields = cfg.profileFields(role, subtype).map((f) => (f.optionalWhen && f.optionalWhen.values.includes(String(profile?.fields?.[f.optionalWhen.key] ?? '')) ? { ...f, required: false } : f));
   const required = fields.filter((f) => f.required);
   const filled = (f) => (f.sensitive ? Boolean(profile?.sensitive?.[f.key]?.encrypted) : String(profile?.fields?.[f.key] ?? '').trim() !== '');
   const missing = required.filter((f) => !filled(f)).map((f) => ({ key: f.key, label: f.label }));
@@ -200,6 +202,27 @@ async function submitForVerification(user, role) {
 }
 
 // ---------- profile ----------
+// Creates the institute record from an approved institute account's completed profile, once. An institute
+// the owner already registered is left as it is. The account's documents were approved by the admin before
+// the profile could be completed, so the institute starts approved.
+const GATE_TYPE_TO_INSTITUTION = { school: 'school', college: 'college', university: 'university', academy: 'academy', training_center: 'training_institute', online_institute: 'online_institute', other: 'academy' };
+async function ensureInstitution(user, fields) {
+  const Institution = require('../models/Institution');
+  if (await Institution.exists({ owner: user._id })) return null;
+  const name = String(fields.instituteName || '').trim();
+  if (!name) return null;
+  const countryName = String(fields.country || user.country || '').trim();
+  const country = (await require('../models/Country').findOne({ name: new RegExp(`^${countryName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i') }).select('code').lean())?.code || countryName || 'PK';
+  const base = name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '') || 'institute';
+  const slug = (await Institution.exists({ slug: base })) ? `${base}-${Date.now().toString(36)}` : base;
+  return Institution.create({
+    owner: user._id, name: name.slice(0, 200), slug, type: GATE_TYPE_TO_INSTITUTION[fields.instituteType] || 'school', country,
+    city: String(fields.city || '').slice(0, 120), address: String(fields.address || '').slice(0, 500), description: String(fields.description || '').slice(0, 4000),
+    contactEmail: String(fields.instituteEmail || '').slice(0, 200), contactPhone: String(fields.officialContactNumber || '').slice(0, 40), website: String(fields.website || '').slice(0, 300),
+    verificationStatus: 'approved'
+  });
+}
+
 async function saveProfile(user, role, input = {}, { complete = false } = {}) {
   const request = await latestRequest(user._id, role);
   if (!request || !(user.roles || []).includes(role)) throw new AppError('Choose one of your own account types.', 403);
@@ -268,7 +291,16 @@ async function saveProfile(user, role, input = {}, { complete = false } = {}) {
     const phone=fields.contactNumber||fields.officialContactNumber;if(phone)set.phone=String(phone).slice(0,40);
     if(fields.city)set.city=String(fields.city).slice(0,120);
     if(fields.country)set.country=String(fields.country).slice(0,120);
-    if(Object.keys(set).length)await User.updateOne({_id:user._id},{$set:set});
+    if(Object.keys(set).length){
+      const before=await User.findById(user._id).select('city country').lean();
+      await User.updateOne({_id:user._id},{$set:set});
+      // A public donor profile that still shows the old sign-up city follows the verified one (audit N-21);
+      // a city the donor typed on purpose is left alone.
+      if(set.city&&before?.city!==set.city)await require('../models/DonorPublicProfile').updateOne({user:user._id,city:before?.city||''},{$set:{city:set.city,...(set.country?{country:set.country}:{})}});
+    }
+    // An institute account whose documents the admin approved gets its institute record from the
+    // completed profile, instead of being told "Register an institution first" on every tab (audit N-31).
+    if(['institution_owner','academy_owner'].includes(role)&&profile.completed)await ensureInstitution(user,fields).catch((err)=>console.error('[institution] auto-create failed:',err.message));
   }
   if (profile.completed && !wasComplete) await notifyUser(user._id, 'Your profile is complete.', 'Your profile is complete. You can now access your dashboard.');
   // Changing verified identity details after approval sends the account back to the admin.
@@ -339,4 +371,4 @@ async function decide({ requestId, admin, action, reason = '', documents = [], m
   return request;
 }
 
-module.exports = { uploadDocument, removeDocument, readDocument, submitForVerification, saveProfile, decide, statusFor, evaluateDocuments, evaluateProfile, activeDocuments, sniff, ACTIONS, MAX_IMAGE_BYTES, MAX_PDF_BYTES };
+module.exports = { uploadDocument, removeDocument, readDocument, submitForVerification, saveProfile, decide, statusFor, evaluateDocuments, evaluateProfile, activeDocuments, sniff, ACTIONS, MAX_IMAGE_BYTES, MAX_PDF_BYTES, ensureInstitution };

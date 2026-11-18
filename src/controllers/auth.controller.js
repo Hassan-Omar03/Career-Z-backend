@@ -153,9 +153,14 @@ const login = asyncHandler(async (req, res) => {
   // Real 2FA enforcement — if the user turned this on in Settings, password alone is not
   // enough: an OTP is emailed and login only completes via POST /auth/login/verify-2fa.
   if (user.twoFactorEnabled) {
+    // Authenticator app users type the code from their app; nothing is emailed.
+    if (user.twoFactorMethod === 'totp') {
+      await recordLoginAttempt({ email, ip, userAgent, success: true, reason: '2fa_challenge_totp' });
+      return ok(res, { twoFactorRequired: true, method: 'totp', email: user.email }, 'Enter the 6-digit code from your authenticator app, or a backup code.');
+    }
     await otpService.issueOtp(user, 'login_2fa');
     await recordLoginAttempt({ email, ip, userAgent, success: true, reason: '2fa_challenge_sent' });
-    return ok(res, { twoFactorRequired: true, email: user.email }, 'Enter the login code sent to your email.');
+    return ok(res, { twoFactorRequired: true, method: 'email', email: user.email }, 'Enter the login code sent to your email.');
   }
 
   user.lastLoginAt = new Date();
@@ -174,17 +179,71 @@ const login = asyncHandler(async (req, res) => {
   }, 'Login successful.');
 });
 
+// Authenticator app (master 5.7). setup: a new secret (pending) with its QR code; enable: the first code
+// from the app confirms it and returns one-use backup codes once; disable: a current code turns the app
+// off (back to email codes); backup-codes: a current code replaces the backup codes.
+const totpSetup = asyncHandler(async (req, res) => {
+  const totp = require('../services/totp.service');
+  const user = await User.findById(req.user._id).select('+totp');
+  const secret = totp.newSecret();
+  user.totp = { ...(user.totp?.toObject?.() || user.totp || {}), pending: totp.encrypt(secret) };
+  user.markModified('totp');
+  await user.save();
+  const url = totp.otpauthUrl(secret, user.email);
+  const qr = await require('qrcode').toDataURL(url);
+  return ok(res, { secret, otpauthUrl: url, qr }, 'Scan the QR code with your authenticator app, then enter its code.');
+});
+const totpEnable = asyncHandler(async (req, res) => {
+  const totp = require('../services/totp.service');
+  const user = await User.findById(req.user._id).select('+totp');
+  if (!user.totp?.pending) throw new AppError('Start the setup first.', 409);
+  const secret = totp.decrypt(user.totp.pending);
+  const step = totp.matchStep(secret, req.body?.code);
+  if (step === null) throw new AppError('That code is not right. Check the time on your phone and try the newest code.', 422);
+  const { codes, hashes } = totp.newBackupCodes();
+  user.totp = { secret: user.totp.pending, pending: undefined, backupCodes: hashes, lastStep: step, enabledAt: new Date() };
+  user.twoFactorMethod = 'totp';
+  user.twoFactorEnabled = true;
+  user.markModified('totp');
+  await user.save();
+  return ok(res, { backupCodes: codes, user: user.toSafeJSON() }, 'Authenticator app turned on. Keep the backup codes somewhere safe; each works once.');
+});
+const totpDisable = asyncHandler(async (req, res) => {
+  const user = await User.findById(req.user._id).select('+totp');
+  if (user.twoFactorMethod !== 'totp') throw new AppError('The authenticator app is not on.', 409);
+  if (!(await require('../services/totp.service').verifyUserCode(user, req.body?.code))) throw new AppError('Enter a current code from your app, or a backup code.', 422);
+  user.totp = undefined;
+  user.twoFactorMethod = 'email';
+  await user.save();
+  return ok(res, { user: user.toSafeJSON() }, 'Authenticator app turned off. Two-step sign-in now uses email codes.');
+});
+const totpBackupCodes = asyncHandler(async (req, res) => {
+  const totp = require('../services/totp.service');
+  const user = await User.findById(req.user._id).select('+totp');
+  if (user.twoFactorMethod !== 'totp') throw new AppError('The authenticator app is not on.', 409);
+  if (!(await totp.verifyUserCode(user, req.body?.code))) throw new AppError('Enter a current code from your app.', 422);
+  const { codes, hashes } = totp.newBackupCodes();
+  user.totp.backupCodes = hashes;
+  user.markModified('totp');
+  await user.save();
+  return ok(res, { backupCodes: codes }, 'New backup codes made. The old ones no longer work.');
+});
+
 // POST /api/auth/login/verify-2fa — completes login for accounts with 2FA enabled.
 const verifyLogin2FA = asyncHandler(async (req, res) => {
-  const email = emailOf(req.body.email), code = codeOf(req.body.code);
+  const email = emailOf(req.body.email), rawCode = String(req.body.code || '').trim();
   const ip = req.ip;
   const userAgent = req.headers['user-agent'];
-  if (!email || !code) throw new AppError('Email and code are required.', 422);
+  if (!email || !rawCode) throw new AppError('Email and code are required.', 422);
 
-  const user = await User.findOne({ email: email.toLowerCase() });
+  const user = await User.findOne({ email: email.toLowerCase() }).select('+totp');
   if (!user) throw new AppError('Invalid request.', 400);
 
-  const valid = await otpService.verifyOtp(user, 'login_2fa', code);
+  // A password must have been checked first: only accounts with 2FA on reach this step.
+  if (!user.twoFactorEnabled) throw new AppError('Invalid request.', 400);
+  const valid = user.twoFactorMethod === 'totp'
+    ? await require('../services/totp.service').verifyUserCode(user, rawCode)
+    : await otpService.verifyOtp(user, 'login_2fa', codeOf(rawCode));
   if (!valid) {
     await recordLoginAttempt({ email, ip, userAgent, success: false, reason: '2fa_invalid_code' });
     throw new AppError('Invalid or expired login code.', 400);
@@ -280,6 +339,7 @@ const me = asyncHandler(async (req, res) => {
 });
 
 module.exports = {
+  totpSetup, totpEnable, totpDisable, totpBackupCodes,
   register,
   verifyEmail,
   resendVerification,

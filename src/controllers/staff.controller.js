@@ -4,6 +4,8 @@ const AppError = require('../utils/AppError');
 const asyncHandler = require('../utils/asyncHandler');
 const { ok, created } = require('../utils/apiResponse');
 
+const live = (userId) => { try { require('../realtime/socket').emitToUser(String(userId), 'dashboard:update', { reason: 'staff' }); } catch { /* no socket server in tests */ } };
+
 // GET /api/admin/staff
 const listStaff = asyncHandler(async (req, res) => {
   const staff = await StaffProfile.find().populate('user', 'fullName email status').populate('addedBy', 'fullName').sort({ createdAt: -1 });
@@ -33,6 +35,7 @@ const addStaff = asyncHandler(async (req, res) => {
 
   const profile = await StaffProfile.create({ user: user._id, departments, title: title || '', addedBy: req.user._id });
   const populated = await profile.populate('user', 'fullName email status');
+  live(user._id);
   return created(res, populated, 'Staff member added.');
 });
 
@@ -52,6 +55,7 @@ const updateStaff = asyncHandler(async (req, res) => {
   await profile.save();
 
   const populated = await profile.populate('user', 'fullName email status');
+  live(profile.user);
   return ok(res, populated, 'Staff member updated.');
 });
 
@@ -66,7 +70,16 @@ const removeStaff = asyncHandler(async (req, res) => {
     await user.save();
   }
   await profile.deleteOne();
+  live(profile.user);
   return ok(res, null, 'Staff member removed.');
 });
 
-module.exports = { listStaff, addStaff, updateStaff, removeStaff };
+// GET /api/admin/staff/me — the signed-in person's own work areas, so their dashboard shows only those
+// (client scope 6.1). Admins and the Super Admin have every area.
+const myAccess = asyncHandler(async (req, res) => {
+  if (req.user.roles.some((r) => ['admin', 'super_admin'].includes(r))) return ok(res, { all: true, departments: StaffProfile.DEPARTMENTS, title: '' });
+  const profile = await StaffProfile.findOne({ user: req.user._id, active: true }).lean();
+  return ok(res, { all: false, departments: profile?.departments || [], title: profile?.title || '' });
+});
+
+module.exports = { listStaff, addStaff, updateStaff, removeStaff, myAccess };

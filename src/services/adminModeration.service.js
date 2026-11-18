@@ -79,7 +79,7 @@ async function restore(admin, kind, id) {
 async function users(query = {}) {
   const filter = {};
   if (query.role) filter.roles = String(query.role);
-  if (['active', 'suspended', 'disabled'].includes(query.status)) filter.status = query.status;
+  if (['active', 'suspended', 'disabled', 'deleted'].includes(query.status)) filter.status = query.status;
   if (query.q) { const r = rx(query.q); filter.$or = [{ fullName: r }, { email: r }, { phone: r }, { city: r }]; }
   const limit = Math.min(Number(query.limit) || 50, 200), page = Math.max(1, Number(query.page) || 1);
   const [rows, total] = await Promise.all([

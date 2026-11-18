@@ -120,9 +120,11 @@ async function sellerReport(user) {
   }).sort((a, b) => b.revenue - a.revenue || b.unitsSold - a.unitsSold);
   const months = [];
   for (let i = 11; i >= 0; i--) {
-    const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - i);
-    const key = d.toISOString().slice(0, 7);
-    const inMonth = orders.filter((o) => sold(o) && new Date(o.createdAt).toISOString().slice(0, 7) === key);
+    // Months in the server's time zone (Pakistan) for both the label and the orders, so an order early on the
+    // 1st is not counted in the previous month.
+    const monthKey = (x) => `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`;
+    const now = new Date(); const key = monthKey(new Date(now.getFullYear(), now.getMonth() - i, 1));
+    const inMonth = orders.filter((o) => sold(o) && monthKey(new Date(o.createdAt)) === key);
     months.push({ month: key, orders: inMonth.length, revenue: inMonth.reduce((s, o) => s + o.totalPrice, 0) });
   }
   const good = orders.filter(sold);

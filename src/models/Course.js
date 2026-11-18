@@ -13,6 +13,7 @@ const courseSchema = new mongoose.Schema(
     teacher: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true, index: true },
     institution: { type: mongoose.Schema.Types.ObjectId, ref: 'Institution', default: null },
     classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
+    subject: { type: mongoose.Schema.Types.ObjectId, ref: 'Subject', default: null },
 
     subject: { type: String, default: '' },
     creditHours: { type: Number, min: 0.5, max: 12, default: 3 },

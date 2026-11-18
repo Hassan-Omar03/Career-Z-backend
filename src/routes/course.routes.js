@@ -32,6 +32,8 @@ router.post('/:id/results', requirePermission('result:record:own'), ctrl.recordR
 router.get('/:id/results', requirePermission('result:record:own'), ctrl.listCourseResults);
 router.post('/:id/exams', requirePermission('assignment:create:own'), ctrl.createExam);
 router.patch('/exams/:examId/publish', requirePermission('assignment:grade:own'), ctrl.publishExam);
+router.patch('/exams/:examId', requirePermission('assignment:create:own'), ctrl.updateExam);
+router.delete('/exams/:examId', requirePermission('assignment:create:own'), ctrl.deleteExam);
 router.get('/exams/:examId/submissions', requirePermission('assignment:grade:own'), ctrl.listExamSubmissions);
 router.patch('/exam-submissions/:submissionId/grade', requirePermission('assignment:grade:own'), ctrl.gradeExamSubmission);
 

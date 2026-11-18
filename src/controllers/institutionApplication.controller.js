@@ -22,6 +22,14 @@ function withProgress(app) {
   return { ...obj, admissionProgress: PROGRESS_BY_STATUS[obj.status] ?? 0 };
 }
 
+// Master 15A.8: an admitted student is linked to the program, its first term, the class section and
+// that class's subjects, and gets a student ID (15D.3). A student who already has an ID keeps it.
+async function linkAdmittedStudent(membership, programPlan, profile) {
+  if (!membership.studentId) membership.studentId = await require('../utils/studentId').nextStudentId(programPlan.institution);
+  await require('../utils/academicLink').linkToSection(membership, programPlan.classSection, programPlan._id);
+  if (membership.isPrimary && profile && !profile.rollNumber) { profile.rollNumber = membership.studentId; await profile.save(); }
+}
+
 function getStaffEntry(institution, userId) {
   const isOwner = institution.owner.toString() === userId.toString();
   if (isOwner) return { isOwner: true, permissions: ['*'] };
@@ -149,6 +157,9 @@ const updateApplication = asyncHandler(async (req, res) => {
     if (!['draft', 'submitted', 'under_review', 'documents_required', 'accepted', 'rejected'].includes(status)) {
       throw new AppError('Invalid status.', 422);
     }
+    // Acceptance runs through POST /:id/accept, which checks the test and interview, enrols the student
+    // and gives the student ID; setting the status alone would skip all of that.
+    if (status === 'accepted' && application.status !== 'accepted') throw new AppError('Use Accept to admit the applicant, so they are enrolled and get a student ID.', 422);
     if (['accepted', 'rejected'].includes(status) && !isOwner && !permissions.includes('application:approve')) {
       throw new AppError('Only the institution owner or a staff member with final-approval permission can accept or reject an application.', 403);
     }
@@ -414,6 +425,7 @@ const acceptAndEnroll = asyncHandler(async (req, res) => {
   }
   application.generatedStudentProfile = profile._id;
   await application.save();
+  await linkAdmittedStudent(membership, programPlan, profile);
 
   const programCourses = await Course.find({ institution: application.institution._id, classSection: programPlan.classSection, published: true });
   await Promise.all(programCourses.map((course) => Enrollment.updateOne({ student: application.applicant, course: course._id }, { $setOnInsert: { student: application.applicant, course: course._id, status: 'active' } }, { upsert: true })));

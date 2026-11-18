@@ -30,6 +30,9 @@ const institutionSchema = new mongoose.Schema(
       default: 'pending'
     },
     verificationDocuments: [{ type: String }],
+    // Student IDs: PREFIX-YEAR-0001. The prefix defaults to the initials of the name.
+    studentIdPrefix: { type: String, default: '', uppercase: true, trim: true, maxlength: 8 },
+    studentIdSeq: { type: Number, default: 0 },
 
     staff: [
       {
@@ -42,7 +45,32 @@ const institutionSchema = new mongoose.Schema(
       }
     ],
 
+    // Staff the owner suspended (client scope 6; master 5.6 "Login Permission"). They keep their role
+    // and permissions here but are out of `staff`, so every staff check denies them until reinstated.
+    suspendedStaff: [
+      {
+        user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
+        role: { type: String, default: 'staff' },
+        designation: { type: String, default: '' },
+        department: { type: String, default: '' },
+        permissions: [{ type: String }],
+        addedAt: { type: Date, default: Date.now },
+        suspendedAt: { type: Date, default: Date.now },
+        reason: { type: String, default: '' }
+      }
+    ],
+    // Roles the owner made (client scope 6: "apni marzi ke naye roles banana"). key = custom_<slug>.
+    customRoles: [{ key: String, label: String, permissions: [{ type: String }], _id: false }],
+
     // Public profile extras (validated in utils/institutionProfile.js).
+    // Master 8.4 (Institution Profile) and 15D.21 (School Language, School Uniform Information).
+    vision: { type: String, default: '' },
+    mission: { type: String, default: '' },
+    history: { type: String, default: '' },
+    principalMessage: { name: { type: String, default: '' }, title: { type: String, default: '' }, message: { type: String, default: '' }, photo: { type: String, default: '' } },
+    gallery: [{ url: String, caption: String, _id: false }],
+    schoolLanguage: { type: String, default: '' },
+    uniform: { type: String, default: '' },
     accreditations: [{ body: String, reference: String, validUntil: Date, documentUrl: String, _id: false }],
     affiliations: [{ name: String, kind: { type: String, default: 'other' }, since: Number, _id: false }],
     socialLinks: { facebook: String, instagram: String, linkedin: String, x: String, youtube: String, tiktok: String, whatsapp: String },

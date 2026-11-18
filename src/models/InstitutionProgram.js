@@ -5,6 +5,7 @@ const schema = new mongoose.Schema({
   name: { type: String, required: true, trim: true },
   department: { type: String, required: true, trim: true },
   classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', required: true },
+  departmentRef: { type: mongoose.Schema.Types.ObjectId, ref: 'Department', default: null },
   durationTerms: { type: Number, required: true, min: 1, default: 8 },
   admissionFee: { type: Number, required: true, min: 0, default: 0 },
   totalTuitionFee: { type: Number, required: true, min: 1 },

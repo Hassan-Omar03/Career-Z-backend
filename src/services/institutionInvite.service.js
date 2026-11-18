@@ -48,7 +48,7 @@ async function institutionFor(user, id, kind) {
 function link(token) { return `${site()}/invite/${token}`; }
 async function emailInvite(inv, inst, token, inviter) {
   const who = KIND_LABEL[inv.kind];
-  const roleText = inv.kind === 'staff' ? ` as ${staffRoles.STAFF_ROLES[inv.role]?.label || inv.role}` : inv.kind === 'teacher' && inv.designation ? ` as ${inv.designation}` : '';
+  const roleText = inv.kind === 'staff' ? ` as ${staffRoles.labelOf(inv.role, inst)}` : inv.kind === 'teacher' && inv.designation ? ` as ${inv.designation}` : '';
   const subject = `${inst.name} invited you to join CareerZ`;
   const lines = [
     `Assalam o Alaikum${inv.name ? ` ${inv.name}` : ''},`,
@@ -83,9 +83,10 @@ async function send(user, institutionId, body = {}) {
     try {
       if (!EMAIL.test(email)) throw fail('Not a valid email.');
       const role = kind === 'staff' ? String(raw.role || '') : kind === 'teacher' ? 'teacher' : '';
-      if (kind === 'staff') { staffRoles.roleOrThrow(role, AppError); if (role === 'teacher') throw fail('Invite teachers as "Teacher", not as staff.'); }
+      if (kind === 'staff') { staffRoles.roleOrThrow(role, AppError, inst); if (role === 'teacher') throw fail('Invite teachers as "Teacher", not as staff.'); }
       const existingUser = await User.findOne({ email }).select('_id').lean();
       if (existingUser && kind !== 'student' && inst.staff.some((s) => String(s.user) === String(existingUser._id))) throw fail('Already on your staff.');
+      if (existingUser && kind !== 'student' && (inst.suspendedStaff || []).some((s) => String(s.user) === String(existingUser._id))) throw fail('Suspended at your institution. Reinstate them instead.');
       if (existingUser && kind === 'student' && await require('../models/StudentInstitutionMembership').exists({ student: existingUser._id, institution: inst._id, status: 'active' })) throw fail('Already your student.');
       if (kind !== 'student') await require('../utils/subscriptionGate').assertStaffCapAllows(inst, inst.staff.length);
       let classSection = null;
@@ -140,7 +141,7 @@ async function cancel(user, institutionId, inviteId) {
 
 // ---------------------------------------------------------------- the person invited
 async function byToken(token) {
-  const inv = await Invite.findOne({ tokenHash: hash(token) }).populate('institution', 'name logo city type verificationStatus').populate('classSection', 'name');
+  const inv = await Invite.findOne({ tokenHash: hash(token) }).populate('institution', 'name logo city type verificationStatus customRoles').populate('classSection', 'name');
   if (!inv) throw fail('This invitation link is not valid. Ask the institute to send it again.', 404);
   if (inv.status === 'sent' && inv.expiresAt < new Date()) { inv.status = 'expired'; await inv.save(); }
   return inv;
@@ -149,7 +150,7 @@ async function preview(token) {
   const inv = await byToken(token);
   return {
     institution: { name: inv.institution?.name, logo: /^https:\/\//.test(inv.institution?.logo || '') ? inv.institution.logo : null, city: inv.institution?.city || '', type: inv.institution?.type || '' },
-    email: inv.email, name: inv.name, kind: inv.kind, role: inv.kind === 'staff' ? staffRoles.STAFF_ROLES[inv.role]?.label || inv.role : inv.kind,
+    email: inv.email, name: inv.name, kind: inv.kind, role: inv.kind === 'staff' ? staffRoles.labelOf(inv.role, inv.institution) : inv.kind,
     designation: inv.designation, department: inv.department, classSection: inv.classSection?.name || '', message: inv.message,
     status: inv.status, expiresAt: inv.expiresAt, accountExists: Boolean(await User.exists({ email: inv.email }))
   };
@@ -177,7 +178,7 @@ async function join(inv, userId) {
     await recordJoin(user._id, inst._id, inv.program);
     if (inv.classSection) await require('../models/StudentProfile').updateOne({ user: user._id }, { $set: { classSection: inv.classSection, ...(inv.program ? { program: inv.program } : {}) } }, { upsert: true });
   } else if (!inst.staff.some((s) => String(s.user) === String(user._id))) {
-    const permissions = inv.kind === 'staff' ? staffRoles.permissionsFor(inv.role, undefined, AppError) : [];
+    const permissions = inv.kind === 'staff' ? staffRoles.permissionsFor(staffRoles.roleOf(inv.role, inst) ? inv.role : 'staff', undefined, AppError, inst) : [];
     await onboardStaff(inst, String(user._id), { role: inv.role || 'teacher', department: inv.department, designation: inv.designation, permissions });
     if (inv.kind === 'teacher') await TeacherEmployment.create({ teacher: user._id, institution: inst._id, role: 'teacher', designation: inv.designation, department: inv.department, status: 'active', offeredBy: inv.invitedBy, respondedAt: new Date(), startedAt: new Date() });
   }
@@ -205,8 +206,8 @@ async function accept(user, token) {
 async function mine(user) {
   const now = new Date();
   await Invite.updateMany({ email: String(user.email).toLowerCase(), status: 'sent', expiresAt: { $lt: now } }, { $set: { status: 'expired' } });
-  const rows = await Invite.find({ email: String(user.email).toLowerCase(), status: 'sent', expiresAt: { $gte: now } }).populate('institution', 'name city type').populate('classSection', 'name').sort({ createdAt: -1 }).lean();
-  return rows.map((i) => ({ _id: i._id, institution: i.institution, kind: i.kind, role: i.kind === 'staff' ? staffRoles.STAFF_ROLES[i.role]?.label || i.role : i.kind, designation: i.designation, department: i.department, classSection: i.classSection?.name || '', message: i.message, expiresAt: i.expiresAt }));
+  const rows = await Invite.find({ email: String(user.email).toLowerCase(), status: 'sent', expiresAt: { $gte: now } }).populate('institution', 'name city type customRoles').populate('classSection', 'name').sort({ createdAt: -1 }).lean();
+  return rows.map((i) => ({ _id: i._id, institution: i.institution && { _id: i.institution._id, name: i.institution.name, city: i.institution.city, type: i.institution.type }, kind: i.kind, role: i.kind === 'staff' ? staffRoles.labelOf(i.role, i.institution) : i.kind, designation: i.designation, department: i.department, classSection: i.classSection?.name || '', message: i.message, expiresAt: i.expiresAt }));
 }
 async function respondMine(user, inviteId, decision) {
   if (!mongoose.isValidObjectId(inviteId)) throw fail('Invitation not found.', 404);

@@ -24,6 +24,15 @@ const userSchema = new mongoose.Schema(
     deletedAt: { type: Date, default: null },
 
     twoFactorEnabled: { type: Boolean, default: false },
+    // 'email' sends a code by email; 'totp' asks for the authenticator app code (master 5.7).
+    twoFactorMethod: { type: String, enum: ['email', 'totp'], default: 'email' },
+    // Authenticator secret (encrypted), a secret waiting for confirmation, hashed one-use backup codes
+    // and the last accepted time step. Never sent to the client.
+    totp: {
+      type: { secret: String, pending: String, backupCodes: [String], lastStep: Number, enabledAt: Date, failures: Number, lockedUntil: Date },
+      select: false,
+      default: undefined
+    },
 
     profilePhoto: { type: String, default: null }, // also doubles as a Marketplace Seller's store logo
     coverImage: { type: String, default: null }, // profile cover banner (spec Part 10.3)
@@ -123,6 +132,7 @@ userSchema.methods.permissions = function () {
 userSchema.methods.toSafeJSON = function () {
   const obj = this.toObject();
   delete obj.passwordHash;
+  delete obj.totp;
   return obj;
 };
 

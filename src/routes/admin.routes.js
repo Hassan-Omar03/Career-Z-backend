@@ -68,6 +68,7 @@ router.get('/recruitment/settings', requireRole('super_admin'), recruitmentAdmin
 router.put('/recruitment/settings', requireRole('super_admin'), recruitmentAdmin.saveSettings);
 
 // Staff team management — Super Admin only.
+router.get('/staff/me', staffCtrl.myAccess);
 router.get('/staff', requireRole('super_admin'), staffCtrl.listStaff);
 router.post('/staff', requireRole('super_admin'), staffCtrl.addStaff);
 router.patch('/staff/:id', requireRole('super_admin'), staffCtrl.updateStaff);

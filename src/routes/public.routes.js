@@ -42,6 +42,19 @@ router.get('/courses/:id', detail(homeSections.courseDetail, 'Course'));
 router.get('/search-options', asyncHandler(async (req, res) => ok(res, await homeSections.searchOptions())));
 router.get('/cities', asyncHandler(async (req, res) => ok(res, await homeSections.citiesFor(req.query.country))));
 
+// Public Events page (audit N-30): upcoming and ongoing events that verified institutes chose to show.
+router.get('/events', asyncHandler(async (req, res) => {
+  const Institution = require('../models/Institution');
+  const allowed = await Institution.find(await listings.instituteFilter({})).select('_id').lean();
+  const since = new Date(Date.now() - 24 * 60 * 60 * 1000);
+  const rows = await require('../models/InstitutionEvent').find({
+    isPublic: true, institution: { $in: allowed.map((i) => i._id) }, status: { $in: ['upcoming', 'ongoing'] },
+    $or: [{ endDate: { $gte: since } }, { endDate: null, startDate: { $gte: since } }]
+  }).select('title type description startDate endDate venue coverImage institution').populate('institution', 'name city country slug').sort({ startDate: 1 }).limit(100).lean();
+  return ok(res, rows.map((e) => ({ _id: e._id, title: e.title, type: e.type, description: String(e.description || '').slice(0, 400), startDate: e.startDate, endDate: e.endDate, venue: e.venue,
+    institution: e.institution ? { name: e.institution.name, city: e.institution.city, country: e.institution.country, slug: e.institution.slug } : null })));
+}));
+
 // A donor's own public profile settings (off until they switch it on).
 const PROFILE_FIELDS = ['enabled', 'displayName', 'about', 'logoUrl', 'focusAreas', 'city', 'country', 'showScholarships'];
 router.get('/me/donor-profile', protect, requireRole('donor'), asyncHandler(async (req, res) => {
@@ -60,6 +73,32 @@ router.put('/me/donor-profile', protect, requireRole('donor'), asyncHandler(asyn
     if (e.name === 'ValidationError') throw new AppError(Object.values(e.errors)[0]?.message || 'Check the profile details.', 422);
     throw e;
   }
+}));
+
+// Contact page form (audit point 1). Open to visitors; limited per IP, with a hidden "website" field
+// that people never fill but spam bots do.
+const ENQUIRY_TYPES = ['support', 'partnership', 'institution', 'advertising', 'media', 'other'];
+const contactLimit = require('express-rate-limit')({ windowMs: 60 * 60 * 1000, max: 5, standardHeaders: true, legacyHeaders: false, message: { success: false, message: 'You have sent several messages already. Please try again in an hour, or email info@careerz.pk.' } });
+router.post('/contact', contactLimit, asyncHandler(async (req, res) => {
+  const b = req.body || {};
+  if (String(b.website || '').trim()) return ok(res, { received: true }, 'Thank you. Your message has been sent.');
+  const text = (v, max) => String(v ?? '').replace(/\s+/g, ' ').trim().slice(0, max);
+  const name = text(b.name, 120), email = text(b.email, 200).toLowerCase(), message = String(b.message ?? '').trim().slice(0, 4000);
+  const errors = {};
+  if (name.length < 2) errors.name = 'Enter your name.';
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) errors.email = 'Enter a valid email address.';
+  if (!ENQUIRY_TYPES.includes(b.enquiryType)) errors.enquiryType = 'Choose what your message is about.';
+  if (message.length < 10) errors.message = 'Write your message (at least 10 characters).';
+  if (Object.keys(errors).length) throw new AppError('Please fix the highlighted fields.', 422, { fields: errors });
+  let user = null;
+  try { const auth = String(req.headers.authorization || ''); if (auth.startsWith('Bearer ')) user = require('jsonwebtoken').verify(auth.slice(7), require('../config/env').jwt.accessSecret).sub || null; } catch { user = null; }
+  const saved = await require('../models/ContactMessage').create({ name, email, message, enquiryType: b.enquiryType, phone: text(b.phone, 40), organization: text(b.organization, 160), user, ip: req.ip || '' });
+  await require('../services/notification.service').notifyAdmins({
+    title: `Contact form: ${b.enquiryType} enquiry from ${name}`,
+    body: `${name} <${email}>${saved.phone ? ` · ${saved.phone}` : ''}${saved.organization ? ` · ${saved.organization}` : ''}\n\n${message}`,
+    category: 'contact', link: '/dashboard'
+  }).catch(() => {});
+  return ok(res, { received: true }, 'Thank you. Your message has been sent. We usually reply within 1 to 2 working days.');
 }));
 
 module.exports = router;

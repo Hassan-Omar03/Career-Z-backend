@@ -222,6 +222,31 @@ async function callGeminiOnce(apiKey, model, systemPrompt, userPrompt) {
   return payload.candidates?.[0]?.content?.parts?.[0]?.text || '';
 }
 
+// Asks the provider whether a key is real before it is saved, using a free "list models"/account call
+// (no tokens are used). A made-up key used to show as "connected" (audit N-28). Providers with no such
+// call are saved as before. A 401/403 rejects the key; a provider that cannot be reached is reported.
+const KEY_CHECKS = {
+  openai: (k) => ['https://api.openai.com/v1/models', { headers: { Authorization: `Bearer ${k}` } }],
+  deepseek: (k) => ['https://api.deepseek.com/models', { headers: { Authorization: `Bearer ${k}` } }],
+  claude: (k) => ['https://api.anthropic.com/v1/models', { headers: { 'x-api-key': k, 'anthropic-version': '2023-06-01' } }],
+  gemini: (k) => [`https://generativelanguage.googleapis.com/v1beta/models?key=${encodeURIComponent(k)}`, {}],
+  stability: (k) => ['https://api.stability.ai/v1/user/account', { headers: { Authorization: `Bearer ${k}` } }],
+  elevenlabs: (k) => ['https://api.elevenlabs.io/v1/user', { headers: { 'xi-api-key': k } }]
+};
+async function verifyKey(provider, apiKey) {
+  if (process.env.NODE_ENV === 'test' && !process.env.AI_KEY_CHECK_IN_TESTS) return { checked: false };
+  const check = KEY_CHECKS[provider];
+  if (!check) return { checked: false };
+  const [url, init] = check(apiKey);
+  let res;
+  try { res = await fetch(url, { ...init, method: 'GET', signal: AbortSignal.timeout(15000) }); }
+  catch { throw Object.assign(new Error('Could not reach the AI provider to check this key. Try again in a moment.'), { statusCode: 502 }); }
+  if (res.status === 401 || res.status === 403 || (provider === 'gemini' && res.status === 400)) {
+    throw Object.assign(new Error('The AI provider rejected this API key. Copy the key again from your provider account and paste it here.'), { statusCode: 422 });
+  }
+  return { checked: true };
+}
+
 async function generate(userId, systemPrompt, userPrompt, institutionId) {
   return generateWith(await getDecryptedCredential(userId, 'text', institutionId), systemPrompt, userPrompt);
 }
@@ -427,5 +452,4 @@ module.exports = {
   saveCredential, getCredentialStatus, getAllCredentialStatuses, removeCredential, generate,
   generateImage, create3DModelTask, get3DModelTaskStatus, generateSpeech,
   createAvatarVideoTask, getAvatarVideoTaskStatus, createAnimationTask, getAnimationTaskStatus,
-  saveInstitutionCredential, getAllInstitutionCredentialStatuses, removeInstitutionCredential
-};
+  saveInstitutionCredential, getAllInstitutionCredentialStatuses, removeInstitutionCredential, verifyKey };

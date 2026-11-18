@@ -64,10 +64,14 @@ const getPlatformUploadSignature = asyncHandler(async (req, res) => {
 
   const timestamp = Math.round(Date.now() / 1000);
   const folder = req.query.folder && /^[a-z0-9-]+$/i.test(req.query.folder) ? `careerz-${req.query.folder}` : 'careerz-uploads';
-  const paramsToSign = `folder=${folder}&timestamp=${timestamp}${env.cloudinary.apiSecret}`;
+  // An optional readable file name (e.g. the job title) becomes the file's address, so search engines
+  // see "science-teacher-lahore-x7k2.jpg" instead of random letters (audit point 12).
+  const slug = String(req.query.name || '').toLowerCase().normalize('NFKD').replace(/[^a-z0-9]+/g, '-').replace(/(^-|-$)/g, '').slice(0, 60);
+  const publicId = slug ? `${slug}-${crypto.randomBytes(3).toString('hex')}` : '';
+  const paramsToSign = `folder=${folder}${publicId ? `&public_id=${publicId}` : ''}&timestamp=${timestamp}${env.cloudinary.apiSecret}`;
   const signature = crypto.createHash('sha1').update(paramsToSign).digest('hex');
 
-  return ok(res, { signature, timestamp, folder, apiKey: env.cloudinary.apiKey, cloudName: env.cloudinary.cloudName });
+  return ok(res, { signature, timestamp, folder, ...(publicId ? { publicId } : {}), apiKey: env.cloudinary.apiKey, cloudName: env.cloudinary.cloudName });
 });
 
 module.exports = { getConfig, saveConfig, removeConfig, getUploadSignature, getPlatformConfig, getPlatformUploadSignature };

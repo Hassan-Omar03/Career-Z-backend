@@ -26,6 +26,7 @@ async function connectionDetails(provider, apiKey, model, baseUrl) {
   const key = String(apiKey || '').trim();
   if (provider !== 'local') {
     if (key.length < 8) throw new AppError('A valid API key is required.', 422);
+    await aiService.verifyKey(provider, key).catch((err) => { throw new AppError(err.message, err.statusCode || 422); });
     return { apiKey: key, model: String(model || '').trim(), baseUrl: '' };
   }
   if (!String(model || '').trim()) throw new AppError('Enter the model name your local AI server runs, e.g. llama3.1 or qwen2.5.', 422);

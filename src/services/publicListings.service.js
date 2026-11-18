@@ -79,7 +79,7 @@ function jobCard(j, publisherRoles = new Map()) {
     applicationDeadline: j.applicationDeadline, postedAt: j.createdAt, featured: !!j.featured, visaSponsorship: !!j.visaSponsorship,
     sponsored: !!j.sponsored, urgent: !!j.urgent, topHiring: !j.institution && Boolean(j.postedBy && publisherRoles.topHiring?.has(String(j.postedBy._id))), vacancies: j.vacancies || 1,
     companyLogo: /^https:\/\//.test(j.companyLogo || '') ? j.companyLogo : null,
-    image: /^https:\/\//.test(j.image || '') ? j.image : '',
+    image: /^https:\/\//.test(j.image || '') ? j.image : '', imageAlt: j.imageAlt || '',
     category: j.category || 'other', institution: j.institution ? String(j.institution._id || j.institution) : null,
     postedBy: j.institution ? { name: j.company, kind: 'institute' } : j.postedBy ? { name: j.postedBy.fullName, kind: publisherRoles.get(String(j.postedBy._id)) || 'employer' } : null,
     verifiedPublisher: true
@@ -194,7 +194,7 @@ async function listInstitutes(query = {}) {
 }
 async function instituteDetail(id) {
   const filter = await instituteFilter({});
-  const i = await Institution.findOne({ ...filter, _id: id }).select('name type city country logo coverImage description website owner address accreditations affiliations socialLinks location').lean();
+  const i = await Institution.findOne({ ...filter, _id: id }).select('name type city country logo coverImage description website owner address accreditations affiliations socialLinks location vision mission history principalMessage gallery schoolLanguage uniform').lean();
   if (!i) return null;
   const openJobs = await jobFilter({});
   const [programs, courses, jobs, settings] = await Promise.all([
@@ -301,6 +301,6 @@ async function home() {
 }
 
 module.exports = {
-  home, stats, resetStatsCache, listJobs, jobDetail, listScholarships, scholarshipDetail, listInstitutes, instituteDetail,
+  home, stats, resetStatsCache, jobFilter, scholarshipFilter, instituteFilter, listJobs, jobDetail, listScholarships, scholarshipDetail, listInstitutes, instituteDetail,
   listProducts, productDetail, listDonors, donorDetail, eligiblePublishers, JOB_TYPES, JOB_CATEGORIES, INSTITUTE_TYPES, PRODUCT_CATEGORIES
 };

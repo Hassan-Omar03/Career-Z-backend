@@ -24,6 +24,8 @@ const updateStaffPermissions = asyncHandler(async (req, res) => {
   const kept = (entry.permissions || []).filter((p) => !GRANTABLE[p]); // e.g. ai:use / ai:manage
   entry.permissions = Array.from(new Set([...kept, ...requested]));
   await institution.save();
+  await require('../models/StaffChangeLog').create({ institution: institution._id, user: entry.user, action: 'permissions_changed', toRole: require('../utils/staffRoles').labelOf(entry.role, institution), by: req.user._id }).catch(() => null);
+  try { require('../realtime/socket').emitToUser(String(entry.user), 'dashboard:update', { reason: 'staff' }); } catch { /* no socket server in tests */ }
   return ok(res, { user: entry.user, permissions: entry.permissions }, 'Staff permissions updated.');
 });
 

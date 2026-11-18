@@ -43,11 +43,14 @@ async function template() {
   return html;
 }
 
-function headTags({ title, description, path, keywords = [], image, type = 'website', schema, noindex = false, extra = '', lang = 'en' }) {
+// A Cloudinary picture is cropped to the 1200x630 size share cards use, so the link preview shows the
+// actual picture at the size the tags announce (audit point 12).
+const shareSize = (u) => (/^https:\/\/res\.cloudinary\.com\/[^/]+\/image\/upload\//.test(u || '') ? u.replace('/image/upload/', '/image/upload/c_fill,g_auto,w_1200,h_630,f_jpg,q_auto/') : u);
+function headTags({ title, description, path, keywords = [], image, imageAlt = '', type = 'website', schema, noindex = false, extra = '', lang = 'en' }) {
   const url = SITE() + (lang === 'ur' ? `/ur${path === '/' ? '' : path}` : path);
   const alt = (l) => SITE() + (l === 'ur' ? `/ur${path === '/' ? '' : path}` : path);
   const full = `${title} | ${BRAND}`;
-  const img = image || LOGO();
+  const img = shareSize(image) || LOGO();
   return [
     `<title>${esc(full)}</title>`,
     `<meta name="description" content="${esc(description)}"/>`,
@@ -57,7 +60,7 @@ function headTags({ title, description, path, keywords = [], image, type = 'webs
     noindex ? '' : `<link rel="alternate" hreflang="en" href="${esc(alt('en'))}"/><link rel="alternate" hreflang="ur" href="${esc(alt('ur'))}"/><link rel="alternate" hreflang="x-default" href="${esc(alt('en'))}"/>`,
     `<meta property="og:type" content="${type}"/>`, `<meta property="og:site_name" content="${BRAND}"/>`, `<meta property="og:locale" content="${lang === 'ur' ? 'ur_PK' : 'en_PK'}"/>`, `<meta property="og:locale:alternate" content="${lang === 'ur' ? 'en_PK' : 'ur_PK'}"/>`,
     `<meta property="og:title" content="${esc(full)}"/>`, `<meta property="og:description" content="${esc(description)}"/>`,
-    `<meta property="og:url" content="${esc(url)}"/>`, `<meta property="og:image" content="${esc(img)}"/>`, '<meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/>', `<meta property="og:image:alt" content="${esc(title)}"/>`,
+    `<meta property="og:url" content="${esc(url)}"/>`, `<meta property="og:image" content="${esc(img)}"/>`, '<meta property="og:image:width" content="1200"/><meta property="og:image:height" content="630"/>', `<meta property="og:image:alt" content="${esc(imageAlt || title)}"/>`,
     '<meta name="twitter:card" content="summary_large_image"/>', `<meta name="twitter:title" content="${esc(full)}"/>`,
     `<meta name="twitter:description" content="${esc(description)}"/>`, `<meta name="twitter:image" content="${esc(img)}"/>`,
     extra,
@@ -141,7 +144,7 @@ async function jobPage(id) {
   const meta = { kind: 'job', name: j.title, org: j.company, city: j.city, sub: salary || TYPE_LABEL[j.type] || '', type: TYPE_LABEL[j.type] || '' };
   return {
     meta,
-    head: { title, description, path, image: j.image || j.companyLogo, keywords: [`${j.title} jobs`, `${j.title} jobs in ${j.city || 'Pakistan'}`, `jobs in ${j.city || 'Pakistan'}`, `${j.company} jobs`, `jobs in Pakistan ${year()}`, j.category && `${j.category} jobs`, j.visaSponsorship && 'visa sponsorship jobs', j.workMode === 'remote' && 'remote jobs Pakistan', TYPE_LABEL[j.type] && `${TYPE_LABEL[j.type].toLowerCase()} jobs`, ...(j.skills || []).slice(0, 5)].filter(Boolean), schema: graph(jobPosting, crumbs(c)) },
+    head: { title, description, path, image: j.image || j.companyLogo, imageAlt: j.image ? (j.imageAlt || `${j.title} at ${j.company}`) : '', keywords: [`${j.title} jobs`, `${j.title} jobs in ${j.city || 'Pakistan'}`, `jobs in ${j.city || 'Pakistan'}`, `${j.company} jobs`, `jobs in Pakistan ${year()}`, j.category && `${j.category} jobs`, j.visaSponsorship && 'visa sponsorship jobs', j.workMode === 'remote' && 'remote jobs Pakistan', TYPE_LABEL[j.type] && `${TYPE_LABEL[j.type].toLowerCase()} jobs`, ...(j.skills || []).slice(0, 5)].filter(Boolean), schema: graph(jobPosting, crumbs(c)) },
     body: { crumbs: c, h1: j.title, sub: `${j.company}${where ? ` · ${where}` : ''}`, facts: [['Job type', TYPE_LABEL[j.type]], ['Work mode', j.workMode], ['Salary', salary], ['Experience', j.experienceYears ? `${j.experienceYears}+ years` : ''], ['Vacancies', j.vacancies], ['Apply before', j.applicationDeadline ? new Date(j.applicationDeadline).toDateString() : ''], ['Visa sponsorship', j.visaSponsorship ? 'Yes' : '']], paragraphs: [plain(jobText(j.description))], lists: [{ title: 'Skills', items: (j.skills || []).map((s) => ({ text: s })) }] }
   };
 }

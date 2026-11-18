@@ -14,7 +14,7 @@ router.get('/by-subdomain/:subdomain', settingsCtrl.bySubdomain);
 router.get('/:id/settings', optionalAuth, settingsCtrl.getSettings);
 router.get('/:id/pages/:slug', settingsCtrl.getPage);
 // Before '/:id' so it is not read as an institution id; public catalogue, no private data.
-router.get('/staff-roles', ctrl.listStaffRoles);
+router.get('/staff-roles', optionalAuth, ctrl.listStaffRoles);
 router.get('/:id', optionalAuth, ctrl.getInstitution);
 router.get('/:id/campuses', ctrl.listCampuses);
 router.get('/:id/class-sections', ctrl.listClassSections);
@@ -22,6 +22,12 @@ router.get('/:id/campus-buildings', ctrl.listCampusBuildings);
 router.get('/:id/programs', ctrl.listPrograms);
 
 router.use(protect);
+// Academic structure (master 15A.5): faculties, departments, terms and subjects.
+const academic = require('../controllers/academicStructure.controller');
+router.get('/:id/academic/:kind', academic.list);
+router.post('/:id/academic/:kind', academic.create);
+router.patch('/:id/academic/:kind/:unitId', academic.update);
+router.delete('/:id/academic/:kind/:unitId', academic.remove);
 const familyPolicy=require('../controllers/familyPolicy.controller');router.get('/:id/family/policy',familyPolicy.get);router.put('/:id/family/policy',familyPolicy.save);
 const cafeteria=require('../controllers/cafeteria.controller');router.get('/:id/cafeteria',cafeteria.schoolMenu);router.post('/:id/cafeteria/items',cafeteria.saveItem);router.put('/:id/cafeteria/items/:itemId',cafeteria.saveItem);router.patch('/cafeteria/orders/:orderId',cafeteria.updateOrder);
 
@@ -49,6 +55,13 @@ router.get('/admin/all', requireRole('admin', 'super_admin', 'platform_staff'), 
 
 router.post('/:id/staff', ctrl.addStaff);
 router.delete('/:id/staff/:userId', ctrl.removeStaff);
+router.get('/:id/staff-people', ctrl.staffPeople);
+router.get('/:id/staff-history', ctrl.staffHistory);
+router.post('/:id/staff/:userId/suspend', ctrl.suspendStaff);
+router.post('/:id/staff/:userId/reinstate', ctrl.reinstateStaff);
+router.post('/:id/staff-roles', ctrl.createCustomRole);
+router.patch('/:id/staff-roles/:key', ctrl.updateCustomRole);
+router.delete('/:id/staff-roles/:key', ctrl.deleteCustomRole);
 router.patch('/:id/staff/:userId/ai-permissions', ctrl.updateStaffAiPermissions);
 router.get('/meta/staff-permissions', staffPermissionCtrl.listGrantable);
 router.patch('/:id/staff/:userId/permissions', staffPermissionCtrl.updateStaffPermissions);

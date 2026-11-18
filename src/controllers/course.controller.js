@@ -108,6 +108,9 @@ const listCourses = asyncHandler(async (req, res) => {
   if (subject) filter.subject = subject;
   if (institution) filter.institution = institution;
   if (q) filter.title = { $regex: q, $options: 'i' };
+  // Scope 8.1: institution courses only for that institution's own people.
+  const visible = await require('../utils/courseVisibility').visibleCourseClause(req.user);
+  if (Object.keys(visible).length) filter.$and = [visible];
 
   const courses = await Course.find(filter)
     .populate('teacher', 'fullName email')
@@ -786,6 +789,57 @@ const listMyExamAttempts = asyncHandler(async (req, res) => {
 });
 
 // PATCH /api/exams/:examId/publish
+// Edit an exam the teacher owns (audit N-29). Timing and details can always change; the questions only
+// while no student has started it, so nobody's paper changes under them.
+const EXAM_DETAIL_FIELDS = ['title', 'academicSession', 'term', 'venue', 'instructions'];
+const updateExam = asyncHandler(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId);
+  if (!exam) throw new AppError('Exam not found.', 404);
+  if (exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+  for (const f of EXAM_DETAIL_FIELDS) if (req.body[f] !== undefined) exam[f] = String(req.body[f] ?? '').trim();
+  if (exam.title === '') throw new AppError('The exam needs a title.', 422);
+  if (req.body.durationMinutes !== undefined) {
+    const d = Number(req.body.durationMinutes);
+    if (!Number.isFinite(d) || d < 0) throw new AppError('durationMinutes cannot be negative.', 422);
+    exam.durationMinutes = d;
+  }
+  if (req.body.passingPercent !== undefined) {
+    const pp = Number(req.body.passingPercent);
+    if (!Number.isFinite(pp) || pp < 0 || pp > 100) throw new AppError('Passing % must be between 0 and 100.', 422);
+    exam.passingPercent = pp;
+  }
+  for (const f of ['scheduledDate', 'closesAt']) {
+    if (req.body[f] === undefined) continue;
+    if (!req.body[f]) { exam[f] = null; continue; }
+    const when = new Date(req.body[f]);
+    if (Number.isNaN(when.getTime())) throw new AppError(`${f === 'closesAt' ? 'Closing' : 'Opening'} time is not a valid date.`, 422);
+    exam[f] = when;
+  }
+  if (exam.scheduledDate && exam.closesAt && exam.closesAt <= exam.scheduledDate) throw new AppError('The closing time must be after the opening time.', 422);
+  if (req.body.questions !== undefined) {
+    if (await ExamSubmission.exists({ exam: exam._id })) throw new AppError('Students have already started this exam, so its questions cannot change. You can still change its timing and details.', 409);
+    if (!Array.isArray(req.body.questions) || !req.body.questions.length) throw new AppError('Add at least one question.', 422);
+    exam.questions = req.body.questions;
+  }
+  await exam.save();
+  return ok(res, exam, 'Exam updated.');
+});
+
+// Delete an exam the teacher owns (audit N-29). Once a student has submitted it, the marks are part of
+// the academic record, so it can only be closed (set a closing time), not deleted.
+const deleteExam = asyncHandler(async (req, res) => {
+  const exam = await Exam.findById(req.params.examId);
+  if (!exam) throw new AppError('Exam not found.', 404);
+  if (exam.teacher.toString() !== req.user._id.toString()) throw new AppError('You do not own this exam.', 403);
+  if (await ExamSubmission.exists({ exam: exam._id, status: { $ne: 'in_progress' } }) || await Result.exists({ exam: exam._id })) {
+    throw new AppError('Students have already submitted this exam, so it cannot be deleted. Set a closing time to stop new attempts.', 409);
+  }
+  await ExamSubmission.deleteMany({ exam: exam._id });
+  await exam.deleteOne();
+  await recalculateEnrollmentProgressForCourse(exam.course).catch(() => {});
+  return ok(res, null, 'Exam deleted.');
+});
+
 const publishExam = asyncHandler(async (req, res) => {
   const exam = await Exam.findById(req.params.examId);
   if (!exam) throw new AppError('Exam not found.', 404);
@@ -923,6 +977,13 @@ async function publishExamResult(submission, grade, actorId) {
   }, { upsert: true, new: true, runValidators: true });
 
   const gradedStudent = await User.findById(submission.student).select('fullName');
+  // The student hears about the result too, not only the parents (audit N-26).
+  await notify(submission.student, {
+    title: `Result published: ${submission.exam.title}`,
+    body: `${submission.score}/${require('../services/examControls.service').attemptTotalMarks(submission.exam, submission)} · Grade ${submission.finalGrade}`,
+    link: '/dashboard?ws=student&tab=assignments', category: 'result', sentBy: actorId,
+    dedupeKey: `exam-result:${submission._id}:${submission.gradedAt?.getTime?.() || Date.now()}`
+  }).catch(() => {});
   await notifyParentsOfStudent(submission.student, {
     title: `New result posted for ${gradedStudent?.fullName || 'your child'}`,
     body: `${submission.exam.title}: ${submission.score}/${submission.exam.toObject().totalMarks}`,
@@ -975,5 +1036,6 @@ module.exports = {
   createAssignment, listAssignments, deleteAssignment,
   submitAssignment, listSubmissions, gradeSubmission, requestAssignmentResubmission,
   recordResult, listCourseResults,
-  createExam, listExams, publishExam, startExam, listMyExamAttempts, submitExam, listExamSubmissions, gradeExamSubmission, recordExamEvent
+  createExam, listExams, publishExam, startExam, listMyExamAttempts, submitExam, listExamSubmissions, gradeExamSubmission, recordExamEvent,
+  updateExam, deleteExam
 };

@@ -19,6 +19,9 @@ const institutionEventSchema = new mongoose.Schema(
     coverImage: { type: String, default: '' },
     rsvps: [{ user: { type: mongoose.Schema.Types.ObjectId, ref: 'User' }, respondedAt: { type: Date, default: Date.now } }],
     status: { type: String, enum: ['upcoming', 'ongoing', 'completed', 'cancelled'], default: 'upcoming' },
+    // Shown on the public Events page when the institute chooses (audit N-30). Off by default, since
+    // most events (parent meetings, staff days) are for the institute's own people.
+    isPublic: { type: Boolean, default: false },
     createdBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true }
   },
   { timestamps: true }

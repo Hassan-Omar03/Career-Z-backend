@@ -34,6 +34,8 @@ before(async () => {
   u.Admin = await model('User').create({ fullName: 'Super', email: 'super@assistant.test', passwordHash: 'x', emailVerified: true, roles: ['super_admin'] });
   u.Staff = await model('User').create({ fullName: 'Support', email: 'support@assistant.test', passwordHash: 'x', emailVerified: true, roles: ['platform_staff'] });
   const employer = await model('User').create({ fullName: 'Hiring', email: 'hire@assistant.test', passwordHash: 'x', roles: ['employer'] });
+  // A verified employer: the assistant counts jobs with the same rules as the public jobs page (audit N-30).
+  await model('RoleRequest').create({ user: employer._id, requestedRole: 'employer', status: 'approved', approvedAt: new Date() });
   await model('Country').create({ name: 'Pakistan', code: 'PK' });
   await model('Job').create([
     { postedBy: employer._id, title: 'React Developer', company: 'Lahore Labs', country: 'PK', city: 'Lahore', status: 'active', applicationDeadline: new Date(Date.now() + 9 * 864e5) },

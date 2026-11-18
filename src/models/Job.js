@@ -57,6 +57,8 @@ const jobSchema = new mongoose.Schema(
     companyLogo: { type: String, default: null },
     // Optional picture of the job, such as the newspaper advert.
     image: { type: String, default: '' },
+    // Describes the picture for screen readers and search engines (audit point 12).
+    imageAlt: { type: String, default: '', maxlength: 200 },
     contactEmail: { type: String, default: '' },
     contactPhone: { type: String, default: '' },
     // pending_review: held by the risk scan for an admin (Master 12.5); rejected: admin declined.

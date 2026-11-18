@@ -63,7 +63,7 @@ const exchange=asyncHandler(async(req,res)=>{
  }
  if(!user||user.status!=='active')throw new AppError('This account is not active.',403);
  if(identity)await consume(flow);
- if(user.twoFactorEnabled){await otp.issueOtp(user,'login_2fa');return ok(res,{twoFactorRequired:true,email:user.email});}
+ if(user.twoFactorEnabled){if(user.twoFactorMethod==='totp')return ok(res,{twoFactorRequired:true,method:'totp',email:user.email});await otp.issueOtp(user,'login_2fa');return ok(res,{twoFactorRequired:true,method:'email',email:user.email});}
  user.lastLoginAt=new Date();await user.save();
  return ok(res,{user:user.toSafeJSON(),permissions:user.permissions(),...await tokens.issueTokenPair(user,{ip:req.ip,deviceInfo:req.headers['user-agent']})});
 });

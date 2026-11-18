@@ -38,6 +38,10 @@ const ALL_AI_PROVIDERS = {
 // GET /api/admin/ai-providers — Super Admin's control over which BYOK providers users/
 // institutions are even allowed to connect per AI purpose, and which model each provider
 // defaults to when a caller doesn't request a specific one (spec: "provider/model management").
+// Counts used on every admin screen, so the same number appears everywhere (audit N-23).
+const LIVE_USER = { status: { $ne: 'deleted' } };
+const liveJobCount = async () => Job.countDocuments(await require('../services/publicListings.service').jobFilter({}));
+
 const getAiProviderConfig = asyncHandler(async (req, res) => {
   const [enabledSetting, modelSetting] = await Promise.all([
     Setting.findOne({ key: AI_PROVIDER_CONFIG_KEY }),
@@ -212,13 +216,13 @@ const getPlatformReports = asyncHandler(async (req, res) => {
     totalUsers, usersByRole, totalInstitutions, institutionsByStatus,
     totalCourses, totalJobs, openJobs, totalScholarships, openScholarships
   ] = await Promise.all([
-    User.countDocuments(),
-    User.aggregate([{ $unwind: '$roles' }, { $group: { _id: '$roles', count: { $sum: 1 } } }]),
+    User.countDocuments(LIVE_USER),
+    User.aggregate([{ $match: LIVE_USER }, { $unwind: '$roles' }, { $group: { _id: '$roles', count: { $sum: 1 } } }]),
     Institution.countDocuments(),
     Institution.aggregate([{ $group: { _id: '$verificationStatus', count: { $sum: 1 } } }]),
     Course.countDocuments(),
-    Job.countDocuments(),
-    Job.countDocuments({ status: 'active' }),
+    Job.countDocuments({ status: { $ne: 'removed_by_admin' } }),
+    liveJobCount(),
     Scholarship.countDocuments(),
     Scholarship.countDocuments({ status: 'open' })
   ]);
@@ -251,11 +255,11 @@ const getDashboard = asyncHandler(async (req, res) => {
     feePaidAgg, orderDeliveredAgg,
     totalCourses, totalJobs, activeJobs, totalScholarships, openScholarships
   ] = await Promise.all([
-    User.countDocuments(),
-    User.aggregate([{ $unwind: '$roles' }, { $group: { _id: '$roles', count: { $sum: 1 } } }]),
+    User.countDocuments(LIVE_USER),
+    User.aggregate([{ $match: LIVE_USER }, { $unwind: '$roles' }, { $group: { _id: '$roles', count: { $sum: 1 } } }]),
     Institution.countDocuments(),
     Institution.aggregate([{ $group: { _id: '$verificationStatus', count: { $sum: 1 } } }]),
-    User.countDocuments({ createdAt: { $gte: startOfDay } }),
+    User.countDocuments({ ...LIVE_USER, createdAt: { $gte: startOfDay } }),
     Institution.countDocuments({ createdAt: { $gte: startOfDay } }),
     RoleRequest.countDocuments({ status: 'pending' }),
     Institution.countDocuments({ verificationStatus: 'pending' }),
@@ -264,8 +268,8 @@ const getDashboard = asyncHandler(async (req, res) => {
     Fee.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: '$currency', total: { $sum: '$amount' } } }]),
     Order.aggregate([{ $match: { status: 'delivered' } }, { $group: { _id: '$currency', total: { $sum: '$totalPrice' } } }]),
     Course.countDocuments(),
-    Job.countDocuments(),
-    Job.countDocuments({ status: 'active' }),
+    Job.countDocuments({ status: { $ne: 'removed_by_admin' } }),
+    liveJobCount(),
     Scholarship.countDocuments(),
     Scholarship.countDocuments({ status: 'open' })
   ]);
@@ -301,9 +305,9 @@ const getAiInsights = asyncHandler(async (req, res) => {
     feePaidAgg, feePendingAgg, feeOverdueAgg,
     activeJobs, openScholarships
   ] = await Promise.all([
-    User.countDocuments(),
-    User.countDocuments({ createdAt: { $gte: startOfDay } }),
-    User.countDocuments({ createdAt: { $gte: thirtyDaysAgo } }),
+    User.countDocuments(LIVE_USER),
+    User.countDocuments({ ...LIVE_USER, createdAt: { $gte: startOfDay } }),
+    User.countDocuments({ ...LIVE_USER, createdAt: { $gte: thirtyDaysAgo } }),
     Institution.countDocuments(),
     Institution.countDocuments({ verificationStatus: 'pending' }),
     RoleRequest.countDocuments({ status: 'pending' }),
@@ -312,7 +316,7 @@ const getAiInsights = asyncHandler(async (req, res) => {
     Fee.aggregate([{ $match: { status: 'paid' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     Fee.aggregate([{ $match: { status: 'pending' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
     Fee.aggregate([{ $match: { status: 'overdue' } }, { $group: { _id: null, total: { $sum: '$amount' } } }]),
-    Job.countDocuments({ status: 'active' }),
+    liveJobCount(),
     Scholarship.countDocuments({ status: 'open' })
   ]);
 

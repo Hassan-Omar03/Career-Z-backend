@@ -15,6 +15,14 @@ const membershipSchema = new mongoose.Schema(
     reviewedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User', default: null },
     reviewedAt: { type: Date, default: null },
     isPrimary: { type: Boolean, default: false },
+    // Master 15A.8 / 15D.3: after admission the student is linked to program, class, section and
+    // subjects, and gets a student ID made from the institution's prefix, the year and a running number.
+    studentId: { type: String, default: '' },
+    programRef: { type: mongoose.Schema.Types.ObjectId, ref: 'InstitutionProgram', default: null },
+    term: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicTerm', default: null },
+    session: { type: mongoose.Schema.Types.ObjectId, ref: 'AcademicSession', default: null },
+    classSection: { type: mongoose.Schema.Types.ObjectId, ref: 'ClassSection', default: null },
+    subjects: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Subject' }],
     joinedAt: { type: Date, default: Date.now },
     leftAt: { type: Date, default: null },
     reason: { type: String, default: '' }

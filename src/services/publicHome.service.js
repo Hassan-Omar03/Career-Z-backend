@@ -31,7 +31,7 @@ async function verifiedCount(role) {
 }
 
 // ---------------------------------------------------------------- courses
-async function courseFilter(query = {}) {
+async function courseFilter(query = {}, { catalogue = true } = {}) {
   const and = [{ published: true, testOnly: { $ne: true } }];
   if (query.level && String(query.level).trim()) and.push({ level: new RegExp(`^${escape(query.level.trim())}$`, 'i') });
   if (['online', 'physical', 'hybrid', 'recorded', 'self_paced', 'ai'].includes(query.mode)) and.push({ studyMode: query.mode });
@@ -41,7 +41,7 @@ async function courseFilter(query = {}) {
   for (const w of words) and.push({ $or: ['title', 'subject', 'category', 'description'].map((f) => ({ [f]: { $regex: escape(w), $options: 'i' } })) });
   // Courses of institutions only while that institution is active and verified.
   const verifiedInstitutions = await Institution.distinct('_id', { status: 'active', verificationStatus: 'approved' });
-  and.push({ $or: [{ institution: null }, { institution: { $in: verifiedInstitutions } }] });
+  and.push(catalogue ? { institution: null } : { $or: [{ institution: null }, { institution: { $in: verifiedInstitutions } }] });
   if (query.country || query.city) {
     const place = { status: 'active', verificationStatus: 'approved' };
     if (query.country) place.country = new RegExp(`^${escape(query.country)}$`, 'i');
@@ -84,7 +84,7 @@ async function listCourses(query = {}) {
 }
 
 async function courseDetail(id) {
-  const filter = await courseFilter({});
+  const filter = await courseFilter({}, { catalogue: false });
   const c = await Course.findOne({ ...filter, _id: id }).populate('teacher', 'fullName').populate('institution', 'name city').lean();
   if (!c) return null;
   const [card] = await courseCards([c]);
