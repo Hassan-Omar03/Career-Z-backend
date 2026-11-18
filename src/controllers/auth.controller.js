@@ -326,6 +326,7 @@ const resetPassword = asyncHandler(async (req, res) => {
   const valid = await otpService.verifyOtp(user, 'password_reset', code);
   if (!valid) throw new AppError('Invalid or expired reset code.', 400);
 
+  await require('../utils/passwordHistory').assertNewPassword(user, newPassword);
   user.passwordHash = await User.hashPassword(newPassword);
   await user.save();
   await tokenService.revokeAllForUser(user._id);

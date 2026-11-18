@@ -24,6 +24,7 @@ const changePassword = asyncHandler(async (req, res) => {
   const match = await req.user.comparePassword(currentPassword);
   if (!match) throw new AppError('Current password is incorrect.', 401);
 
+  await require('../utils/passwordHistory').assertNewPassword(req.user, newPassword);
   req.user.passwordHash = await User.hashPassword(newPassword);
   await req.user.save();
   await require('../services/token.service').revokeAllForUser(req.user._id);

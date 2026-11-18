@@ -8,6 +8,8 @@ const userSchema = new mongoose.Schema(
     email: { type: String, required: true, unique: true, lowercase: true, trim: true },
     phone: { type: String, trim: true },
     passwordHash: { type: String, required: true },
+    // Three former passwords, stored only as bcrypt hashes and never exposed through the API.
+    passwordHistory: { type: [String], default: [], select: false },
 
     roles: { type: [String], default: DEFAULT_ROLES },
 
@@ -121,6 +123,12 @@ const userSchema = new mongoose.Schema(
   { timestamps: true }
 );
 
+userSchema.pre('save', async function () {
+  if (this.isNew || !this.isModified('passwordHash')) return;
+  const previous = await this.constructor.findById(this._id).select('passwordHash +passwordHistory').lean();
+  if (previous && previous.passwordHash !== this.passwordHash) this.passwordHistory = [previous.passwordHash, ...(previous.passwordHistory || [])].slice(0, 3);
+});
+
 userSchema.methods.comparePassword = function (plain) {
   return bcrypt.compare(plain, this.passwordHash);
 };
@@ -132,6 +140,7 @@ userSchema.methods.permissions = function () {
 userSchema.methods.toSafeJSON = function () {
   const obj = this.toObject();
   delete obj.passwordHash;
+  delete obj.passwordHistory;
   delete obj.totp;
   return obj;
 };
