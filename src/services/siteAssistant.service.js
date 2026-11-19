@@ -46,7 +46,9 @@ async function saveCredential({ provider, apiKey, model }, adminId) {
   if (!apiKey || String(apiKey).trim().length < 8) throw Object.assign(new Error('A valid API key is required.'), { statusCode: 422 });
   const key = String(apiKey).trim();
   await require('./ai.service').verifyKey(provider, key); // a made-up key is refused, not shown as connected (audit N-28)
-  await Setting.findOneAndUpdate({ key: SETTING_KEY }, { key: SETTING_KEY, value: { enabled: true, provider, model: String(model || '').trim(), apiKeyEncrypted: encrypt(key), keyPreview: `${key.slice(0, 4)}...${key.slice(-4)}`, updatedBy: adminId, updatedAt: new Date() } }, { upsert: true });
+  // No model typed: ask the provider which model this key may use instead of guessing one it may not have.
+  const chosenModel = String(model || '').trim() || (await require('./ai.service').detectModel(provider, key)) || '';
+  await Setting.findOneAndUpdate({ key: SETTING_KEY }, { key: SETTING_KEY, value: { enabled: true, provider, model: chosenModel, apiKeyEncrypted: encrypt(key), keyPreview: `${key.slice(0, 4)}...${key.slice(-4)}`, updatedBy: adminId, updatedAt: new Date() } }, { upsert: true });
   return status();
 }
 
@@ -180,8 +182,17 @@ async function answer(messages) {
   if (!cred) throw Object.assign(new Error('The assistant is not available right now.'), { statusCode: 503 });
   const list = cleanMessages(messages);
   const convo = transcript(list);
-  const call = (system, user) => ai.generateWith(cred, system, user).catch((err) => {
+  const call = (system, user) => ai.generateWith(cred, system, user).catch(async (err) => {
     console.error('[site-assistant] provider error:', err.message);
+    if (cred.source === 'admin' && /model/i.test(err.message || '') && !cred.retriedModel) {
+      const found = await ai.detectModel(cred.provider, cred.apiKey);
+      if (found && found !== cred.model) {
+        cred.retriedModel = true;
+        cred.model = found;
+        await Setting.updateOne({ key: SETTING_KEY }, { $set: { 'value.model': found } }).catch(() => {});
+        return ai.generateWith(cred, system, user);
+      }
+    }
     throw Object.assign(new Error('The assistant is temporarily unavailable. Please try again in a moment.'), { statusCode: 503 });
   });
 

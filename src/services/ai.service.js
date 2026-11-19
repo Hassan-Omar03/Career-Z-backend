@@ -247,6 +247,37 @@ async function verifyKey(provider, apiKey) {
   return { checked: true };
 }
 
+// Ask the provider which models this exact key may use, and pick a suitable chat model. A key
+// from a restricted project (for example an OpenAI project limited to one model) is refused
+// when the platform default is not on its list, so the admin should not have to know the name.
+// Returns null when it cannot tell; the caller then keeps the provider default.
+const NOT_CHAT = /(image|audio|realtime|tts|transcribe|embedding|moderation|search|instruct|codex|vision|whisper|dall-e|davinci|babbage)/i;
+async function detectModel(provider, apiKey) {
+  if (process.env.NODE_ENV === 'test' && !process.env.AI_KEY_CHECK_IN_TESTS) return null;
+  try {
+    let url, headers = {};
+    if (provider === 'openai') { url = 'https://api.openai.com/v1/models'; headers = { Authorization: `Bearer ${apiKey}` }; }
+    else if (provider === 'deepseek') { url = 'https://api.deepseek.com/models'; headers = { Authorization: `Bearer ${apiKey}` }; }
+    else if (provider === 'claude') { url = 'https://api.anthropic.com/v1/models?limit=100'; headers = { 'x-api-key': apiKey, 'anthropic-version': '2023-06-01' }; }
+    else if (provider === 'gemini') { url = `https://generativelanguage.googleapis.com/v1beta/models?pageSize=200&key=${encodeURIComponent(apiKey)}`; }
+    else return null;
+    const res = await fetch(url, { headers, signal: AbortSignal.timeout(15000) });
+    if (!res.ok) return null;
+    const body = await res.json();
+    let ids;
+    if (provider === 'gemini') ids = (body.models || []).filter((m) => (m.supportedGenerationMethods || []).includes('generateContent')).map((m) => String(m.name || '').replace(/^models\//, ''));
+    else ids = (body.data || []).map((m) => m.id);
+    ids = ids.filter(Boolean);
+    if (!ids.length) return null;
+    const def = DEFAULT_MODEL.text[provider];
+    if (def && ids.includes(def)) return def;
+    const chat = provider === 'openai' ? ids.filter((id) => /^(gpt-|o\d)/.test(id) && !NOT_CHAT.test(id)) : ids.filter((id) => !NOT_CHAT.test(id));
+    const pool = chat.length ? chat : ids;
+    // Cheapest sensible first: nano, then mini/flash/haiku, then anything else.
+    return pool.find((id) => /nano/i.test(id)) || pool.find((id) => /(mini|flash|haiku)/i.test(id)) || pool[0];
+  } catch { return null; }
+}
+
 async function generate(userId, systemPrompt, userPrompt, institutionId) {
   return generateWith(await getDecryptedCredential(userId, 'text', institutionId), systemPrompt, userPrompt);
 }
@@ -448,7 +479,7 @@ async function getAnimationTaskStatus(userId, taskId, institutionId) {
 
 module.exports = {
   LOCAL_NO_KEY,
-  generateWith, DEFAULT_MODEL, resolveModel,
+  generateWith, DEFAULT_MODEL, resolveModel, detectModel,
   saveCredential, getCredentialStatus, getAllCredentialStatuses, removeCredential, generate,
   generateImage, create3DModelTask, get3DModelTaskStatus, generateSpeech,
   createAvatarVideoTask, getAvatarVideoTaskStatus, createAnimationTask, getAnimationTaskStatus,
